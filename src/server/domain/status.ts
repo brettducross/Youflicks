@@ -31,7 +31,7 @@ export const JobType = {
 export const PIPELINE_STAGES = [
   { id: "user", label: "User", available: true },
   { id: "project", label: "Project", available: true },
-  { id: "media", label: "Media assets", available: false },
+  { id: "media", label: "Media assets", available: true },
   { id: "analysis", label: "Media analysis", available: false },
   { id: "director", label: "AI Director", available: false },
   { id: "story", label: "Story structure", available: false },

@@ -30,8 +30,9 @@ export default async function DashboardPage() {
           <p className="text-xs tracking-[0.24em] text-primary uppercase">Studio</p>
           <h1 className="mt-2 text-4xl">Good to see you, {firstName}.</h1>
           <p className="mt-2 max-w-xl text-sm text-muted-foreground">
-            This is the YouFlicks studio floor. Create a project now. Media ingest,
-            the AI Director, and rendering are wired as ports — not mocked.
+            This is the YouFlicks studio floor. Create a project, drop footage into
+            it, and keep the roll on that film. The AI Director and rendering remain
+            ports — not mocked.
           </p>
         </div>
         <CreateProjectDialog />
@@ -39,7 +40,7 @@ export default async function DashboardPage() {
 
       <section className="mt-8 grid gap-4 sm:grid-cols-3">
         <StatCard label="Projects" value={String(count)} hint="Films in your studio" />
-        <StatCard label="Phase" value="1" hint="Foundation only" />
+        <StatCard label="Phase" value="2A" hint="Media ingest is live" />
         <StatCard label="Pipeline stages" value="10" hint="Modeled in the database" />
       </section>
 
@@ -64,8 +65,7 @@ export default async function DashboardPage() {
                 <div>
                   <p className="font-medium">No films yet</p>
                   <p className="mt-1 text-sm text-muted-foreground">
-                    Open a project to reserve a place on the timeline. Footage
-                    upload arrives in Phase 2.
+                    Open a project and drop stills and clips onto the camera roll.
                   </p>
                 </div>
                 <CreateProjectDialog triggerLabel="Create the first one" />

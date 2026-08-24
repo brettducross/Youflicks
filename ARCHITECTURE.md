@@ -54,7 +54,7 @@ YouFlicks starts as a **modular monolith**: one Next.js application with a clear
                             │
 ┌───────────────────────────▼─────────────────────────────────┐
 │                   Application services                       │
-│         Auth  Projects  (later: Media, Story, Render)        │
+│     Auth  Projects  Media  (later: Story, Render)            │
 └───────┬───────────┬───────────┬───────────┬─────────────────┘
         │           │           │           │
         ▼           ▼           ▼           ▼
@@ -103,6 +103,19 @@ JSON columns hold provider-specific payloads. Enums are used only for *our* life
 
 Later, `ProjectService` will enqueue jobs through `JobQueuePort` without knowing whether the worker is in-process, Postgres-backed, or a dedicated fleet.
 
+### Phase 2A — Media ingest
+
+Uploads never talk to disk or S3 from the browser. The path is:
+
+1. Authenticated `POST /api/projects/:id/assets` with one file.
+2. `MediaService.ingest` checks project ownership.
+3. MIME type is sniffed from magic bytes (`file-type`). Client `Content-Type` is ignored.
+4. Bytes are written through `StoragePort.put` using an opaque key.
+5. A `MediaAsset` row is created. Previews are a second object on the same port.
+6. The UI reads files through `GET .../file`, which streams via `StoragePort.getStream` after the same ownership check.
+
+The local filesystem adapter remains the development implementation. An S3/R2 adapter can replace it without changing `MediaService` or the UI.
+
 ---
 
 ## 3. Technology choices
@@ -144,7 +157,8 @@ Raise these before changing them:
 | Deferred | Why |
 | --- | --- |
 | Full AI Director | Product spec not in this phase; would force a vendor choice. Port exists; no implementation. |
-| Media upload pipeline, transcoding, analysis | Needs storage + jobs + UI; Phase 2. |
+| Media analysis / scene detection | Phase 2B; `MediaAnalyzerPort` exists with no adapter. |
+| Media transcoding / proxies | Ingest stores originals; analysis and render may transcode later. |
 | Timeline editor | Complex UI; depends on story structure. |
 | Rendering / FFmpeg / cloud render | Needs RendererPort implementation and workers. |
 | Publishing destinations | Spec-dependent (YouTube, etc.). |
@@ -155,19 +169,23 @@ Raise these before changing them:
 | Real S3/R2 adapter | Added when object-store credentials exist. Interface is ready. |
 | OAuth (Google/Apple) | Auth foundation is email/password; providers are additive. |
 | Email delivery | Sign-up is immediate; magic links later. |
-| Test suite beyond typecheck | Phase 1 is scaffolding; tests grow with domain services. |
+| Broader UI/E2E suite | Phase 2A covers ingest/storage/ownership tests; expand with later stages. |
 
 ---
 
 ## 5. Implementation roadmap
 
-### Phase 1 — Foundation (this work)
+### Phase 1 — Foundation
 
 Scaffolding, TypeScript, UI kit, Prisma + Postgres, auth, layout, landing, dashboard/projects shells, env, service/port architecture, errors, logging, README.
 
-### Phase 2 — Media & projects
+### Phase 2A — Media ingest (this work)
 
-Real project CRUD, media upload through `StoragePort`, asset listing, background job enqueue for analysis, first analysis adapter behind `MediaAnalyzerPort`.
+Upload photos/videos on a project, store them through `StoragePort`, persist `MediaAsset` rows, show a media library with progress and per-file failure isolation. No analysis.
+
+### Phase 2B — Media analysis
+
+Background job enqueue for analysis and the first adapter behind `MediaAnalyzerPort`. Not started.
 
 ### Phase 3 — Story & timeline
 
@@ -195,6 +213,14 @@ The first *product* MVP is **not** Phase 1. Phase 1 is the platform floor.
 
 Anything that does not serve that loop (social, mobile, multi-provider marketplace, public profiles) waits.
 
+Phase 2A exit criteria:
+
+- [x] Authenticated upload of photos/videos on a project
+- [x] Bytes stored only through `StoragePort`
+- [x] `MediaAsset` rows with filename, MIME (sniffed), size, keys, dimensions, duration, status
+- [x] Media library with progress, multi-file ingest, per-file failure, and delete
+- [x] Owner-only file access; no storage credentials in the browser
+
 Phase 1 exit criteria:
 
 - [x] App runs locally with documented env vars
@@ -212,13 +238,14 @@ Phase 1 exit criteria:
 src/app/(marketing)     Landing
 src/app/(auth)          Sign in / sign up
 src/app/(app)           Authenticated shell (dashboard, projects)
-src/app/api             Auth + health
-src/components          UI and layout
+src/app/api             Auth, health, media ingest
+src/components          UI, layout, media library
 src/lib                 env, errors, logger (no I/O)
 src/server/db           Prisma client
+src/server/media        MIME sniffing, size limits, previews
 src/server/ports        Interfaces
 src/server/adapters     Real adapters (local storage, postgres jobs)
-src/server/services     Application services
+src/server/services     ProjectService, MediaService
 prisma/schema.prisma    Extensible domain schema
 docker-compose.yml      Local Postgres
 ```

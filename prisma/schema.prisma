@@ -122,6 +122,8 @@ model MediaAsset {
   byteSize    BigInt
   /// Opaque key understood by StoragePort. Never a vendor URL.
   storageKey  String
+  /// Optional preview/thumbnail key on the same StoragePort.
+  previewKey  String?
   durationMs  Int?
   width       Int?
   height      Int?

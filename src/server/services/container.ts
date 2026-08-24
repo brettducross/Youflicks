@@ -10,12 +10,14 @@ import type { JobQueuePort } from "@/server/ports/jobs";
 import type { AiDirectorPort } from "@/server/ports/ai-director";
 import type { MediaAnalyzerPort } from "@/server/ports/media-analyzer";
 import type { RendererPort } from "@/server/ports/renderer";
+import { MediaService } from "@/server/services/media";
 import { ProjectService } from "@/server/services/projects";
 
 export type ServiceContainer = {
   storage: StoragePort;
   jobs: JobQueuePort;
   projects: ProjectService;
+  media: MediaService;
   aiDirector(): AiDirectorPort;
   mediaAnalyzer(): MediaAnalyzerPort;
   renderer(): RendererPort;
@@ -32,11 +34,16 @@ function createServices(): ServiceContainer {
   const storage = createStorage();
   const jobs = new PostgresJobQueue();
   const projects = new ProjectService();
+  const media = new MediaService(storage, projects, {
+    maxImageBytes: env.MEDIA_MAX_IMAGE_BYTES,
+    maxVideoBytes: env.MEDIA_MAX_VIDEO_BYTES,
+  });
 
   return {
     storage,
     jobs,
     projects,
+    media,
     aiDirector() {
       throw AppError.providerNotConfigured("AiDirectorPort");
     },
