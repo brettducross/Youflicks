@@ -57,7 +57,12 @@ export function sanitizeFilename(filename: string) {
 }
 
 export async function sniffMedia(bytes: Uint8Array): Promise<SniffedMedia> {
-  const detected = await fileTypeFromBuffer(bytes);
+  let detected: { mime: string } | undefined;
+  try {
+    detected = await fileTypeFromBuffer(bytes);
+  } catch {
+    throw AppError.validation("That file type is not a photo or video we can ingest.");
+  }
   if (!detected) {
     throw AppError.validation("That file type is not a photo or video we can ingest.");
   }
