@@ -1,0 +1,295 @@
+// YouFlicks domain schema — Phase 1 foundation.
+//
+// Status and provider fields are strings (not Prisma enums) so later
+// pipeline stages and vendors can be added without a breaking enum migration.
+// JSON columns hold provider-specific payloads behind the ports in
+// src/server/ports.
+
+generator client {
+  provider = "prisma-client"
+  output   = "../src/generated/prisma"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+// ---------------------------------------------------------------------------
+// Auth (Better Auth). Field names follow the adapter's expected schema.
+// ---------------------------------------------------------------------------
+
+model User {
+  id            String    @id
+  name          String
+  email         String    @unique
+  emailVerified Boolean   @default(false)
+  image         String?
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+  sessions      Session[]
+  accounts      Account[]
+  projects      Project[]
+
+  @@map("user")
+}
+
+model Session {
+  id        String   @id
+  expiresAt DateTime
+  token     String   @unique
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  ipAddress String?
+  userAgent String?
+  userId    String
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@map("session")
+}
+
+model Account {
+  id                    String    @id
+  issuer                String
+  accountId             String
+  providerId            String
+  userId                String
+  user                  User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  accessToken           String?
+  refreshToken          String?
+  idToken               String?
+  accessTokenExpiresAt  DateTime?
+  refreshTokenExpiresAt DateTime?
+  scope                 String?
+  password              String?
+  createdAt             DateTime  @default(now())
+  updatedAt             DateTime  @updatedAt
+
+  @@unique([issuer, accountId])
+  @@index([userId])
+  @@map("account")
+}
+
+model Verification {
+  id         String   @id
+  identifier String
+  value      String
+  expiresAt  DateTime
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+
+  @@index([identifier])
+  @@map("verification")
+}
+
+// ---------------------------------------------------------------------------
+// Filmmaking pipeline
+// User → Project → Media Assets → Media Analysis → AI Director
+//      → Story Structure → Timeline → Rendering → Finished Movie → Publishing
+// ---------------------------------------------------------------------------
+
+model Project {
+  id          String   @id @default(cuid())
+  ownerId     String
+  owner       User     @relation(fields: [ownerId], references: [id], onDelete: Cascade)
+  title       String
+  logline     String?
+  /// DRAFT | INGESTING | ANALYZING | DIRECTING | EDITING | RENDERING | COMPLETED | ARCHIVED
+  status      String   @default("DRAFT")
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  assets           MediaAsset[]
+  storyStructures  StoryStructure[]
+  timelines        Timeline[]
+  renderJobs       RenderJob[]
+  movies           FinishedMovie[]
+  jobs             Job[]
+
+  @@index([ownerId, updatedAt])
+  @@map("project")
+}
+
+model MediaAsset {
+  id          String   @id @default(cuid())
+  projectId   String
+  project     Project  @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  /// PHOTO | VIDEO | AUDIO | OTHER
+  kind        String
+  /// Original filename as uploaded by the user.
+  filename    String
+  mimeType    String
+  byteSize    BigInt
+  /// Opaque key understood by StoragePort. Never a vendor URL.
+  storageKey  String
+  durationMs  Int?
+  width       Int?
+  height      Int?
+  /// UPLOADING | READY | FAILED | ARCHIVED
+  status      String   @default("UPLOADING")
+  checksum    String?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  analyses MediaAnalysis[]
+  clips    TimelineClip[]
+
+  @@index([projectId, createdAt])
+  @@map("media_asset")
+}
+
+model MediaAnalysis {
+  id           String     @id @default(cuid())
+  assetId      String
+  asset        MediaAsset @relation(fields: [assetId], references: [id], onDelete: Cascade)
+  /// Adapter key, e.g. a future analyzer id — not a vendor enum.
+  providerKey  String
+  /// PENDING | RUNNING | SUCCEEDED | FAILED
+  status       String     @default("PENDING")
+  payload      Json?
+  error        String?
+  createdAt    DateTime   @default(now())
+  updatedAt    DateTime   @updatedAt
+
+  @@index([assetId, createdAt])
+  @@map("media_analysis")
+}
+
+model StoryStructure {
+  id           String   @id @default(cuid())
+  projectId    String
+  project      Project  @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  version      Int      @default(1)
+  /// Adapter key for the AI Director implementation that produced this draft.
+  providerKey  String?
+  /// DRAFT | READY | SUPERSEDED | FAILED
+  status       String   @default("DRAFT")
+  payload      Json?
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  timelines Timeline[]
+
+  @@unique([projectId, version])
+  @@map("story_structure")
+}
+
+model Timeline {
+  id                String          @id @default(cuid())
+  projectId         String
+  project           Project         @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  storyStructureId  String?
+  storyStructure    StoryStructure? @relation(fields: [storyStructureId], references: [id], onDelete: SetNull)
+  version           Int             @default(1)
+  /// DRAFT | READY | SUPERSEDED
+  status            String          @default("DRAFT")
+  payload           Json?
+  createdAt         DateTime        @default(now())
+  updatedAt         DateTime        @updatedAt
+
+  clips      TimelineClip[]
+  renderJobs RenderJob[]
+
+  @@unique([projectId, version])
+  @@map("timeline")
+}
+
+model TimelineClip {
+  id         String     @id @default(cuid())
+  timelineId String
+  timeline   Timeline   @relation(fields: [timelineId], references: [id], onDelete: Cascade)
+  assetId    String?
+  asset      MediaAsset? @relation(fields: [assetId], references: [id], onDelete: SetNull)
+  sortOrder  Int
+  startMs    Int        @default(0)
+  endMs      Int        @default(0)
+  payload    Json?
+  createdAt  DateTime   @default(now())
+  updatedAt  DateTime   @updatedAt
+
+  @@index([timelineId, sortOrder])
+  @@map("timeline_clip")
+}
+
+model RenderJob {
+  id           String    @id @default(cuid())
+  projectId    String
+  project      Project   @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  timelineId   String?
+  timeline     Timeline? @relation(fields: [timelineId], references: [id], onDelete: SetNull)
+  /// Adapter key for the renderer implementation.
+  providerKey  String?
+  /// QUEUED | RUNNING | SUCCEEDED | FAILED | CANCELLED
+  status       String    @default("QUEUED")
+  outputKey    String?
+  error        String?
+  payload      Json?
+  createdAt    DateTime  @default(now())
+  updatedAt    DateTime  @updatedAt
+
+  movies FinishedMovie[]
+
+  @@index([projectId, createdAt])
+  @@map("render_job")
+}
+
+model FinishedMovie {
+  id          String     @id @default(cuid())
+  projectId   String
+  project     Project    @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  renderJobId String?
+  renderJob   RenderJob? @relation(fields: [renderJobId], references: [id], onDelete: SetNull)
+  title       String
+  durationMs  Int?
+  storageKey  String?
+  /// PROCESSING | READY | FAILED
+  status      String     @default("PROCESSING")
+  createdAt   DateTime   @default(now())
+  updatedAt   DateTime   @updatedAt
+
+  publications Publication[]
+
+  @@index([projectId, createdAt])
+  @@map("finished_movie")
+}
+
+model Publication {
+  id              String        @id @default(cuid())
+  movieId         String
+  movie           FinishedMovie @relation(fields: [movieId], references: [id], onDelete: Cascade)
+  /// Destination adapter key (youtube, download, …) — not an enum.
+  destinationKey  String
+  /// PENDING | PUBLISHED | FAILED
+  status          String        @default("PENDING")
+  externalId      String?
+  payload         Json?
+  createdAt       DateTime      @default(now())
+  updatedAt       DateTime      @updatedAt
+
+  @@index([movieId, createdAt])
+  @@map("publication")
+}
+
+/// Generic background work. Application services enqueue through JobQueuePort.
+model Job {
+  id          String    @id @default(cuid())
+  projectId   String?
+  project     Project?  @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  /// MEDIA_ANALYZE | AI_DIRECT | RENDER | PUBLISH | …
+  type        String
+  /// PENDING | RUNNING | SUCCEEDED | FAILED | CANCELLED
+  status      String    @default("PENDING")
+  payload     Json?
+  result      Json?
+  error       String?
+  attempts    Int       @default(0)
+  runAfter    DateTime  @default(now())
+  startedAt   DateTime?
+  finishedAt  DateTime?
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+
+  @@index([status, runAfter])
+  @@index([projectId, createdAt])
+  @@map("job")
+}
