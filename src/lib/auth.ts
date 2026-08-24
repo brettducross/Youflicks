@@ -23,5 +23,9 @@ export const auth = betterAuth({
     },
   },
   plugins: [nextCookies()],
-  trustedOrigins: [env.BETTER_AUTH_URL],
+  trustedOrigins: [
+    env.BETTER_AUTH_URL,
+    "http://127.0.0.1:43147",
+    "http://localhost:43147",
+  ],
 });
