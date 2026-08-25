@@ -28,9 +28,9 @@ Phase 1 does **not** implement that pipeline. It establishes a production-qualit
 ### Hard constraints from product direction
 
 1. Build incrementally. No fake AI Director, fake renderer, or fake social graph.
-2. Do not hard-code a single AI vendor.
-3. Keep AI, video processing, storage, and jobs behind abstractions.
-4. Keep the database schema extensible.
+2. **No AI provider is a default architectural dependency.** YouFlicks is capability-driven and provider-agnostic.
+3. Keep AI, video processing, storage, and jobs behind ports. Adapters implement capabilities; they are not the domain.
+4. Keep the database schema extensible. Persist YouFlicks-owned shapes, not vendor response types.
 5. No mobile apps, no social platform, no full AI Director in this phase.
 6. Ask before irreversible architecture bets. Reversible choices are documented below and proceeded with.
 
@@ -116,6 +116,18 @@ Uploads never talk to disk or S3 from the browser. The path is:
 
 The local filesystem adapter remains the development implementation. An S3/R2 adapter can replace it without changing `MediaService` or the UI.
 
+### Capability-driven AI (locked)
+
+This is a hard-to-reverse product rule. Later phases must follow it; they must not introduce a default vendor into the Director or core filmmaking services.
+
+- **Capabilities, not vendors.** The domain asks for work such as “analyze footage,” “propose a story,” or “render a cut.” It does not import OpenAI, Anthropic, Runway, or any other SDK.
+- **Providers are adapters.** Each vendor/model lives behind a port. Adding, removing, swapping, ranking, or routing providers must not require edits to the AI Director or to Project / Media / Story / Timeline / Render services.
+- **Many adapters per capability.** The same capability can have multiple providers. A router (or ranked list) selects among them. No adapter is the architectural default.
+- **Normalize at the boundary.** Adapter output is mapped into YouFlicks-owned schemas before it is stored or handed to the next pipeline stage. `providerKey` may be recorded for provenance. Vendor JSON must not become the `StoryStructure`, `MediaAnalysis`, or timeline contract.
+- **No vendor enums in Prisma.** Provider identity stays a string key. Lifecycle enums are ours (`PENDING`, `READY`, …).
+
+Current code matches the *direction* (ports exist; `aiDirector()` / `mediaAnalyzer()` / `renderer()` throw `providerNotConfigured`; schema uses `providerKey` + JSON). It does **not** yet implement a capability registry, multi-provider router, or the owned output schemas. Those belong in later phases — not as a hidden default vendor.
+
 ---
 
 ## 3. Technology choices
@@ -148,7 +160,7 @@ Raise these before changing them:
 1. **PostgreSQL as system of record** — already requested; do not silently switch to Mongo/SQLite for production.
 2. **Next.js as the web application** — already requested.
 3. **Multi-tenant `User → Project` ownership model** — switching to workspace/org tenancy later is a migration, not a rewrite, if we add `Organization` rather than replacing `User`.
-4. **Not binding the domain to one AI vendor** — do not put OpenAI/Anthropic/Runway types into Prisma enums.
+4. **Capability-driven, provider-agnostic AI** — no default AI vendor in the architecture. Do not put OpenAI/Anthropic/Runway types into Prisma enums, Director services, or filmmaking logic. Adapters normalize into YouFlicks-owned schemas. Providers for a capability may be added, removed, swapped, ranked, or routed without changing the Director.
 
 ---
 
@@ -185,11 +197,11 @@ Upload photos/videos on a project, store them through `StoragePort`, persist `Me
 
 ### Phase 2B — Media analysis
 
-Background job enqueue for analysis and the first adapter behind `MediaAnalyzerPort`. Not started.
+Background job enqueue for analysis behind `MediaAnalyzerPort`. Adapters normalize into a YouFlicks-owned analysis schema. Multiple analyzers may exist for the same capability. Not started.
 
 ### Phase 3 — Story & timeline
 
-StoryStructure persistence, a first AI Director adapter behind `AiDirectorPort`, timeline generation from story + assets, timeline review UI (not a full NLE).
+StoryStructure persistence in a YouFlicks-owned schema. The AI Director consumes normalized analysis and project context through ports — it does not call a vendor. Provider adapters may be routed/ranked without changing Director logic. Timeline review UI (not a full NLE).
 
 ### Phase 4 — Render & movie
 
