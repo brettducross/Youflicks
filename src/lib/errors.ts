@@ -5,6 +5,16 @@ export const ErrorCodes = {
   CONFLICT: "CONFLICT",
   FORBIDDEN: "FORBIDDEN",
   PROVIDER_NOT_CONFIGURED: "PROVIDER_NOT_CONFIGURED",
+  PROVIDER_UNAVAILABLE: "PROVIDER_UNAVAILABLE",
+  UNSUPPORTED_MEDIA: "UNSUPPORTED_MEDIA",
+  ANALYSIS_FAILED: "ANALYSIS_FAILED",
+  INVALID_ANALYSIS: "INVALID_ANALYSIS",
+  JOB_FAILED: "JOB_FAILED",
+  DIRECTOR_INPUT_INVALID: "DIRECTOR_INPUT_INVALID",
+  DIRECTOR_CAPABILITY_UNAVAILABLE: "DIRECTOR_CAPABILITY_UNAVAILABLE",
+  DIRECTOR_PLAN_INVALID: "DIRECTOR_PLAN_INVALID",
+  DIRECTOR_PROVIDER_UNAVAILABLE: "DIRECTOR_PROVIDER_UNAVAILABLE",
+  DIRECTOR_CONSTRAINT_CONFLICT: "DIRECTOR_CONSTRAINT_CONFLICT",
   INTERNAL: "INTERNAL",
 } as const;
 
@@ -55,6 +65,51 @@ export class AppError extends Error {
       501,
       { port },
     );
+  }
+
+  static providerUnavailable(message = "No analysis provider is available for that capability.") {
+    return new AppError(ErrorCodes.PROVIDER_UNAVAILABLE, message, 503);
+  }
+
+  static unsupportedMedia(message = "That media type cannot be analyzed yet.") {
+    return new AppError(ErrorCodes.UNSUPPORTED_MEDIA, message, 422);
+  }
+
+  static analysisFailed(message = "Media analysis failed.") {
+    return new AppError(ErrorCodes.ANALYSIS_FAILED, message, 502);
+  }
+
+  static invalidAnalysis(message: string, details?: Record<string, unknown>) {
+    return new AppError(ErrorCodes.INVALID_ANALYSIS, message, 422, details);
+  }
+
+  static jobFailed(message = "The background job failed.") {
+    return new AppError(ErrorCodes.JOB_FAILED, message, 500);
+  }
+
+  static directorInputInvalid(message: string, details?: Record<string, unknown>) {
+    return new AppError(ErrorCodes.DIRECTOR_INPUT_INVALID, message, 422, details);
+  }
+
+  static directorCapabilityUnavailable(capability: string) {
+    return new AppError(
+      ErrorCodes.DIRECTOR_CAPABILITY_UNAVAILABLE,
+      `No ready adapter can perform ${capability}.`,
+      503,
+      { capability },
+    );
+  }
+
+  static directorPlanInvalid(message: string, details?: Record<string, unknown>) {
+    return new AppError(ErrorCodes.DIRECTOR_PLAN_INVALID, message, 422, details);
+  }
+
+  static directorProviderUnavailable(message = "A required capability adapter is unavailable.") {
+    return new AppError(ErrorCodes.DIRECTOR_PROVIDER_UNAVAILABLE, message, 503);
+  }
+
+  static directorConstraintConflict(message: string) {
+    return new AppError(ErrorCodes.DIRECTOR_CONSTRAINT_CONFLICT, message, 409);
   }
 }
 

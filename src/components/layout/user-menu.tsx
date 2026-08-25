@@ -51,6 +51,7 @@ export function UserMenu({ name, email }: { name: string; email: string }) {
           </div>
         </DropdownMenuLabel>
         <DropdownMenuSeparator />
+        <DropdownMenuItem onClick={() => router.push("/taste")}>Taste</DropdownMenuItem>
         <DropdownMenuItem variant="destructive" onClick={signOut}>
           Sign out
         </DropdownMenuItem>

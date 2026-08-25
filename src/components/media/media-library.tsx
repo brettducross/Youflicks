@@ -1,14 +1,16 @@
 "use client";
 
-import { useMemo, useRef, useState } from "react";
-import { Film, ImagePlus, Loader2, Trash2, Upload, X } from "lucide-react";
+import { useEffect, useMemo, useRef, useState } from "react";
+import { Film, ImagePlus, Loader2, ScanSearch, Trash2, Upload, X } from "lucide-react";
 import { toast } from "sonner";
-import type { MediaAssetView } from "@/lib/media-types";
+import type { MediaAnalysisView, MediaAssetView } from "@/lib/media-types";
+import { analysisStatusLabel } from "@/server/domain/status";
 import {
   ACCEPT_ATTRIBUTE,
   DEFAULT_MAX_IMAGE_BYTES,
   DEFAULT_MAX_VIDEO_BYTES,
 } from "@/lib/media-types";
+import { AnalysisDetails } from "@/components/media/analysis-details";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { cn } from "@/lib/utils";
@@ -108,6 +110,49 @@ export function MediaLibrary({
   const [dragOver, setDragOver] = useState(false);
   const [active, setActive] = useState<MediaAssetView | null>(null);
   const [removingId, setRemovingId] = useState<string | null>(null);
+  const [analyzingId, setAnalyzingId] = useState<string | null>(null);
+  const [inspection, setInspection] = useState<MediaAnalysisView | null>(null);
+
+  const busy = assets.some(
+    (asset) => asset.analysisStatus === "QUEUED" || asset.analysisStatus === "PROCESSING",
+  );
+
+  useEffect(() => {
+    if (!busy) return;
+    const timer = window.setInterval(() => {
+      void fetch(`/api/projects/${projectId}/assets`)
+        .then((response) => response.json())
+        .then((payload: { assets?: MediaAssetView[] }) => {
+          if (payload.assets) {
+            setAssets(payload.assets);
+            setActive((current) =>
+              current ? (payload.assets?.find((entry) => entry.id === current.id) ?? current) : null,
+            );
+          }
+        })
+        .catch(() => undefined);
+    }, 1500);
+    return () => window.clearInterval(timer);
+  }, [busy, projectId]);
+
+  useEffect(() => {
+    if (!active?.latestAnalysisId) {
+      return;
+    }
+    const analysisId = active.latestAnalysisId;
+    const assetId = active.id;
+    void fetch(`/api/projects/${projectId}/assets/${assetId}/analyses/${analysisId}`)
+      .then((response) => response.json())
+      .then((payload: { analysis?: MediaAnalysisView }) => {
+        if (payload.analysis) setInspection(payload.analysis);
+      })
+      .catch(() => undefined);
+  }, [active?.id, active?.latestAnalysisId, projectId]);
+
+  const visibleInspection =
+    active?.latestAnalysisId && inspection?.id === active.latestAnalysisId
+      ? inspection
+      : null;
 
   const counts = useMemo(() => {
     const photos = assets.filter((asset) => asset.kind === "PHOTO").length;
@@ -157,6 +202,33 @@ export function MediaLibrary({
         }
       }),
     );
+  }
+
+  async function analyzeAsset(asset: MediaAssetView) {
+    setAnalyzingId(asset.id);
+    try {
+      const response = await fetch(`/api/projects/${projectId}/assets/${asset.id}/analyze`, {
+        method: "POST",
+      });
+      const payload = (await response.json().catch(() => null)) as
+        | { analysisStatus?: string; error?: { message?: string } }
+        | null;
+      if (!response.ok) {
+        throw new Error(payload?.error?.message || "Could not queue analysis.");
+      }
+      setAssets((current) =>
+        current.map((entry) =>
+          entry.id === asset.id
+            ? { ...entry, analysisStatus: payload?.analysisStatus || "QUEUED" }
+            : entry,
+        ),
+      );
+      toast.success(`Queued analysis for ${asset.filename}`);
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "Could not queue analysis.");
+    } finally {
+      setAnalyzingId(null);
+    }
   }
 
   async function removeAsset(asset: MediaAssetView) {
@@ -325,9 +397,14 @@ export function MediaLibrary({
                         : ""}
                     </p>
                   </div>
-                  {asset.kind === "VIDEO" ? (
-                    <Badge className="absolute top-3 left-3 bg-black/70 text-white">Film</Badge>
-                  ) : null}
+                  <div className="absolute top-3 left-3 flex flex-col gap-1">
+                    {asset.kind === "VIDEO" ? (
+                      <Badge className="bg-black/70 text-white">Film</Badge>
+                    ) : null}
+                    <Badge className="bg-black/70 text-white">
+                      {analysisStatusLabel(asset.analysisStatus)}
+                    </Badge>
+                  </div>
                 </div>
               </button>
               <Button
@@ -364,11 +441,27 @@ export function MediaLibrary({
                 <p className="text-xs text-muted-foreground">
                   {active.mimeType}
                   {active.width && active.height ? ` · ${active.width}×${active.height}` : ""}
+                  {` · ${analysisStatusLabel(active.analysisStatus)}`}
                 </p>
               </div>
-              <Button variant="ghost" size="icon-sm" onClick={() => setActive(null)}>
-                <X className="size-4" />
-              </Button>
+              <div className="flex items-center gap-2">
+                <Button
+                  variant="outline"
+                  size="sm"
+                  disabled={analyzingId === active.id}
+                  onClick={() => void analyzeAsset(active)}
+                >
+                  {analyzingId === active.id ? (
+                    <Loader2 className="size-3.5 animate-spin" />
+                  ) : (
+                    <ScanSearch className="size-3.5" />
+                  )}
+                  {active.analysisStatus === "COMPLETED" ? "Re-analyze" : "Analyze"}
+                </Button>
+                <Button variant="ghost" size="icon-sm" onClick={() => setActive(null)}>
+                  <X className="size-4" />
+                </Button>
+              </div>
             </div>
             <div className="flex max-h-[70vh] items-center justify-center bg-black">
               {active.kind === "VIDEO" ? (
@@ -387,6 +480,13 @@ export function MediaLibrary({
                 />
               )}
             </div>
+            {visibleInspection?.analysis ? (
+              <AnalysisDetails inspection={visibleInspection} />
+            ) : active.analysisStatus === "FAILED" ? (
+              <p className="border-t border-border/60 px-4 py-3 text-sm text-destructive">
+                Analysis failed. You can queue it again from Analyze.
+              </p>
+            ) : null}
           </div>
         </div>
       ) : null}

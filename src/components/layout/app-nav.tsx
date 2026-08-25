@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { Clapperboard, FolderKanban, LayoutDashboard } from "lucide-react";
+import { Clapperboard, FolderKanban, LayoutDashboard, Sparkles } from "lucide-react";
 import { BrandLockup } from "@/components/brand";
 import { buttonVariants } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
@@ -10,6 +10,7 @@ import { cn } from "@/lib/utils";
 const NAV = [
   { href: "/dashboard", label: "Dashboard", icon: LayoutDashboard },
   { href: "/projects", label: "Projects", icon: FolderKanban },
+  { href: "/taste", label: "Taste", icon: Sparkles },
 ];
 
 export function AppSidebar() {
@@ -45,7 +46,7 @@ export function AppSidebar() {
       <div className="border-t border-border/70 p-4">
         <div className="flex items-start gap-2 text-xs leading-relaxed text-muted-foreground">
           <Clapperboard className="mt-0.5 size-3.5 shrink-0 text-primary" />
-          <p>Phase 1 foundation. Media, direction, and render land in later phases.</p>
+          <p>Phase 2E. The Director is a contract, not a vendor and not a Generate button.</p>
         </div>
       </div>
     </aside>

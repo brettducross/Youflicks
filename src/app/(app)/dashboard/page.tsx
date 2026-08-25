@@ -40,8 +40,8 @@ export default async function DashboardPage() {
 
       <section className="mt-8 grid gap-4 sm:grid-cols-3">
         <StatCard label="Projects" value={String(count)} hint="Films in your studio" />
-        <StatCard label="Phase" value="2A" hint="Media ingest is live" />
-        <StatCard label="Pipeline stages" value="10" hint="Modeled in the database" />
+        <StatCard label="Phase" value="2E" hint="AI Director contract" />
+        <StatCard label="Pipeline stages" value="12" hint="Modeled in the database" />
       </section>
 
       <section className="mt-10 grid gap-6 lg:grid-cols-[1.2fr_0.8fr]">

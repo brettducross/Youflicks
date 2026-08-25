@@ -1,0 +1,31 @@
+import { describe, expect, it } from "vitest";
+import { AppError } from "@/lib/errors";
+import { CREATIVE_PLAN_SCHEMA_VERSION } from "@/server/director/schema";
+import { validateCreativePlan } from "@/server/director/validate";
+
+describe("CreativePlan schema", () => {
+  it("requires the YouFlicks schema version", () => {
+    expect(() => validateCreativePlan({ concept: "A birthday cut" })).toThrow(AppError);
+    expect(() => validateCreativePlan({ concept: "A birthday cut" })).toThrow(/schema/);
+  });
+
+  it("accepts version 1.0 with optional sections", () => {
+    const plan = validateCreativePlan({
+      schemaVersion: CREATIVE_PLAN_SCHEMA_VERSION,
+      concept: "Harbor afternoon",
+      tone: "Warm",
+      decisions: [{ kind: "tone", summary: "Keep it light" }],
+    });
+    expect(plan.schemaVersion).toBe("1.0");
+    expect(plan.concept).toBe("Harbor afternoon");
+  });
+
+  it("rejects an invalid decision object", () => {
+    expect(() =>
+      validateCreativePlan({
+        schemaVersion: CREATIVE_PLAN_SCHEMA_VERSION,
+        decisions: [{ kind: "", summary: "" }],
+      }),
+    ).toThrow(AppError);
+  });
+});

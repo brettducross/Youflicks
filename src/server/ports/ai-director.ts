@@ -1,25 +1,15 @@
 /**
- * AI Director port.
+ * AI Director port — YouFlicks-owned creative intelligence.
  *
- * Phase 1 ships the interface only. Do not add a vendor-specific
- * implementation until a Director adapter is intentionally selected.
+ * Models and providers are replaceable capabilities used by the Director,
+ * not the Director itself. This port has no providerKey.
+ *
+ * Phase 2E ships the contract only. container.aiDirector() stays unconfigured.
+ * Do not implement story generation, timelines, or rendering here.
  */
-export type ProposeStoryInput = {
-  projectId: string;
-  brief: string;
-  assetSummaries: Array<{
-    assetId: string;
-    kind: string;
-    notes?: string;
-  }>;
-};
-
-export type StoryDraft = {
-  providerKey: string;
-  payload: unknown;
-};
+import type { DirectorInput } from "@/server/director/input";
+import type { CreativePlan } from "@/server/director/schema";
 
 export interface AiDirectorPort {
-  readonly providerKey: string;
-  proposeStory(input: ProposeStoryInput): Promise<StoryDraft>;
+  composePlan(input: DirectorInput): Promise<CreativePlan>;
 }

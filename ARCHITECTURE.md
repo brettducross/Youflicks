@@ -126,7 +126,7 @@ This is a hard-to-reverse product rule. Later phases must follow it; they must n
 - **Normalize at the boundary.** Adapter output is mapped into YouFlicks-owned schemas before it is stored or handed to the next pipeline stage. `providerKey` may be recorded for provenance. Vendor JSON must not become the `StoryStructure`, `MediaAnalysis`, or timeline contract.
 - **No vendor enums in Prisma.** Provider identity stays a string key. Lifecycle enums are ours (`PENDING`, `READY`, …).
 
-Current code matches the *direction* (ports exist; `aiDirector()` / `mediaAnalyzer()` / `renderer()` throw `providerNotConfigured`; schema uses `providerKey` + JSON). It does **not** yet implement a capability registry, multi-provider router, or the owned output schemas. Those belong in later phases — not as a hidden default vendor.
+Phase 2B added the registry, normalizer, and owned analysis schema. Phase 2C registers one replaceable HTTP vision adapter behind the same contract. Phase 2E defines the AI Director as YouFlicks-owned creative intelligence — `aiDirector()` still throws `providerNotConfigured`. Models and providers are replaceable capabilities used by the Director, not the Director itself.
 
 ---
 
@@ -168,14 +168,19 @@ Raise these before changing them:
 
 | Deferred | Why |
 | --- | --- |
-| Full AI Director | Product spec not in this phase; would force a vendor choice. Port exists; no implementation. |
-| Media analysis / scene detection | Phase 2B; `MediaAnalyzerPort` exists with no adapter. |
+| Full AI Director | Contract exists (`DirectorInput`, `CreativePlan`). No generation. Port stays unconfigured. |
+| Named commercial analysis SDKs | Adapters may speak HTTP. Domain code must not import a vendor SDK or vendor enum. |
+| Cost-aware / ML provider routing | `ProviderSelectionPolicy` is replaceable. Phase 2C is deterministic. |
+| Billing / usage accounting | Routing hints exist (`estimatedCost`, `estimatedLatency`, `qualityTier`). No charges. |
 | Media transcoding / proxies | Ingest stores originals; analysis and render may transcode later. |
 | Timeline editor | Complex UI; depends on story structure. |
 | Rendering / FFmpeg / cloud render | Needs RendererPort implementation and workers. |
 | Publishing destinations | Spec-dependent (YouTube, etc.). |
 | Social platform | Explicitly out of scope. |
 | Mobile apps | Explicitly out of scope; keep the web app responsive. |
+| Advertising marketplace / ad delivery | Sponsor tables exist. No campaigns are served. No commercial ad provider. |
+| Payments / subscription tiers | Sponsorship prefs exist. Nobody is charged. |
+| Taste inference / ML | Signals can be recorded. Nothing is learned yet. |
 | Billing / subscriptions | Not required to prove the foundation. |
 | Redis, Kubernetes, multi-region | Premature. |
 | Real S3/R2 adapter | Added when object-store credentials exist. Interface is ready. |
@@ -195,9 +200,233 @@ Scaffolding, TypeScript, UI kit, Prisma + Postgres, auth, layout, landing, dashb
 
 Upload photos/videos on a project, store them through `StoragePort`, persist `MediaAsset` rows, show a media library with progress and per-file failure isolation. No analysis.
 
-### Phase 2B — Media analysis
+### Phase 2B — Media intelligence foundation
 
-Background job enqueue for analysis behind `MediaAnalyzerPort`. Adapters normalize into a YouFlicks-owned analysis schema. Multiple analyzers may exist for the same capability. Not started.
+Provider-neutral analysis schemas, `ProviderRegistry`, `MediaAnalyzerPort`, job-backed analysis, persistence of `MediaAnalysis` rows, and project UI status. Not the AI Director.
+
+External AI providers are replaceable adapters. The YouFlicks domain model does not depend on vendor-specific APIs or schemas.
+
+```
+Media Asset → Analysis Job → Adapter (via registry) → Normalization
+          → YouFlicks analysis document → MediaAnalysis row
+```
+
+- **Owned document** (`analysisSchemaVersion: "1.0"`) covers technical, visual, people, audio, moments, quality, and duplicate foundations. Absent fields stay absent. Confidence is never invented.
+- **`MediaAnalyzerPort.analyze`** returns that document plus provenance (`providerKey`, `modelId`, `modelVersion`). It never returns vendor SDK types.
+- **`ProviderRegistry`** maps capabilities (`IMAGE_ANALYSIS`, `VIDEO_ANALYSIS`, `AUDIO_ANALYSIS`, `TRANSCRIPTION`, `VISION`, `EMBEDDINGS`) to zero or more adapters. Multiple adapters may advertise the same capability.
+- **Normalization** (`normalizeAnalysisResult`) is the only path from adapter observations to persisted payload. Invalid observations are rejected.
+- **Jobs** use the existing `JobQueuePort` (`MEDIA_ANALYZE`). HTTP enqueues and returns 202. A worker claims, analyzes, and persists. Jobs retry on unexpected failures (max 3). Typed `AppError`s fail the job immediately.
+- **Re-analysis** inserts a new `MediaAnalysis` row. Previous rows are kept.
+- **Provenance** is informational. The filmmaking domain must not switch on vendor names.
+
+### Phase 2C — External analysis adapter
+
+A real outbound analysis adapter that implements the existing contract. The domain still asks for a **capability**, not a vendor.
+
+```
+Analyze request
+  → authorization
+  → enqueue MEDIA_ANALYZE
+  → worker
+  → ProviderSelectionPolicy
+  → ProviderRegistry
+  → MediaAnalysisAdapter
+  → normalized YouFlicks analysis
+  → MediaAnalysis
+  → status = ANALYZED
+```
+
+- **Configuration is adapter-local.** Optional env vars configure a preferred adapter key and one HTTP vision host (URL, key, model, timeout). Those values never enter Prisma or the filmmaking domain.
+- **`HttpVisionAdapter`** (`providerKey` default `http.vision`) talks to any chat-completions host that accepts multimodal `image_url` parts. It is not a vendor SDK and is not referenced by Media, Analysis, Story, Timeline, or Render services.
+- **Capabilities advertised by that adapter:** `IMAGE_ANALYSIS`, `VISION`, `VIDEO_ANALYSIS` (poster frame only). It does not claim `AUDIO_ANALYSIS`, `TRANSCRIPTION`, or `EMBEDDINGS`.
+- **Disabled without credentials.** Missing URL, API key, or model leaves the adapter `configured=false` / `enabled=false`. Analyze throws a typed `PROVIDER_NOT_CONFIGURED` error. No fake AI results.
+- **`ProviderSelectionPolicy`** is replaceable. Phase 2C ships `PreferredThenFirstPolicy`: ready adapters (`enabled && configured`) that advertise the capability; if `ANALYSIS_PROVIDER` matches one of them, use it; otherwise the first ready adapter. Later policies may rank quality, cost, latency, privacy, or health.
+- **Storage isolation.** Adapters load bytes through `StoragePort` via `loadVisualObject`. They never open `./storage` or receive filesystem paths.
+- **Normalization remains the domain contract.** Host JSON stays inside the adapter. Persistence stores the YouFlicks document plus provenance. Raw host responses are not saved and are not shown in the UI.
+- **Observability.** Structured logs: `analysis.requested`, `analysis.queued`, `analysis.started`, `analysis.provider_selected`, `analysis.completed`, `analysis.failed`. Logs may include providerKey, capability, assetId, projectId, duration, status. They must not include API keys, authorization headers, raw host bodies, private media URLs, or session tokens.
+- **Health.** `GET /api/health` reports each adapter as configured / enabled / available plus advertised capabilities. No secrets.
+- **Routing hints** (`qualityTier`, `estimatedCost`, `estimatedLatency`) exist for a future selector. No billing.
+
+#### Adding a future provider (no domain rewrite)
+
+```
+NewProviderAdapter implements MediaAnalysisAdapter
+        ↓
+register adapter
+        ↓
+advertise capabilities
+        ↓
+selection policy may choose it
+        ↓
+existing analysis pipeline remains unchanged
+```
+
+A new adapter implements `analyze()` + `health()`, advertises only the capabilities it can perform, and returns YouFlicks observations (or a shape the normalizer already accepts). Register it in `createAnalysisAdapters`. Do not add vendor columns to Prisma. Do not teach `AnalysisService` a vendor name.
+
+### Phase 2D — Personalization, attribution & sponsorship foundation
+
+Domain foundation only. No AI Director. No story. No timeline. No renderer. No payments. No advertising marketplace.
+
+```
+USER
+ ↓
+TASTE PROFILE
+ ↓
+PROJECT INTENT
+ ↓
+AI DIRECTOR          ← not implemented
+ ↓
+FILM
+ ↓
+PROVIDER ATTRIBUTION
+ ↓
+CREDITS BUILDER
+ ↓
+SPONSORSHIP ELIGIBILITY
+ ↓
+FILM CREDITS
+ ↓
+FUTURE RENDERER      ← not implemented
+```
+
+These are separate concerns:
+
+| Concern | Owns | Must not own |
+| --- | --- | --- |
+| Taste | Subscriber identity and stated/inferred preference | Provider selection, sponsorship |
+| Project intent | This film’s brief | Other films, sponsor copy |
+| Provider selection | Which capability adapter runs | Taste, credits, ads |
+| Attribution | Provenance of capability work | Vendor JSON, creative decisions |
+| Credits | Display names and order | Rendering, story, footage |
+| Sponsorship | Approved post-film presentation | Footage, story, Director, taste, timeline, render |
+
+#### Taste
+
+- `TasteProfile` (one per user) holds `TastePreference` (explicit) and `TasteSignal` (timestamped EXPLICIT or INFERRED).
+- Dimension keys are open strings (`favorite_films`, `visual_style`, `what_matters`, …). New dimensions do not need a schema migration of enums.
+- Explicit and inferred stay separate. “I love slow-burn films” is a preference. “They keep choosing longer cuts” is an inferred signal. No ML inference runs in this phase.
+
+#### Project intent
+
+- `ProjectCreativeIntent` is per project. When a field is set, it wins over taste for that film.
+- Example: taste is cinematic and slow; the birthday project says funny and fast.
+
+#### Attribution
+
+- Successful analysis records `ProviderAttribution`: `providerKey`, `capability`, `modelId`, `modelVersion`, timestamp, project/asset/job/analysis ids.
+- String keys only. No vendor columns. No raw host JSON.
+
+#### Credits pipeline
+
+- `CreditsService.buildForProject` is the Credits Builder. It does not import a renderer.
+- Always credits YouFlicks, then distinct attribution providers, then (only if the subscriber opted in) approved sponsor credit lines.
+
+#### Sponsorship isolation (locked)
+
+Sponsors **must not** modify footage selection, story structure, the AI Director, user taste, the timeline, or rendering decisions.
+
+Sponsors **may eventually** control approved credit presentation, approved end-card presentation, and approved advertisement placement — **only after the film itself is complete**.
+
+Taste, footage, analysis, and personal identifiers are never sent to sponsors. Capability adapters receive an empty taste hint in this phase (`tasteHintForCapability` returns `{}`). They must never receive the full `TasteProfile`.
+
+User sponsorship preferences default to **off**:
+
+- `ALLOW_SPONSOR_CREDITS`
+- `ALLOW_SPONSORED_END_CARD`
+- `ALLOW_VIDEO_ADS`
+- `ALLOW_PERSONALIZED_SPONSORING`
+
+### Phase 2E — AI Director architecture (this work)
+
+**The AI Director is YouFlicks-owned creative intelligence. Models and providers are replaceable capabilities used by the Director, not the Director itself.**
+
+**User taste describes the user's longer-term preferences. Project intent describes what the user wants for a particular film. Project intent may override taste for that film without changing the underlying taste profile.**
+
+**Sponsors may influence only approved post-film presentation and never creative decisions.**
+
+This phase is the contract only. No story generation. No timeline. No renderer. No commercial Director adapter. `container.aiDirector()` remains unconfigured.
+
+```
+USER
+ ↓
+TASTE PROFILE
+ ↓
+PROJECT CREATIVE INTENT
+ ↓
+NORMALIZED MEDIA UNDERSTANDING
+ ↓
+AI DIRECTOR
+ ↓
+CREATIVE PLAN
+ ↓
+FUTURE STORY
+ ↓
+FUTURE TIMELINE
+ ↓
+FUTURE RENDERER
+```
+
+Capability work stays a separate system. The Director asks; it does not pick a vendor:
+
+```
+CAPABILITY REQUEST
+ ↓
+PROVIDER REGISTRY
+ ↓
+PROVIDER SELECTION POLICY
+ ↓
+ADAPTER
+ ↓
+NORMALIZED RESULT
+ ↓
+AI DIRECTOR
+```
+
+After the film exists, presentation is a third system:
+
+```
+FILM
+ ↓
+PROVIDER ATTRIBUTION
+ ↓
+CREDITS
+ ↓
+SPONSORSHIP PRESENTATION
+ ↓
+FUTURE RENDERER
+```
+
+#### What the Director receives
+
+`DirectorInput` is a minimized YouFlicks brief: project intent, a taste brief (explicit preferences + inferred signal *counts*, no payloads), effective brief (`PROJECT INTENT > GENERAL TASTE` on conflict), media inventory (no storage keys or URLs), normalized analysis documents, constraints, and capability availability (`available: boolean` — no `providerKey`).
+
+It must not contain vendor JSON, API keys, sponsor records, user email/identity, or other projects.
+
+`extras.ignoreGeneralTaste: true` on project intent lets the Director treat intent as dominant for that film. The taste profile is not rewritten.
+
+#### What the Director produces later
+
+`CreativePlan` (`schemaVersion: "1.0"`) is the future bridge to story / timeline / render. Phase 2E validates the shape. It does not generate one.
+
+#### Iteration (not implemented)
+
+```
+USER → DIRECTOR → CREATIVE PLAN → FILM → USER FEEDBACK → TASTE SIGNAL → DIRECTOR → REVISED PLAN
+```
+
+Feedback may become an **inferred** `TasteSignal`. It must not become a `TastePreference` from a single film.
+
+#### Memory (do not collapse)
+
+User taste, project intent, taste signals, project decisions, film results, and user feedback stay separate types. There is no generic “AI memory” table.
+
+#### Evaluation (boundary only)
+
+The Director may later review a plan against intent, taste, media, constraints, coherence, pacing, and emotion. Phase 2E ships `createDirectorEvaluationBoundary` with `status: "NOT_IMPLEMENTED"`. No scores. No invented confidence.
+
+#### Failure
+
+Typed errors: `DIRECTOR_INPUT_INVALID`, `DIRECTOR_CAPABILITY_UNAVAILABLE`, `DIRECTOR_PLAN_INVALID`, `DIRECTOR_PROVIDER_UNAVAILABLE`, `DIRECTOR_CONSTRAINT_CONFLICT`. Missing capabilities fail clearly. No fake creative fallbacks.
 
 ### Phase 3 — Story & timeline
 
@@ -225,6 +454,49 @@ The first *product* MVP is **not** Phase 1. Phase 1 is the platform floor.
 
 Anything that does not serve that loop (social, mobile, multi-provider marketplace, public profiles) waits.
 
+Phase 2E exit criteria:
+
+- [x] Provider-neutral `DirectorInput` and `CreativePlan` contracts
+- [x] Director requests capabilities; registry/policy select adapters
+- [x] Project intent overrides conflicting taste without rewriting taste
+- [x] Explicit vs inferred taste remain distinct in Director input
+- [x] Sponsor data cannot enter Director input
+- [x] No Director HTTP API, chat UI, or Generate Film control
+- [x] `aiDirector()` still unconfigured
+
+Phase 2D exit criteria:
+
+- [x] TasteProfile / TastePreference / TasteSignal with explicit vs inferred
+- [x] ProjectCreativeIntent that overrides taste
+- [x] ProviderAttribution written on analysis completion
+- [x] FilmCredits + Credits Builder (no renderer)
+- [x] Sponsor / Campaign / Offer / Placement foundation
+- [x] Sponsorship cannot touch creative decisions or private taste/media
+- [x] User sponsorship preferences default off
+- [x] Authenticated taste, intent, attribution, and credits APIs
+- [x] Simple Taste and project-intent UI
+
+Phase 2C exit criteria:
+
+- [x] Provider-neutral analysis configuration (env only; no Prisma vendor fields)
+- [x] One real external analysis adapter behind `MediaAnalysisAdapter`
+- [x] Capability-based registry lookup and replaceable `ProviderSelectionPolicy`
+- [x] Media loaded through `StoragePort`, never filesystem paths
+- [x] Normalized YouFlicks document persisted; raw host JSON not stored or shown
+- [x] Structured analysis logs without secrets
+- [x] Provider status on `/api/health`
+- [x] Media library shows analysis state and existing normalized fields only
+
+Phase 2B exit criteria:
+
+- [x] Versioned YouFlicks-owned analysis schema
+- [x] Provider-neutral `MediaAnalyzerPort` and adapter contract
+- [x] Capability registry
+- [x] Job-backed analysis that does not block HTTP
+- [x] Persistence of normalized `MediaAnalysis` with provenance
+- [x] Re-analysis keeps prior rows
+- [x] Project UI shows analysis state and normalized results
+
 Phase 2A exit criteria:
 
 - [x] Authenticated upload of photos/videos on a project
@@ -249,15 +521,18 @@ Phase 1 exit criteria:
 ```
 src/app/(marketing)     Landing
 src/app/(auth)          Sign in / sign up
-src/app/(app)           Authenticated shell (dashboard, projects)
-src/app/api             Auth, health, media ingest
-src/components          UI, layout, media library
+src/app/(app)           Authenticated shell (dashboard, projects, taste)
+src/app/api             Auth, health, media, analysis, taste, intent, credits
+src/components          UI, layout, media library, taste, intent
 src/lib                 env, errors, logger (no I/O)
 src/server/db           Prisma client
 src/server/media        MIME sniffing, size limits, previews
+src/server/analysis     Owned schemas, normalizer, registry, selection
+src/server/personalization  Taste brief, privacy boundary
+src/server/director     Director input, plan schema, capability gateway
 src/server/ports        Interfaces
-src/server/adapters     Real adapters (local storage, postgres jobs)
-src/server/services     ProjectService, MediaService
+src/server/adapters     Local storage, Postgres jobs, analysis adapters
+src/server/services     Project, Media, Analysis, Taste, Intent, Credits
 prisma/schema.prisma    Extensible domain schema
 docker-compose.yml      Local Postgres
 ```

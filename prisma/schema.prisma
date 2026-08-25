@@ -2,8 +2,8 @@
 //
 // Status and provider fields are strings (not Prisma enums) so later
 // pipeline stages and vendors can be added without a breaking enum migration.
-// JSON columns hold provider-specific payloads behind the ports in
-// src/server/ports.
+// JSON columns hold YouFlicks-owned payloads. Provider identity is a
+// string key (provenance), never a vendor enum.
 
 generator client {
   provider = "prisma-client"
@@ -26,9 +26,12 @@ model User {
   image         String?
   createdAt     DateTime  @default(now())
   updatedAt     DateTime  @updatedAt
-  sessions      Session[]
-  accounts      Account[]
-  projects      Project[]
+  sessions                 Session[]
+  accounts                 Account[]
+  projects                 Project[]
+  tasteProfile             TasteProfile?
+  sponsorshipPreference    UserSponsorshipPreference?
+  sponsors                 Sponsor[]
 
   @@map("user")
 }
@@ -105,6 +108,10 @@ model Project {
   renderJobs       RenderJob[]
   movies           FinishedMovie[]
   jobs             Job[]
+  creativeIntent   ProjectCreativeIntent?
+  attributions     ProviderAttribution[]
+  credits          FilmCredits[]
+  sponsorPlacements SponsorPlacement[]
 
   @@index([ownerId, updatedAt])
   @@map("project")
@@ -129,6 +136,8 @@ model MediaAsset {
   height      Int?
   /// UPLOADING | READY | FAILED | ARCHIVED
   status      String   @default("UPLOADING")
+  /// NOT_ANALYZED | QUEUED | PROCESSING | COMPLETED | FAILED
+  analysisStatus String @default("NOT_ANALYZED")
   checksum    String?
   createdAt   DateTime @default(now())
   updatedAt   DateTime @updatedAt
@@ -144,12 +153,20 @@ model MediaAnalysis {
   id           String     @id @default(cuid())
   assetId      String
   asset        MediaAsset @relation(fields: [assetId], references: [id], onDelete: Cascade)
-  /// Adapter key, e.g. a future analyzer id — not a vendor enum.
+  /// Adapter key — provenance only, never a vendor enum.
   providerKey  String
-  /// PENDING | RUNNING | SUCCEEDED | FAILED
-  status       String     @default("PENDING")
+  /// Generic model identifier (provenance). Not a vendor column.
+  modelId      String?
+  /// Generic model version (provenance).
+  modelVersion String?
+  /// YouFlicks-owned analysis document version, e.g. "1.0"
+  schemaVersion String    @default("1.0")
+  /// QUEUED | PROCESSING | COMPLETED | FAILED
+  status       String     @default("QUEUED")
+  /// Normalized YouFlicks analysis document. Never raw vendor JSON.
   payload      Json?
   error        String?
+  analyzedAt   DateTime?
   createdAt    DateTime   @default(now())
   updatedAt    DateTime   @updatedAt
 
@@ -250,6 +267,8 @@ model FinishedMovie {
   updatedAt   DateTime   @updatedAt
 
   publications Publication[]
+  credits      FilmCredits[]
+  placements   SponsorPlacement[]
 
   @@index([projectId, createdAt])
   @@map("finished_movie")
@@ -294,4 +313,219 @@ model Job {
   @@index([status, runAfter])
   @@index([projectId, createdAt])
   @@map("job")
+}
+
+// ---------------------------------------------------------------------------
+// Phase 2D — Taste, intent, attribution, credits, sponsorship foundation
+// String keys only. No vendor enums. Sponsors never own creative fields.
+// ---------------------------------------------------------------------------
+
+/// Subscriber taste container. One per user. Not sent to providers or sponsors.
+model TasteProfile {
+  id        String   @id @default(cuid())
+  userId    String   @unique
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  notes     String?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  preferences TastePreference[]
+  signals     TasteSignal[]
+
+  @@map("taste_profile")
+}
+
+/// Explicit subscriber preference. Dimension keys are open strings.
+model TastePreference {
+  id        String       @id @default(cuid())
+  profileId String
+  profile   TasteProfile @relation(fields: [profileId], references: [id], onDelete: Cascade)
+  /// e.g. favorite_films, genres, pacing, visual_style — not an enum.
+  dimension String
+  value     String
+  /// EXPLICIT only. Inferred observations live on TasteSignal.
+  source    String       @default("EXPLICIT")
+  createdAt DateTime     @default(now())
+  updatedAt DateTime     @updatedAt
+
+  @@index([profileId, dimension])
+  @@map("taste_preference")
+}
+
+/// Timestamped observation. origin is EXPLICIT or INFERRED.
+model TasteSignal {
+  id         String       @id @default(cuid())
+  profileId  String
+  profile    TasteProfile @relation(fields: [profileId], references: [id], onDelete: Cascade)
+  /// USER_SELECTED_MOVIE | USER_SELECTED_STYLE | USER_RATED_FILM | …
+  kind       String
+  /// EXPLICIT | INFERRED
+  origin     String
+  payload    Json?
+  recordedAt DateTime     @default(now())
+  createdAt  DateTime     @default(now())
+
+  @@index([profileId, recordedAt])
+  @@index([profileId, kind])
+  @@map("taste_signal")
+}
+
+/// Defaults are off. The subscriber must opt in to any sponsorship presentation.
+model UserSponsorshipPreference {
+  id                           String   @id @default(cuid())
+  userId                       String   @unique
+  user                         User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  allowSponsorCredits          Boolean  @default(false)
+  allowSponsoredEndCard        Boolean  @default(false)
+  allowVideoAds                Boolean  @default(false)
+  allowPersonalizedSponsoring  Boolean  @default(false)
+  createdAt                    DateTime @default(now())
+  updatedAt                    DateTime @updatedAt
+
+  @@map("user_sponsorship_preference")
+}
+
+/// Per-project creative brief. Overrides TasteProfile for this film only.
+model ProjectCreativeIntent {
+  id                    String   @id @default(cuid())
+  projectId             String   @unique
+  project               Project  @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  purpose               String?
+  audience              String?
+  mood                  String?
+  desiredDurationMs     Int?
+  narrativeStyle        String?
+  visualStyle           String?
+  musicStyle            String?
+  explicitInstructions  String?
+  extras                Json?
+  createdAt             DateTime @default(now())
+  updatedAt             DateTime @updatedAt
+
+  @@map("project_creative_intent")
+}
+
+/// Provenance for a capability adapter invocation. Not vendor JSON.
+model ProviderAttribution {
+  id           String   @id @default(cuid())
+  projectId    String
+  project      Project  @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  assetId      String?
+  analysisId   String?
+  jobId        String?
+  providerKey  String
+  capability   String
+  modelId      String?
+  modelVersion String?
+  recordedAt   DateTime @default(now())
+  createdAt    DateTime @default(now())
+
+  @@index([projectId, recordedAt])
+  @@index([assetId])
+  @@map("provider_attribution")
+}
+
+model FilmCredits {
+  id        String   @id @default(cuid())
+  projectId String
+  project   Project  @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  movieId   String?
+  movie     FinishedMovie? @relation(fields: [movieId], references: [id], onDelete: SetNull)
+  /// DRAFT | READY
+  status    String   @default("DRAFT")
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  lines FilmCreditLine[]
+
+  @@index([projectId, createdAt])
+  @@map("film_credits")
+}
+
+model FilmCreditLine {
+  id           String      @id @default(cuid())
+  creditsId    String
+  credits      FilmCredits @relation(fields: [creditsId], references: [id], onDelete: Cascade)
+  displayName  String
+  providerKey  String?
+  /// YOUFLICKS | ANALYSIS_PROVIDER | TRANSCRIPTION_PROVIDER | MUSIC_PROVIDER | VOICE_PROVIDER | RENDER_PROVIDER | SPONSOR | CAMPAIGN
+  creditType   String
+  displayOrder Int
+  logoKey      String?
+  audioKey     String?
+  videoKey     String?
+  linkUrl      String?
+  createdAt    DateTime    @default(now())
+  updatedAt    DateTime    @updatedAt
+
+  @@index([creditsId, displayOrder])
+  @@map("film_credit_line")
+}
+
+model Sponsor {
+  id        String   @id @default(cuid())
+  ownerId   String
+  owner     User     @relation(fields: [ownerId], references: [id], onDelete: Cascade)
+  name      String
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  campaigns SponsorCampaign[]
+
+  @@index([ownerId])
+  @@map("sponsor")
+}
+
+model SponsorCampaign {
+  id        String   @id @default(cuid())
+  sponsorId String
+  sponsor   Sponsor  @relation(fields: [sponsorId], references: [id], onDelete: Cascade)
+  name      String
+  /// DRAFT | ACTIVE | PAUSED | ARCHIVED
+  status    String   @default("DRAFT")
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  offers SponsorOffer[]
+
+  @@index([sponsorId])
+  @@map("sponsor_campaign")
+}
+
+model SponsorOffer {
+  id            String          @id @default(cuid())
+  campaignId    String
+  campaign      SponsorCampaign @relation(fields: [campaignId], references: [id], onDelete: Cascade)
+  /// CREDIT_ONLY | LOGO | FEATURED_LOGO | ANIMATED_CREDIT | SPONSORED_END_CARD | AUDIO_MESSAGE | VIDEO_ADVERTISEMENT
+  placementKind String
+  displayName   String
+  logoKey       String?
+  audioKey      String?
+  videoKey      String?
+  linkUrl       String?
+  createdAt     DateTime        @default(now())
+  updatedAt     DateTime        @updatedAt
+
+  placements SponsorPlacement[]
+
+  @@index([campaignId])
+  @@map("sponsor_offer")
+}
+
+/// Approved post-film presentation only. Never a creative input.
+model SponsorPlacement {
+  id        String       @id @default(cuid())
+  offerId   String
+  offer     SponsorOffer @relation(fields: [offerId], references: [id], onDelete: Cascade)
+  projectId String
+  project   Project      @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  movieId   String?
+  movie     FinishedMovie? @relation(fields: [movieId], references: [id], onDelete: SetNull)
+  /// ELIGIBLE | APPROVED | DECLINED | APPLIED
+  status    String       @default("ELIGIBLE")
+  createdAt DateTime     @default(now())
+  updatedAt DateTime     @updatedAt
+
+  @@index([projectId])
+  @@map("sponsor_placement")
 }

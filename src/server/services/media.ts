@@ -28,8 +28,10 @@ type MediaAssetRow = {
   height: number | null;
   durationMs: number | null;
   status: string;
+  analysisStatus?: string;
   createdAt: Date;
   previewKey: string | null;
+  analyses?: Array<{ id: string }>;
 };
 
 export class MediaService {
@@ -50,6 +52,8 @@ export class MediaService {
       height: asset.height,
       durationMs: asset.durationMs,
       status: asset.status,
+      analysisStatus: asset.analysisStatus ?? "NOT_ANALYZED",
+      latestAnalysisId: asset.analyses?.[0]?.id ?? null,
       createdAt: asset.createdAt.toISOString(),
       previewUrl: asset.previewKey
         ? `/api/projects/${projectId}/assets/${asset.id}/file?variant=preview`
@@ -63,6 +67,14 @@ export class MediaService {
     const assets = await prisma.mediaAsset.findMany({
       where: { projectId, status: { not: MediaStatus.ARCHIVED } },
       orderBy: { createdAt: "desc" },
+      include: {
+        analyses: {
+          where: { status: "COMPLETED" },
+          orderBy: { createdAt: "desc" },
+          take: 1,
+          select: { id: true },
+        },
+      },
     });
     return assets.map((asset) => this.toView(projectId, asset));
   }

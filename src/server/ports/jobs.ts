@@ -8,6 +8,8 @@ export type JobRecord = {
   error: string | null;
   attempts: number;
   runAfter: Date;
+  startedAt: Date | null;
+  finishedAt: Date | null;
   createdAt: Date;
   updatedAt: Date;
 };
@@ -19,14 +21,24 @@ export type EnqueueJobInput = {
   runAfter?: Date;
 };
 
+export type FailJobInput = {
+  error: string;
+  retry?: boolean;
+  retryAfter?: Date;
+  maxAttempts?: number;
+};
+
 /**
  * Background work port.
  *
  * HTTP handlers must not run AI or video processing inline.
- * Enqueue a job and return; a worker (Phase 2+) will claim it.
+ * Enqueue a job and return; a worker claims it.
  */
 export interface JobQueuePort {
   enqueue(input: EnqueueJobInput): Promise<JobRecord>;
   get(id: string): Promise<JobRecord | null>;
   listByProject(projectId: string): Promise<JobRecord[]>;
+  claimNext(types?: string[]): Promise<JobRecord | null>;
+  complete(id: string, result?: unknown): Promise<JobRecord>;
+  fail(id: string, input: FailJobInput): Promise<JobRecord>;
 }

@@ -5,6 +5,7 @@ import { Badge } from "@/components/ui/badge";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { buttonVariants } from "@/components/ui/button";
 import { MediaLibrary } from "@/components/media/media-library";
+import { CreativeIntentForm } from "@/components/projects/creative-intent-form";
 import { cn } from "@/lib/utils";
 import { requireUser } from "@/server/auth/session";
 import { projectStatusLabel } from "@/server/domain/status";
@@ -17,7 +18,7 @@ export const metadata = {
 const LATER_SECTIONS = [
   {
     title: "Story",
-    body: "AI Director output will land in StoryStructure. No director adapter is configured yet.",
+    body: "AI Director output will land in StoryStructure. The Director is still a port, not a vendor.",
   },
   {
     title: "Timeline",
@@ -44,6 +45,7 @@ export default async function ProjectDetailPage({
   }
 
   const assets = await services.media.listForProject(user.id, id);
+  const brief = await services.intent.resolveBrief(user.id, id);
 
   return (
     <main className="mx-auto w-full max-w-6xl px-4 py-8 sm:px-6">
@@ -66,6 +68,22 @@ export default async function ProjectDetailPage({
       </div>
 
       <MediaLibrary projectId={project.id} initialAssets={assets} />
+
+      <Card className="mt-10">
+        <CardHeader>
+          <CardTitle className="font-heading text-xl">Creative intent</CardTitle>
+          <CardDescription>
+            How this film should feel. It overrides your usual taste for this project only.
+          </CardDescription>
+        </CardHeader>
+        <CardContent>
+          <CreativeIntentForm
+            projectId={project.id}
+            initialIntent={brief.intent}
+            initialEffective={brief.effective}
+          />
+        </CardContent>
+      </Card>
 
       <div className="mt-10 grid gap-4 md:grid-cols-3">
         {LATER_SECTIONS.map((section) => (
