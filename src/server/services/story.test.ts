@@ -3,7 +3,6 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import type { Prisma } from "@/generated/prisma/client";
-import { AppError } from "@/lib/errors";
 import { LocalDeterministicStoryComposer } from "@/server/adapters/story/local-deterministic";
 import { LocalStorageAdapter } from "@/server/adapters/storage/local";
 import { PostgresJobQueue } from "@/server/adapters/jobs/postgres";

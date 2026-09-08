@@ -7,6 +7,9 @@ import {
 } from "@/server/story/schema";
 
 export function validateStoryDocument(raw: unknown): StoryDocument {
+  assertNoDocumentLevelTiming(raw);
+  assertTargetDurationActsOnly(raw);
+  assertNoSmuggledEditorialFields(raw);
   const parsed = storyDocumentSchema.safeParse(raw);
   if (!parsed.success) {
     throw AppError.storyDocumentInvalid("Story document does not match the YouFlicks schema.", {
@@ -14,9 +17,6 @@ export function validateStoryDocument(raw: unknown): StoryDocument {
     });
   }
   assertStoryDocumentSchemaVersion(parsed.data);
-  assertNoSmuggledEditorialFields(parsed.data);
-  assertNoDocumentLevelTiming(raw);
-  assertTargetDurationActsOnly(raw);
   assertUniqueNarrativeIds(parsed.data);
   return parsed.data;
 }
