@@ -19,6 +19,19 @@ const envSchema = z.object({
   ANALYSIS_HTTP_API_KEY: z.string().optional(),
   ANALYSIS_HTTP_MODEL: z.string().optional(),
   ANALYSIS_HTTP_TIMEOUT_MS: z.coerce.number().int().positive().default(45_000),
+  DIRECTOR_HTTP_PROVIDER_KEY: z.string().default("http.director"),
+  DIRECTOR_HTTP_BASE_URL: z.string().optional(),
+  DIRECTOR_HTTP_API_KEY: z.string().optional(),
+  DIRECTOR_HTTP_MODEL: z.string().optional(),
+  DIRECTOR_HTTP_TIMEOUT_MS: z.coerce.number().int().positive().default(60_000),
+  /**
+   * Explicit opt-in for local/deterministic Director in development/test.
+   * Forced false in production regardless of the env var value.
+   */
+  DIRECTOR_ALLOW_LOCAL: z
+    .enum(["true", "false", "1", "0", ""])
+    .optional()
+    .transform((value) => value === "true" || value === "1"),
 });
 
 export type AppEnv = z.infer<typeof envSchema>;
@@ -40,6 +53,12 @@ function readEnv(): AppEnv {
     ANALYSIS_HTTP_API_KEY: process.env.ANALYSIS_HTTP_API_KEY || undefined,
     ANALYSIS_HTTP_MODEL: process.env.ANALYSIS_HTTP_MODEL || undefined,
     ANALYSIS_HTTP_TIMEOUT_MS: process.env.ANALYSIS_HTTP_TIMEOUT_MS ?? 45_000,
+    DIRECTOR_HTTP_PROVIDER_KEY: process.env.DIRECTOR_HTTP_PROVIDER_KEY ?? "http.director",
+    DIRECTOR_HTTP_BASE_URL: process.env.DIRECTOR_HTTP_BASE_URL || undefined,
+    DIRECTOR_HTTP_API_KEY: process.env.DIRECTOR_HTTP_API_KEY || undefined,
+    DIRECTOR_HTTP_MODEL: process.env.DIRECTOR_HTTP_MODEL || undefined,
+    DIRECTOR_HTTP_TIMEOUT_MS: process.env.DIRECTOR_HTTP_TIMEOUT_MS ?? 60_000,
+    DIRECTOR_ALLOW_LOCAL: process.env.DIRECTOR_ALLOW_LOCAL ?? "",
   });
 
   if (!parsed.success) {
@@ -49,7 +68,11 @@ function readEnv(): AppEnv {
     throw new Error(`Invalid environment configuration: ${details}`);
   }
 
-  return parsed.data;
+  const data = parsed.data;
+  if (data.NODE_ENV === "production" && data.DIRECTOR_ALLOW_LOCAL) {
+    return { ...data, DIRECTOR_ALLOW_LOCAL: false };
+  }
+  return data;
 }
 
 export const env = readEnv();

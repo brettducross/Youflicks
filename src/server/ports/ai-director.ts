@@ -4,7 +4,8 @@
  * Models and providers are replaceable capabilities used by the Director,
  * not the Director itself. This port has no providerKey.
  *
- * Phase 2E ships the contract only. container.aiDirector() stays unconfigured.
+ * Phase 2E ships the contract only. Phase 2F executes it through adapters
+ * behind this port without amending the return type.
  * Do not implement story generation, timelines, or rendering here.
  */
 import type { DirectorInput } from "@/server/director/input";

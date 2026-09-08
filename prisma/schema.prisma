@@ -87,7 +87,7 @@ model Verification {
 
 // ---------------------------------------------------------------------------
 // Filmmaking pipeline
-// User → Project → Media Assets → Media Analysis → AI Director
+// User → Project → Media Assets → Media Analysis → AI Director → CreativePlan
 //      → Story Structure → Timeline → Rendering → Finished Movie → Publishing
 // ---------------------------------------------------------------------------
 
@@ -103,6 +103,7 @@ model Project {
   updatedAt   DateTime @updatedAt
 
   assets           MediaAsset[]
+  creativePlans    CreativePlan[]
   storyStructures  StoryStructure[]
   timelines        Timeline[]
   renderJobs       RenderJob[]
@@ -115,6 +116,35 @@ model Project {
 
   @@index([ownerId, updatedAt])
   @@map("project")
+}
+
+/// Phase 2F — YouFlicks-owned Director output. Meaning-level only.
+/// Not StoryStructure. Not a timeline. Not a render. Versions are preserved.
+model CreativePlan {
+  id               String   @id @default(cuid())
+  projectId        String
+  project          Project  @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  version          Int
+  /// DRAFT | READY | SUPERSEDED | FAILED
+  status           String   @default("DRAFT")
+  /// Validated YouFlicks-owned CreativePlan JSON (schemaVersion "1.0").
+  plan             Json
+  jobId            String?
+  /// SHA-256 of assembled DirectorInput. Raw input is not stored.
+  inputFingerprint String
+  /// Adapter key — provenance only, never a vendor enum.
+  providerKey      String
+  /// Capability the Director used (e.g. STORY_REASONING).
+  capability       String
+  modelId          String?
+  modelVersion     String?
+  createdAt        DateTime @default(now())
+  updatedAt        DateTime @updatedAt
+
+  @@unique([projectId, version])
+  @@index([projectId, createdAt])
+  @@index([jobId])
+  @@map("creative_plan")
 }
 
 model MediaAsset {

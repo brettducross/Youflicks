@@ -10,6 +10,7 @@ import { ProviderRegistry } from "@/server/analysis/registry";
 import { RegistryMediaAnalyzer } from "@/server/analysis/registry-analyzer";
 import { PreferredThenFirstPolicy } from "@/server/analysis/selection";
 import { DirectorCapabilityGateway } from "@/server/director/capabilities";
+import { resolveDirectorAdapter } from "@/server/director/provider-config";
 import type { AiDirectorPort } from "@/server/ports/ai-director";
 import type { JobQueuePort } from "@/server/ports/jobs";
 import type { MediaAnalyzerPort } from "@/server/ports/media-analyzer";
@@ -20,6 +21,8 @@ import { AnalysisWorker } from "@/server/services/analysis-worker";
 import { AttributionService } from "@/server/services/attribution";
 import { CreditsService } from "@/server/services/credits";
 import { DirectorContractService } from "@/server/services/director-contract";
+import { DirectorService } from "@/server/services/director";
+import { DirectorWorker } from "@/server/services/director-worker";
 import { IntentService } from "@/server/services/intent";
 import { MediaService } from "@/server/services/media";
 import { ProjectService } from "@/server/services/projects";
@@ -39,6 +42,8 @@ export type ServiceContainer = {
   credits: CreditsService;
   sponsorship: SponsorshipService;
   director: DirectorContractService;
+  directorService: DirectorService;
+  directorWorker: DirectorWorker;
   providers: ProviderRegistry;
   mediaAnalyzer(): MediaAnalyzerPort;
   aiDirector(): AiDirectorPort;
@@ -83,6 +88,27 @@ function createServices(): ServiceContainer {
     new DirectorCapabilityGateway(providers, new PreferredThenFirstPolicy()),
   );
 
+  const directorService = new DirectorService(
+    jobs,
+    director,
+    projects,
+    attribution,
+    () => {
+      const resolved = resolveDirectorAdapter();
+      if (!resolved) return null;
+      return { adapter: resolved.adapter, attribution: resolved.attribution };
+    },
+    () => {
+      const resolved = resolveDirectorAdapter();
+      return {
+        productionAvailable: Boolean(resolved?.productionAvailable),
+        localDevAvailable: Boolean(resolved?.localDevAvailable),
+        canCompose: Boolean(resolved),
+      };
+    },
+  );
+  const directorWorker = new DirectorWorker(jobs, directorService);
+
   return {
     storage,
     jobs,
@@ -96,12 +122,18 @@ function createServices(): ServiceContainer {
     credits,
     sponsorship,
     director,
+    directorService,
+    directorWorker,
     providers,
     mediaAnalyzer() {
       return analyzer;
     },
     aiDirector() {
-      throw AppError.providerNotConfigured("AiDirectorPort");
+      const resolved = resolveDirectorAdapter();
+      if (!resolved) {
+        throw AppError.providerNotConfigured("AiDirectorPort");
+      }
+      return resolved.adapter;
     },
     renderer() {
       throw AppError.providerNotConfigured("RendererPort");

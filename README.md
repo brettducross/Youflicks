@@ -4,7 +4,7 @@
 
 YouFlicks is an AI-powered filmmaking platform that turns a person’s photos, videos, memories, and ideas into a finished movie.
 
-This repository currently includes **Phase 1** through **Phase 2E** (AI Director *contract*). It does not generate films, run an AI Director, render a timeline, take payments, or serve ads.
+This repository currently includes **Phase 1** through **Phase 2F** (Director execution & CreativePlan persistence). It does not generate story structures, timelines, or rendered films, take payments, or serve ads.
 
 Read [ARCHITECTURE.md](./ARCHITECTURE.md) for the analysis, technology choices, deferred work, roadmap, and MVP definition.
 
@@ -17,21 +17,21 @@ Read [ARCHITECTURE.md](./ARCHITECTURE.md) for the analysis, technology choices, 
 - Media ingest: upload photos/videos into a project, store them through `StoragePort`, list and remove them in a media library
 - Media intelligence: enqueue analysis jobs, select an adapter by capability, normalize results into a YouFlicks-owned schema, persist `MediaAnalysis` with provenance, and record provider attribution
 - Taste profile, project creative intent, film credits, and sponsorship **foundation** (no marketplace, no ads served)
-- AI Director **contract**: minimized `DirectorInput`, versioned `CreativePlan`, capability requests through the existing registry. The Director is not implemented.
-- Extensible domain schema: User → Project → Media → Analysis → Story → Timeline → Render → Movie → Publish
+- AI Director **execution (Phase 2F)**: enqueue `AI_DIRECT`, compose through `AiDirectorPort`, validate, and persist a versioned YouFlicks-owned `CreativePlan` (not StoryStructure)
+- Extensible domain schema: User → Project → Media → Analysis → CreativePlan → Story → Timeline → Render → Movie → Publish
 - Ports for object storage, background jobs, AI Director, media analysis, and rendering
 - Local filesystem storage adapter (swap later for S3/R2 behind the same port)
 - Structured JSON logging and typed `AppError`s
 
 ## What is intentionally not built
 
-- AI Director
-- Story, timeline, or render generation
+- StoryStructure / Timeline / Render generation (Phase 3+)
 - Named vendor SDKs in the domain
 - Billing, payments, or an advertising marketplace
 - Publishing / UFlix Global
 - Social features
 - Mobile apps
+- Treating the local/deterministic Director as production AI
 
 ## Prerequisites
 
@@ -167,7 +167,9 @@ Do not add vendor columns to Prisma. Do not teach domain services a vendor name.
 - The storage adapter is local disk. An S3/R2 adapter can be added behind `StoragePort` without changing MediaService or the UI.
 - The HTTP vision adapter needs a stored poster for video. It does not transcribe audio or produce embeddings.
 - Without HTTP credentials, analysis still succeeds through the local technical adapter (technical metadata only).
-- There is no AI Director, timeline, or renderer yet.
+- Production Director availability requires a configured Director HTTP adapter (`DIRECTOR_HTTP_*`). Local technical analysis does **not** count as Director availability.
+- `DIRECTOR_ALLOW_LOCAL=true` enables the deterministic local Director for development/tests only. It never advertises production availability.
+- StoryStructure, Timeline, and rendering are not implemented yet.
 
 ## Taste and project intent (Phase 2D)
 
@@ -177,7 +179,7 @@ On a project, use **Creative intent** when this film should feel different from 
 
 Successful analysis writes provider attribution. `POST /api/projects/:projectId/credits` builds a credits preview from YouFlicks + attribution (+ approved sponsor lines only if you opted in). Nothing is rendered into a video.
 
-Sponsors cannot read taste, footage, or analysis. They cannot change the story, timeline, or a future Director.
+Sponsors cannot read taste, footage, or analysis. They cannot change the story, timeline, or Director decisions.
 
 ## AI Director contract (Phase 2E)
 
@@ -185,7 +187,23 @@ The Director is YouFlicks-owned creative intelligence. Providers are capabilitie
 
 Taste (Taste page) and project Creative intent remain the user-facing inputs. Project intent wins when it conflicts with long-term taste. That does not rewrite the taste profile.
 
+## Director execution (Phase 2F)
+
+Phase 2F runs the 2E contract asynchronously:
+
+`API → enqueue AI_DIRECT → worker → AiDirectorPort.composePlan → validate → persist CreativePlan`
+
+- Owner-only compose returns **202** with `jobId` (no inline AI).
+- CreativePlan is a first-class, versioned artifact with `jobId`, input fingerprint, and provider provenance.
+- Recomposition reads `priorDecisions` from the previous READY CreativePlan.
+- Production availability requires a genuine configured Director adapter. Local deterministic is test/dev only.
+
+See [PHASE_2F_ROADMAP_DECISION.md](./PHASE_2F_ROADMAP_DECISION.md).
+
 ## Next phase
 
-Phase 2F is not started and is not implemented. Do not implement story generation, timelines, or a commercial Director adapter until that phase is requested.
-See [PHASE_2F_ROADMAP_DECISION.md](./PHASE_2F_ROADMAP_DECISION.md) for the approved Phase 2F specification.
+Phase 3 pipeline (not implemented):
+
+`CreativePlan → StoryStructure → Timeline → Render`
+
+Do not implement story generation, timelines, or rendering until that phase is requested.

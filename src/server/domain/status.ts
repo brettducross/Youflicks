@@ -38,6 +38,16 @@ export const AnalysisStatus = {
 
 export type AnalysisStatusValue = (typeof AnalysisStatus)[keyof typeof AnalysisStatus];
 
+export const CreativePlanStatus = {
+  DRAFT: "DRAFT",
+  READY: "READY",
+  SUPERSEDED: "SUPERSEDED",
+  FAILED: "FAILED",
+} as const;
+
+export type CreativePlanStatusValue =
+  (typeof CreativePlanStatus)[keyof typeof CreativePlanStatus];
+
 export function analysisStatusLabel(status: string): string {
   const labels: Record<string, string> = {
     NOT_ANALYZED: "Not analyzed",
@@ -58,6 +68,7 @@ export const PIPELINE_STAGES = [
   { id: "media", label: "Media assets", available: true },
   { id: "analysis", label: "Media analysis", available: true },
   { id: "taste", label: "Taste & project intent", available: true },
+  // Production availability is configuration-dependent; see DirectorService.
   { id: "director", label: "AI Director", available: false },
   { id: "story", label: "Story structure", available: false },
   { id: "timeline", label: "Timeline", available: false },

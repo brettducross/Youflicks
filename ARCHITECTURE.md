@@ -85,7 +85,8 @@ These tables exist in Phase 1 so later features extend rows instead of inventing
 - **Project** — a film the user is making
 - **MediaAsset** — uploaded or generated files (photo, video, audio, still)
 - **MediaAnalysis** — provider-agnostic analysis results for an asset
-- **StoryStructure** — AI Director output (acts, scenes, narrative intent)
+- **CreativePlan** — versioned YouFlicks-owned Director output (meaning-level; Phase 2F)
+- **StoryStructure** — future story document derived from CreativePlan (Phase 3; not populated in 2F)
 - **Timeline / TimelineClip** — editorial structure used for rendering
 - **RenderJob** — a request to produce a movie from a timeline
 - **FinishedMovie** — a completed render
@@ -126,7 +127,7 @@ This is a hard-to-reverse product rule. Later phases must follow it; they must n
 - **Normalize at the boundary.** Adapter output is mapped into YouFlicks-owned schemas before it is stored or handed to the next pipeline stage. `providerKey` may be recorded for provenance. Vendor JSON must not become the `StoryStructure`, `MediaAnalysis`, or timeline contract.
 - **No vendor enums in Prisma.** Provider identity stays a string key. Lifecycle enums are ours (`PENDING`, `READY`, …).
 
-Phase 2B added the registry, normalizer, and owned analysis schema. Phase 2C registers one replaceable HTTP vision adapter behind the same contract. Phase 2E defines the AI Director as YouFlicks-owned creative intelligence — `aiDirector()` still throws `providerNotConfigured`. Models and providers are replaceable capabilities used by the Director, not the Director itself.
+Phase 2B added the registry, normalizer, and owned analysis schema. Phase 2C registers one replaceable HTTP vision adapter behind the same contract. Phase 2E defines the AI Director as YouFlicks-owned creative intelligence. Phase 2F executes composition behind `AiDirectorPort` and persists CreativePlan. Models and providers are replaceable capabilities used by the Director, not the Director itself.
 
 ---
 
@@ -168,7 +169,7 @@ Raise these before changing them:
 
 | Deferred | Why |
 | --- | --- |
-| Full AI Director | Contract exists (`DirectorInput`, `CreativePlan`). No generation. Port stays unconfigured. |
+| Full AI Director / story / timeline / render | Phase 2F persists CreativePlan only. Phase 3 starts StoryStructure → Timeline → Render. |
 | Named commercial analysis SDKs | Adapters may speak HTTP. Domain code must not import a vendor SDK or vendor enum. |
 | Cost-aware / ML provider routing | `ProviderSelectionPolicy` is replaceable. Phase 2C is deterministic. |
 | Billing / usage accounting | Routing hints exist (`estimatedCost`, `estimatedLatency`, `qualityTier`). No charges. |
@@ -344,7 +345,7 @@ User sponsorship preferences default to **off**:
 
 **Sponsors may influence only approved post-film presentation and never creative decisions.**
 
-This phase is the contract only. No story generation. No timeline. No renderer. No commercial Director adapter. `container.aiDirector()` remains unconfigured.
+This phase is the contract only. No story generation. No timeline. No renderer. No commercial Director adapter required yet. Composition and CreativePlan persistence arrive in Phase 2F.
 
 ```
 USER
@@ -404,9 +405,9 @@ It must not contain vendor JSON, API keys, sponsor records, user email/identity,
 
 `extras.ignoreGeneralTaste: true` on project intent lets the Director treat intent as dominant for that film. The taste profile is not rewritten.
 
-#### What the Director produces later
+#### What the Director produces
 
-`CreativePlan` (`schemaVersion: "1.0"`) is the future bridge to story / timeline / render. Phase 2E validates the shape. It does not generate one.
+`CreativePlan` (`schemaVersion: "1.0"`) is the meaning-level bridge to story / timeline / render. Phase 2E validates the shape. Phase 2F persists it as a first-class artifact.
 
 #### Iteration (not implemented)
 
@@ -428,9 +429,45 @@ The Director may later review a plan against intent, taste, media, constraints, 
 
 Typed errors: `DIRECTOR_INPUT_INVALID`, `DIRECTOR_CAPABILITY_UNAVAILABLE`, `DIRECTOR_PLAN_INVALID`, `DIRECTOR_PROVIDER_UNAVAILABLE`, `DIRECTOR_CONSTRAINT_CONFLICT`. Missing capabilities fail clearly. No fake creative fallbacks.
 
+### Phase 2F — Director execution & CreativePlan persistence
+
+**Phase 2F = Director Execution → CreativePlan persistence.**
+
+It executes the Phase 2E contract asynchronously and stops at a validated, versioned CreativePlan.
+
+```
+HTTP (owner) → enqueue AI_DIRECT (202 + jobId)
+ ↓
+DirectorWorker claims AI_DIRECT
+ ↓
+assemble DirectorInput (+ priorDecisions from previous READY plan)
+ ↓
+fingerprint input (persist hash only)
+ ↓
+AiDirectorPort.composePlan
+ ↓
+validate CreativePlan
+ ↓
+persist new CreativePlan version (prior READY → SUPERSEDED)
+ ↓
+record ProviderAttribution
+```
+
+Rules:
+
+- Filmmaking core stays provider-neutral (`AiDirectorPort`). No vendor names in Director domain logic.
+- CreativePlan is **not** stored in StoryStructure.
+- Production Director availability requires a genuine configured adapter (`DIRECTOR_HTTP_*`). Local deterministic (`DIRECTOR_ALLOW_LOCAL` / tests) never advertises production availability and must not silently backfill production.
+- Raw assembled Director input is not persisted — only `inputFingerprint`, `jobId`, and provenance fields.
+- Minimal UI: compose, job status, view plan / failure. No chat, timeline editor, or render controls.
+
+Authoritative specification: [PHASE_2F_ROADMAP_DECISION.md](./PHASE_2F_ROADMAP_DECISION.md).
+
 ### Phase 3 — Story & timeline
 
-StoryStructure persistence in a YouFlicks-owned schema. The AI Director consumes normalized analysis and project context through ports — it does not call a vendor. Provider adapters may be routed/ranked without changing Director logic. Timeline review UI (not a full NLE).
+**`CreativePlan → StoryStructure → Timeline → Render`**
+
+StoryStructure persistence in a YouFlicks-owned schema, derived from CreativePlan. The AI Director does not call a vendor from domain services — adapters stay behind ports. Timeline review UI (not a full NLE). Rendering remains Phase 4.
 
 ### Phase 4 — Render & movie
 
@@ -461,8 +498,17 @@ Phase 2E exit criteria:
 - [x] Project intent overrides conflicting taste without rewriting taste
 - [x] Explicit vs inferred taste remain distinct in Director input
 - [x] Sponsor data cannot enter Director input
-- [x] No Director HTTP API, chat UI, or Generate Film control
-- [x] `aiDirector()` still unconfigured
+- [x] No Director chat UI or Generate Film control
+- [x] Composition deferred to Phase 2F (contract only in 2E)
+
+Phase 2F exit criteria:
+
+- [x] First-class versioned `CreativePlan` persistence with provenance
+- [x] `DirectorService` + `AI_DIRECT` enqueue/worker path
+- [x] HTTP returns 202; composition runs off-request
+- [x] Recompose from previous READY plan `priorDecisions`
+- [x] Production vs local Director availability honesty
+- [x] No StoryStructure / Timeline / Render writes
 
 Phase 2D exit criteria:
 
@@ -529,10 +575,10 @@ src/server/db           Prisma client
 src/server/media        MIME sniffing, size limits, previews
 src/server/analysis     Owned schemas, normalizer, registry, selection
 src/server/personalization  Taste brief, privacy boundary
-src/server/director     Director input, plan schema, capability gateway
+src/server/director     Director input, plan schema, capability gateway, fingerprint
 src/server/ports        Interfaces
-src/server/adapters     Local storage, Postgres jobs, analysis adapters
-src/server/services     Project, Media, Analysis, Taste, Intent, Credits
+src/server/adapters     Local storage, Postgres jobs, analysis + Director adapters
+src/server/services     Project, Media, Analysis, Director, Taste, Intent, Credits
 prisma/schema.prisma    Extensible domain schema
 docker-compose.yml      Local Postgres
 ```
