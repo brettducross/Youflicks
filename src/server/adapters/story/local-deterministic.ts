@@ -54,13 +54,10 @@ export class LocalDeterministicStoryComposer implements StoryComposerPort {
       opening: plan.emotionalArc
         ? `Open in the feeling of the plan: ${plan.emotionalArc}`
         : `Open with the people and places already in the footage, in a ${tone} register.`,
-      development:
-        plan.narrativeApproach ||
-        plan.mediaStrategy ||
-        `Develop the story from ${mediaCount} media item(s), preferring meaning over coverage.`,
-      resolution:
-        plan.pacing ||
-        "Land on a clear emotional close that honors the source direction.",
+      development: plan.mediaStrategy
+        ? `Develop the story by following the plan’s media strategy: ${plan.mediaStrategy}`
+        : `Develop the story from ${mediaCount} media item(s), preferring meaning over coverage.`,
+      resolution: "Land on a clear emotional close that honors the source direction.",
     };
 
     const acts = prior?.acts?.length
