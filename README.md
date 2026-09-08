@@ -188,3 +188,4 @@ Taste (Taste page) and project Creative intent remain the user-facing inputs. Pr
 ## Next phase
 
 Phase 2F is not started. Do not implement story generation, timelines, or a commercial Director adapter until that phase is requested.
+See [PHASE_2F_ROADMAP_DECISION.md](./PHASE_2F_ROADMAP_DECISION.md) for the proposed Phase 2F scope.
