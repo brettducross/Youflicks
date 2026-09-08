@@ -24,6 +24,7 @@ export type JobStatusValue = (typeof JobStatus)[keyof typeof JobStatus];
 export const JobType = {
   MEDIA_ANALYZE: "MEDIA_ANALYZE",
   AI_DIRECT: "AI_DIRECT",
+  AI_STORY: "AI_STORY",
   RENDER: "RENDER",
   PUBLISH: "PUBLISH",
 } as const;
@@ -47,6 +48,18 @@ export const CreativePlanStatus = {
 
 export type CreativePlanStatusValue =
   (typeof CreativePlanStatus)[keyof typeof CreativePlanStatus];
+
+export const StoryStructureStatus = {
+  DRAFT: "DRAFT",
+  READY: "READY",
+  SUPERSEDED: "SUPERSEDED",
+  FAILED: "FAILED",
+} as const;
+
+export type StoryStructureStatusValue =
+  (typeof StoryStructureStatus)[keyof typeof StoryStructureStatus];
+
+export const STORY_STRUCTURE_STATUSES = Object.values(StoryStructureStatus);
 
 export function analysisStatusLabel(status: string): string {
   const labels: Record<string, string> = {

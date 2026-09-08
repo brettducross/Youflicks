@@ -15,6 +15,11 @@ export const ErrorCodes = {
   DIRECTOR_PLAN_INVALID: "DIRECTOR_PLAN_INVALID",
   DIRECTOR_PROVIDER_UNAVAILABLE: "DIRECTOR_PROVIDER_UNAVAILABLE",
   DIRECTOR_CONSTRAINT_CONFLICT: "DIRECTOR_CONSTRAINT_CONFLICT",
+  STORY_INPUT_INVALID: "STORY_INPUT_INVALID",
+  STORY_DOCUMENT_INVALID: "STORY_DOCUMENT_INVALID",
+  STORY_PROVIDER_UNAVAILABLE: "STORY_PROVIDER_UNAVAILABLE",
+  STORY_PLAN_REQUIRED: "STORY_PLAN_REQUIRED",
+  STORY_CAPABILITY_UNAVAILABLE: "STORY_CAPABILITY_UNAVAILABLE",
   INTERNAL: "INTERNAL",
 } as const;
 
@@ -110,6 +115,26 @@ export class AppError extends Error {
 
   static directorConstraintConflict(message: string) {
     return new AppError(ErrorCodes.DIRECTOR_CONSTRAINT_CONFLICT, message, 409);
+  }
+
+  static storyInputInvalid(message: string, details?: Record<string, unknown>) {
+    return new AppError(ErrorCodes.STORY_INPUT_INVALID, message, 422, details);
+  }
+
+  static storyDocumentInvalid(message: string, details?: Record<string, unknown>) {
+    return new AppError(ErrorCodes.STORY_DOCUMENT_INVALID, message, 422, details);
+  }
+
+  static storyProviderUnavailable(message = "A required story composer adapter is unavailable.") {
+    return new AppError(ErrorCodes.STORY_PROVIDER_UNAVAILABLE, message, 503);
+  }
+
+  static storyPlanRequired(message = "A READY CreativePlan is required before story composition.") {
+    return new AppError(ErrorCodes.STORY_PLAN_REQUIRED, message, 422);
+  }
+
+  static storyCapabilityUnavailable(message = "Story composition is not available.") {
+    return new AppError(ErrorCodes.STORY_CAPABILITY_UNAVAILABLE, message, 503);
   }
 }
 

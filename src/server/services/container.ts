@@ -16,6 +16,8 @@ import type { JobQueuePort } from "@/server/ports/jobs";
 import type { MediaAnalyzerPort } from "@/server/ports/media-analyzer";
 import type { RendererPort } from "@/server/ports/renderer";
 import type { StoragePort } from "@/server/ports/storage";
+import type { StoryComposerPort } from "@/server/ports/story-composer";
+import { resolveStoryComposerAdapter } from "@/server/story/provider-config";
 import { AnalysisService } from "@/server/services/analysis";
 import { AnalysisWorker } from "@/server/services/analysis-worker";
 import { AttributionService } from "@/server/services/attribution";
@@ -27,6 +29,9 @@ import { IntentService } from "@/server/services/intent";
 import { MediaService } from "@/server/services/media";
 import { ProjectService } from "@/server/services/projects";
 import { SponsorshipService } from "@/server/services/sponsorship";
+import { StoryContractService } from "@/server/services/story-contract";
+import { StoryService } from "@/server/services/story";
+import { StoryWorker } from "@/server/services/story-worker";
 import { TasteService } from "@/server/services/taste";
 
 export type ServiceContainer = {
@@ -44,9 +49,13 @@ export type ServiceContainer = {
   director: DirectorContractService;
   directorService: DirectorService;
   directorWorker: DirectorWorker;
+  story: StoryContractService;
+  storyService: StoryService;
+  storyWorker: StoryWorker;
   providers: ProviderRegistry;
   mediaAnalyzer(): MediaAnalyzerPort;
   aiDirector(): AiDirectorPort;
+  storyComposer(): StoryComposerPort;
   renderer(): RendererPort;
 };
 
@@ -108,6 +117,27 @@ function createServices(): ServiceContainer {
     },
   );
   const directorWorker = new DirectorWorker(jobs, directorService);
+  const story = new StoryContractService(projects, taste, intent, media);
+  const storyService = new StoryService(
+    jobs,
+    story,
+    projects,
+    attribution,
+    () => {
+      const resolved = resolveStoryComposerAdapter();
+      if (!resolved) return null;
+      return { adapter: resolved.adapter, attribution: resolved.attribution };
+    },
+    () => {
+      const resolved = resolveStoryComposerAdapter();
+      return {
+        productionAvailable: Boolean(resolved?.productionAvailable),
+        localDevAvailable: Boolean(resolved?.localDevAvailable),
+        canCompose: Boolean(resolved),
+      };
+    },
+  );
+  const storyWorker = new StoryWorker(jobs, storyService);
 
   return {
     storage,
@@ -124,6 +154,9 @@ function createServices(): ServiceContainer {
     director,
     directorService,
     directorWorker,
+    story,
+    storyService,
+    storyWorker,
     providers,
     mediaAnalyzer() {
       return analyzer;
@@ -132,6 +165,13 @@ function createServices(): ServiceContainer {
       const resolved = resolveDirectorAdapter();
       if (!resolved) {
         throw AppError.providerNotConfigured("AiDirectorPort");
+      }
+      return resolved.adapter;
+    },
+    storyComposer() {
+      const resolved = resolveStoryComposerAdapter();
+      if (!resolved) {
+        throw AppError.providerNotConfigured("StoryComposerPort");
       }
       return resolved.adapter;
     },

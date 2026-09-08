@@ -32,6 +32,19 @@ const envSchema = z.object({
     .enum(["true", "false", "1", "0", ""])
     .optional()
     .transform((value) => value === "true" || value === "1"),
+  STORY_HTTP_PROVIDER_KEY: z.string().default("http.story"),
+  STORY_HTTP_BASE_URL: z.string().optional(),
+  STORY_HTTP_API_KEY: z.string().optional(),
+  STORY_HTTP_MODEL: z.string().optional(),
+  STORY_HTTP_TIMEOUT_MS: z.coerce.number().int().positive().default(60_000),
+  /**
+   * Explicit opt-in for local/deterministic story composition in development/test.
+   * Forced false in production regardless of the env var value.
+   */
+  STORY_ALLOW_LOCAL: z
+    .enum(["true", "false", "1", "0", ""])
+    .optional()
+    .transform((value) => value === "true" || value === "1"),
 });
 
 export type AppEnv = z.infer<typeof envSchema>;
@@ -59,6 +72,12 @@ function readEnv(): AppEnv {
     DIRECTOR_HTTP_MODEL: process.env.DIRECTOR_HTTP_MODEL || undefined,
     DIRECTOR_HTTP_TIMEOUT_MS: process.env.DIRECTOR_HTTP_TIMEOUT_MS ?? 60_000,
     DIRECTOR_ALLOW_LOCAL: process.env.DIRECTOR_ALLOW_LOCAL ?? "",
+    STORY_HTTP_PROVIDER_KEY: process.env.STORY_HTTP_PROVIDER_KEY ?? "http.story",
+    STORY_HTTP_BASE_URL: process.env.STORY_HTTP_BASE_URL || undefined,
+    STORY_HTTP_API_KEY: process.env.STORY_HTTP_API_KEY || undefined,
+    STORY_HTTP_MODEL: process.env.STORY_HTTP_MODEL || undefined,
+    STORY_HTTP_TIMEOUT_MS: process.env.STORY_HTTP_TIMEOUT_MS ?? 60_000,
+    STORY_ALLOW_LOCAL: process.env.STORY_ALLOW_LOCAL ?? "",
   });
 
   if (!parsed.success) {
@@ -70,7 +89,10 @@ function readEnv(): AppEnv {
 
   const data = parsed.data;
   if (data.NODE_ENV === "production" && data.DIRECTOR_ALLOW_LOCAL) {
-    return { ...data, DIRECTOR_ALLOW_LOCAL: false };
+    data.DIRECTOR_ALLOW_LOCAL = false;
+  }
+  if (data.NODE_ENV === "production" && data.STORY_ALLOW_LOCAL) {
+    data.STORY_ALLOW_LOCAL = false;
   }
   return data;
 }
