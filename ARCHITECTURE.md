@@ -71,7 +71,7 @@ YouFlicks starts as a **modular monolith**: one Next.js application with a clear
 | Layer | Responsibility | Location |
 | --- | --- | --- |
 | Routes / UI | Pages, layouts, Server Actions | `src/app`, `src/components` |
-| Application services | Use-cases, authorization checks | `src/server/services` |
+| Application services | Use-cases, authorization checks | `src/server/services` (Projects, Media, Analysis, Director, Story, …) |
 | Ports | Interfaces for IO and vendors | `src/server/ports` |
 | Adapters | Concrete IO implementations | `src/server/adapters` |
 | Persistence | Schema, Prisma client | `prisma`, `src/server/db` |
@@ -86,7 +86,7 @@ These tables exist in Phase 1 so later features extend rows instead of inventing
 - **MediaAsset** — uploaded or generated files (photo, video, audio, still)
 - **MediaAnalysis** — provider-agnostic analysis results for an asset
 - **CreativePlan** — versioned YouFlicks-owned Director output (meaning-level; Phase 2F)
-- **StoryStructure** — future story document derived from CreativePlan (Phase 3; not populated in 2F)
+- **StoryStructure** — versioned narrative StoryDocument derived from exactly one READY CreativePlan (M1)
 - **Timeline / TimelineClip** — editorial structure used for rendering
 - **RenderJob** — a request to produce a movie from a timeline
 - **FinishedMovie** — a completed render
@@ -169,7 +169,7 @@ Raise these before changing them:
 
 | Deferred | Why |
 | --- | --- |
-| Full AI Director / story / timeline / render | Phase 2F persists CreativePlan only. Phase 3 starts StoryStructure → Timeline → Render. |
+| Timeline / render / playback | M1 persists StoryStructure only. M2+ starts Timeline → Render. |
 | Named commercial analysis SDKs | Adapters may speak HTTP. Domain code must not import a vendor SDK or vendor enum. |
 | Cost-aware / ML provider routing | `ProviderSelectionPolicy` is replaceable. Phase 2C is deterministic. |
 | Billing / usage accounting | Routing hints exist (`estimatedCost`, `estimatedLatency`, `qualityTier`). No charges. |
@@ -463,11 +463,47 @@ Rules:
 
 Authoritative specification: [PHASE_2F_ROADMAP_DECISION.md](./PHASE_2F_ROADMAP_DECISION.md).
 
-### Phase 3 — Story & timeline
+### M1 — Story from plan
 
-**`CreativePlan → StoryStructure → Timeline → Render`**
+**M1 = CreativePlan → versioned StoryStructure.**
 
-StoryStructure persistence in a YouFlicks-owned schema, derived from CreativePlan. The AI Director does not call a vendor from domain services — adapters stay behind ports. Timeline review UI (not a full NLE). Rendering remains Phase 4.
+It executes a new provider-neutral port and stops at a validated, versioned StoryDocument:
+
+```
+HTTP (owner) → enqueue AI_STORY (202 + jobId)
+ ↓
+StoryWorker claims AI_STORY
+ ↓
+assemble StoryComposerInput from READY CreativePlan
+  (+ privacy-minimized media inventory, intent/brief, optional prior READY story)
+ ↓
+fingerprint input (persist hash only)
+ ↓
+StoryComposerPort.composeStory
+ ↓
+validate StoryDocument (schema v1; reject timing / clip-list smuggling)
+ ↓
+persist new StoryStructure version (prior READY → SUPERSEDED)
+ ↓
+record ProviderAttribution (outside the port return)
+```
+
+Rules:
+
+- Do **not** extend or overload `AiDirectorPort`. Story composition is `StoryComposerPort` only.
+- StoryStructure is **not** a renamed CreativePlan. It owns narrative structure, not editorial execution.
+- `targetDurationMs` is optional on acts only and must never become `startMs` / `endMs`.
+- In-progress belongs on Job (`PENDING` | `RUNNING` | …). StoryStructure status is only `DRAFT` | `READY` | `SUPERSEDED` | `FAILED`.
+- Production story availability requires a genuine configured adapter (`STORY_HTTP_*`). Local deterministic (`STORY_ALLOW_LOCAL` / tests) never advertises production availability.
+- Minimal UI: “Your story”, Build / Rebuild, status, readable outline, version history. No timeline editor, Director chat, or Generate Film.
+
+Authoritative specification: [PHASE_M1_STORY_ROADMAP_DECISION.md](./PHASE_M1_STORY_ROADMAP_DECISION.md).
+
+### M2+ — Cut from story (not this milestone)
+
+**`StoryStructure → Timeline → assets → Render → Playback → FinishedMovie`**
+
+M2 (future lock) derives an executable Timeline from StoryStructure. Timeline review UI, rendering, playback, and FinishedMovie remain later milestones. Do not leak those concepts backward into CreativePlan or StoryDocument.
 
 ### Phase 4 — Render & movie
 
@@ -509,6 +545,15 @@ Phase 2F exit criteria:
 - [x] Recompose from previous READY plan `priorDecisions`
 - [x] Production vs local Director availability honesty
 - [x] No StoryStructure / Timeline / Render writes
+
+M1 exit criteria:
+
+- [x] First-class versioned `StoryStructure` persistence with provenance to one READY CreativePlan
+- [x] `StoryService` + `AI_STORY` enqueue/worker path
+- [x] HTTP returns 202; composition runs off-request
+- [x] Recompose from previous READY StoryDocument
+- [x] Production vs local story availability honesty
+- [x] No Timeline / Render / FinishedMovie / Publication writes
 
 Phase 2D exit criteria:
 
@@ -576,9 +621,10 @@ src/server/media        MIME sniffing, size limits, previews
 src/server/analysis     Owned schemas, normalizer, registry, selection
 src/server/personalization  Taste brief, privacy boundary
 src/server/director     Director input, plan schema, capability gateway, fingerprint
+src/server/story        StoryDocument schema, input, validation, availability
 src/server/ports        Interfaces
-src/server/adapters     Local storage, Postgres jobs, analysis + Director adapters
-src/server/services     Project, Media, Analysis, Director, Taste, Intent, Credits
+src/server/adapters     Local storage, Postgres jobs, analysis + Director + story adapters
+src/server/services     Project, Media, Analysis, Director, Story, Taste, Intent, Credits
 prisma/schema.prisma    Extensible domain schema
 docker-compose.yml      Local Postgres
 ```

@@ -204,22 +204,39 @@ model MediaAnalysis {
   @@map("media_analysis")
 }
 
+/// M1 — YouFlicks-owned narrative StoryDocument. Not a timeline. Not a render.
+/// Each version derives from exactly one READY CreativePlan version.
+/// Versions are preserved. In-progress belongs on Job, not on this row.
 model StoryStructure {
-  id           String   @id @default(cuid())
-  projectId    String
-  project      Project  @relation(fields: [projectId], references: [id], onDelete: Cascade)
-  version      Int      @default(1)
-  /// Adapter key for the AI Director implementation that produced this draft.
-  providerKey  String?
-  /// DRAFT | READY | SUPERSEDED | FAILED
-  status       String   @default("DRAFT")
-  payload      Json?
-  createdAt    DateTime @default(now())
-  updatedAt    DateTime @updatedAt
+  id                  String   @id @default(cuid())
+  projectId           String
+  project             Project  @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  version             Int
+  /// DRAFT | READY | SUPERSEDED | FAILED — never PENDING/RUNNING.
+  status              String   @default("DRAFT")
+  /// Validated YouFlicks-owned StoryDocument JSON (schemaVersion "1.0").
+  payload             Json?
+  jobId               String?
+  /// SHA-256 of assembled StoryComposerInput. Raw input is not stored.
+  inputFingerprint    String
+  /// Provenance: exactly one READY CreativePlan version.
+  creativePlanId      String
+  creativePlanVersion Int
+  planFingerprint     String?
+  /// Adapter key — provenance only, never a vendor enum.
+  providerKey         String
+  /// Capability the story composer used (e.g. STORY_COMPOSITION).
+  capability          String
+  modelId             String?
+  modelVersion        String?
+  createdAt           DateTime @default(now())
+  updatedAt           DateTime @updatedAt
 
   timelines Timeline[]
 
   @@unique([projectId, version])
+  @@index([projectId, createdAt])
+  @@index([jobId])
   @@map("story_structure")
 }
 
@@ -326,7 +343,7 @@ model Job {
   id          String    @id @default(cuid())
   projectId   String?
   project     Project?  @relation(fields: [projectId], references: [id], onDelete: Cascade)
-  /// MEDIA_ANALYZE | AI_DIRECT | RENDER | PUBLISH | …
+  /// MEDIA_ANALYZE | AI_DIRECT | AI_STORY | RENDER | PUBLISH | …
   type        String
   /// PENDING | RUNNING | SUCCEEDED | FAILED | CANCELLED
   status      String    @default("PENDING")

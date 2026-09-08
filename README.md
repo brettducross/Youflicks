@@ -4,7 +4,7 @@
 
 YouFlicks is an AI-powered filmmaking platform that turns a person’s photos, videos, memories, and ideas into a finished movie.
 
-This repository currently includes **Phase 1** through **Phase 2F** (Director execution & CreativePlan persistence). It does not generate story structures, timelines, or rendered films, take payments, or serve ads.
+This repository currently includes **Phase 1** through **M1** (Story from plan: CreativePlan → versioned StoryStructure). It does not generate timelines or rendered films, take payments, or serve ads.
 
 Read [ARCHITECTURE.md](./ARCHITECTURE.md) for the analysis, technology choices, deferred work, roadmap, and MVP definition.
 
@@ -17,7 +17,8 @@ Read [ARCHITECTURE.md](./ARCHITECTURE.md) for the analysis, technology choices, 
 - Media ingest: upload photos/videos into a project, store them through `StoragePort`, list and remove them in a media library
 - Media intelligence: enqueue analysis jobs, select an adapter by capability, normalize results into a YouFlicks-owned schema, persist `MediaAnalysis` with provenance, and record provider attribution
 - Taste profile, project creative intent, film credits, and sponsorship **foundation** (no marketplace, no ads served)
-- AI Director **execution (Phase 2F)**: enqueue `AI_DIRECT`, compose through `AiDirectorPort`, validate, and persist a versioned YouFlicks-owned `CreativePlan` (not StoryStructure)
+- AI Director **execution (Phase 2F)**: enqueue `AI_DIRECT`, compose through `AiDirectorPort`, validate, and persist a versioned YouFlicks-owned `CreativePlan`
+- **M1 story from plan**: enqueue `AI_STORY`, compose through `StoryComposerPort`, validate, and persist a versioned YouFlicks-owned `StoryStructure` / `StoryDocument` (not a timeline or render)
 - Extensible domain schema: User → Project → Media → Analysis → CreativePlan → Story → Timeline → Render → Movie → Publish
 - Ports for object storage, background jobs, AI Director, media analysis, and rendering
 - Local filesystem storage adapter (swap later for S3/R2 behind the same port)
@@ -25,7 +26,8 @@ Read [ARCHITECTURE.md](./ARCHITECTURE.md) for the analysis, technology choices, 
 
 ## What is intentionally not built
 
-- StoryStructure / Timeline / Render generation (Phase 3+)
+- Timeline / Render generation (M2+)
+- Treating the local/deterministic story composer as production AI
 - Named vendor SDKs in the domain
 - Billing, payments, or an advertising marketplace
 - Publishing / UFlix Global
@@ -117,9 +119,10 @@ src/server/media        MIME sniffing, size limits, previews
 src/server/analysis     Owned schemas, normalizer, registry, selection
 src/server/personalization  Taste brief and privacy rules
 src/server/director     Director contract (input, plan, capabilities)
-src/server/ports        Storage, jobs, AI, renderer, analyzer interfaces
-src/server/adapters     Local storage, Postgres jobs, analysis adapters
-src/server/services     Project, Media, Analysis, Taste, Intent, Credits
+src/server/story        StoryDocument schema, input, validation, availability
+src/server/ports        Storage, jobs, AI, story composer, renderer, analyzer interfaces
+src/server/adapters     Local storage, Postgres jobs, analysis / Director / story adapters
+src/server/services     Project, Media, Analysis, Taste, Intent, Credits, Director, Story
 prisma/schema.prisma    Domain schema
 ```
 
@@ -169,7 +172,9 @@ Do not add vendor columns to Prisma. Do not teach domain services a vendor name.
 - Without HTTP credentials, analysis still succeeds through the local technical adapter (technical metadata only).
 - Production Director availability requires a configured Director HTTP adapter (`DIRECTOR_HTTP_*`). Local technical analysis does **not** count as Director availability.
 - `DIRECTOR_ALLOW_LOCAL=true` enables the deterministic local Director for development/tests only. It never advertises production availability.
-- StoryStructure, Timeline, and rendering are not implemented yet.
+- Timeline and rendering are not implemented yet.
+- Production story availability requires a configured story HTTP adapter (`STORY_HTTP_*`). Local deterministic composition does **not** count as production story availability.
+- `STORY_ALLOW_LOCAL=true` enables the deterministic local story composer for development/tests only. It never advertises production availability.
 
 ## Taste and project intent (Phase 2D)
 
@@ -200,10 +205,23 @@ Phase 2F runs the 2E contract asynchronously:
 
 See [PHASE_2F_ROADMAP_DECISION.md](./PHASE_2F_ROADMAP_DECISION.md).
 
+## Story from plan (M1)
+
+M1 turns a READY CreativePlan into a versioned narrative StoryStructure:
+
+`API → enqueue AI_STORY → worker → StoryComposerPort.composeStory → validate → persist StoryStructure`
+
+- Owner-only compose returns **202** with `jobId` (no inline AI).
+- StoryDocument is narrative-only (acts / scenes / beats / media **roles**). `targetDurationMs` is optional on acts only and is never editorial timing.
+- Recomposition reads the previous READY StoryDocument for continuity. No chat. No Timeline reads.
+- Production availability requires a genuine configured story adapter. Local deterministic is test/dev only.
+
+See [PHASE_M1_STORY_ROADMAP_DECISION.md](./PHASE_M1_STORY_ROADMAP_DECISION.md).
+
 ## Next phase
 
-Phase 3 pipeline (not implemented):
+M2+ pipeline (not implemented):
 
-`CreativePlan → StoryStructure → Timeline → Render`
+`StoryStructure → Timeline → assets → Render → Playback → FinishedMovie`
 
-Do not implement story generation, timelines, or rendering until that phase is requested.
+Do not implement timeline editing, rendering, or Generate Film until those milestones are requested.

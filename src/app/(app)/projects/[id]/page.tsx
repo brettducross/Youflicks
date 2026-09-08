@@ -7,6 +7,7 @@ import { buttonVariants } from "@/components/ui/button";
 import { MediaLibrary } from "@/components/media/media-library";
 import { CreativeIntentForm } from "@/components/projects/creative-intent-form";
 import { CreativePlanPanel } from "@/components/projects/creative-plan-panel";
+import { StoryPanel } from "@/components/projects/story-panel";
 import { cn } from "@/lib/utils";
 import { requireUser } from "@/server/auth/session";
 import { projectStatusLabel } from "@/server/domain/status";
@@ -18,12 +19,8 @@ export const metadata = {
 
 const LATER_SECTIONS = [
   {
-    title: "Story",
-    body: "Phase 3 derives StoryStructure from a READY CreativePlan. Not implemented in Phase 2F.",
-  },
-  {
     title: "Timeline",
-    body: "Editorial order for the render comes after StoryStructure. Schema exists; the editor does not.",
+    body: "Editorial order for the render comes after the story. Schema exists; the editor does not.",
   },
   {
     title: "Render",
@@ -49,6 +46,9 @@ export default async function ProjectDetailPage({
   const brief = await services.intent.resolveBrief(user.id, id);
   const plan = await services.directorService.getLatestReady(user.id, id);
   const availability = services.directorService.getAvailability();
+  const story = await services.storyService.getLatestReady(user.id, id);
+  const stories = await services.storyService.listStories(user.id, id);
+  const storyAvailability = services.storyService.getAvailability();
 
   return (
     <main className="mx-auto w-full max-w-6xl px-4 py-8 sm:px-6">
@@ -94,7 +94,15 @@ export default async function ProjectDetailPage({
         initialAvailability={availability}
       />
 
-      <div className="mt-10 grid gap-4 md:grid-cols-3">
+      <StoryPanel
+        projectId={project.id}
+        initialStory={story}
+        initialStories={stories}
+        initialAvailability={storyAvailability}
+        directionReady={Boolean(plan)}
+      />
+
+      <div className="mt-10 grid gap-4 md:grid-cols-2">
         {LATER_SECTIONS.map((section) => (
           <Card key={section.title}>
             <CardHeader>

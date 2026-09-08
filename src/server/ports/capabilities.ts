@@ -30,9 +30,17 @@ export const DirectorCapability = {
 export type DirectorCapabilityValue =
   (typeof DirectorCapability)[keyof typeof DirectorCapability];
 
+/** Capabilities the story composer may use. Separate from AiDirectorPort. */
+export const StoryCapability = {
+  STORY_COMPOSITION: "STORY_COMPOSITION",
+} as const;
+
+export type StoryCapabilityValue = (typeof StoryCapability)[keyof typeof StoryCapability];
+
 export const Capability = {
   ...AnalysisCapability,
   ...DirectorCapability,
+  ...StoryCapability,
 } as const;
 
 export type CapabilityValue = (typeof Capability)[keyof typeof Capability];
