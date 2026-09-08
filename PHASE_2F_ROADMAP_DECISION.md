@@ -1,146 +1,216 @@
 # Phase 2F Roadmap Decision Document
 
-**Status:** Proposal (not started)  
-**Basis:** `ARCHITECTURE.md`, `README.md`, locked provider-agnostic rules, and `main` @ `95bca79`  
-**Conflict resolved:** README names “Phase 2F” and forbids story/timeline/commercial Director adapter until that phase is requested; `ARCHITECTURE.md` has no 2F section and jumps from 2E → **Phase 3 — Story & timeline**. This document fills that gap.
+**Status:** Approved specification — not implemented  
+**Phase name:** Director Execution & Creative Plan Persistence  
+**Basis:** Approved Phase 2F specification (Brett + ChatGPT); `ARCHITECTURE.md`; `README.md`; locked provider-agnostic rules; Phase 2E Director contract on `main` @ `95bca79`  
+**This document:** Authoritative specification for a **future** Phase 2F implementation. Phase 2F is **not started in code**. Do not treat this file as evidence that Director execution exists.
+
+`ARCHITECTURE.md` has no 2F section and jumps from 2E → **Phase 3 — Story & timeline**. README names “Phase 2F” and forbids story/timeline/commercial Director work until that phase is requested. This document is the approved middle: execute the 2E contract and persist a `CreativePlan`. It does **not** implement Phase 3.
 
 ---
 
-## 1. Phase 2F objective
+## 1. Objective
 
-**Make the AI Director executable as YouFlicks-owned intelligence that produces a validated `CreativePlan`, without generating a film, story document, timeline, or render.**
+Turn the existing Phase 2E Director contract into a real, asynchronous Director capability that produces and persists a validated, versioned YouFlicks-owned `CreativePlan`, **and nothing beyond that**.
 
-Phase 2E shipped the *contract* (`DirectorInput`, `CreativePlan` schema, assemble/validate, capability gateway) with `container.aiDirector()` unconfigured. Phase 3 (per `ARCHITECTURE.md`) is *story & timeline persistence/UI*. Phase 2F is the missing middle: **run `AiDirectorPort.composePlan`, persist the plan as a first-class YouFlicks artifact, prove job-backed Director execution, and keep story/timeline/render deferred.**
+Phase 2E shipped the contract (`DirectorInput`, `CreativePlan` schema, assemble/validate, capability gateway) with `container.aiDirector()` unconfigured. Phase 2F **runs** that contract: assemble input, compose through `AiDirectorPort`, validate, persist the plan as a first-class artifact, and prove job-backed execution.
 
-This is **not** “start generating films.”
-
----
-
-## 2. In-scope functionality
-
-1. **First `AiDirectorPort` implementation** wired through `container.aiDirector()` — capability-driven, no vendor in domain. Prefer a **first-party / local or HTTP-behind-port** adapter that emits a `CreativePlan` matching `creativePlanSchema` (`schemaVersion: "1.0"`). A commercial host is optional and must stay behind the port + env, same pattern as `http.vision`.
-2. **Director orchestration service** that:
-   - calls existing `DirectorContractService.assembleInput`
-   - invokes `AiDirectorPort.composePlan`
-   - runs `DirectorContractService.validatePlan`
-   - records provenance via existing attribution patterns (string keys only)
-3. **Job-backed execution** using existing `JobType.AI_DIRECT` — HTTP must not run Director inline (same rule as analysis).
-4. **YouFlicks-owned `CreativePlan` persistence** (new model or equivalent) — versioned plan JSON, project linkage, status, timestamps, optional provenance fields. **Do not** dump the plan into `StoryStructure.payload` yet (that is Phase 3’s owned story schema).
-5. **Minimal studio surface** to request a plan and inspect the validated plan (read-only creative brief view). No NLE, no Generate Film marketing copy that implies a finished movie.
-6. **Flip pipeline stage** `director` in `PIPELINE_STAGES` to available once exit criteria pass; leave `story` / `timeline` / `render` false.
-7. **Tests** for assemble → compose → validate → persist; privacy denylist still holds; missing capability → typed error (no fake creative fallbacks).
-8. **Docs update** in the same phase: add an explicit Phase 2F section to `ARCHITECTURE.md` and align README “Next phase” language so 2F ≠ Phase 3.
+This is **not** generating a film, story document, timeline, or render.
 
 ---
 
-## 3. Explicitly out of scope
+## 2. Must include
 
-- Story generation / `StoryStructure` owned-schema population from the plan
-- Timeline / `Timeline` / `TimelineClip` creation or review UI
-- `RendererPort` implementation, render jobs, `FinishedMovie`
-- Generate Film button that implies a finished movie
-- Director chat / conversational UI
-- Real evaluation scores (`createDirectorEvaluationBoundary` stays `NOT_IMPLEMENTED` unless trivially extended without inventing confidence)
-- Ads marketplace, payments, billing
+1. **First-class `CreativePlan` persistence**
+   - Project-linked
+   - Versioned
+   - Status
+   - Validated YouFlicks-owned JSON
+   - Provenance
+   - Job linkage
+   - Timestamps
+   - Preserve previous versions rather than overwrite them
+   - **Do not** store the plan inside `StoryStructure`
+
+2. **`DirectorService`**
+   - Assemble Director input
+   - Request composition through `AiDirectorPort`
+   - Validate the returned plan
+   - Persist it
+   - Record attribution
+
+3. **`AI_DIRECT` asynchronous execution**
+   - HTTP requests enqueue work
+   - Director composition occurs through the job/worker path
+   - No long-running AI execution inside HTTP
+
+4. **Real Director adapter boundary**
+   - Use `AiDirectorPort`
+   - No provider names in domain logic
+   - No provider-specific JSON persisted
+   - Provider implementations remain replaceable
+
+5. **Test/local deterministic adapter (allowed, limited)**
+   - Allowed for tests, development, and contract verification
+   - Must **not** masquerade as production AI
+   - Must **not** be used to falsely mark the production Director capability as available
+
+6. **Honest production capability**
+   - Director becomes available only when an actual configured Director adapter exists
+   - Missing capability produces a typed error
+   - No fake creative fallback
+
+7. **Iteration continuity**
+   - `priorDecisions` should use the previous READY `CreativePlan` when recomposing
+   - Do not create a chat system
+
+8. **Reproducibility**
+   - Persist originating `jobId`
+   - Persist an appropriate fingerprint/hash of assembled Director input
+   - Do not unnecessarily persist sensitive raw input
+
+9. **Meaning-level `CreativePlan`**
+   - Creative intent, concept, tone, arc, strategic decisions, rationale
+   - Must **not** become clip cut lists, absolute timeline timings, render specifications, timeline state, or NLE instructions
+
+10. **Minimal authenticated UI**
+    - Request/compose
+    - Status
+    - View `CreativePlan`
+    - No timeline editor
+    - No Director chat
+    - No rendering
+
+---
+
+## 3. Must not include
+
+- `StoryStructure` generation or population
+- `Timeline`
+- `TimelineClip`
+- Rendering
+- `RenderJob`
+- `FinishedMovie`
+- `Publication`
+- Generate Film
+- Director chat
+- Evaluation scoring
+- Advertising
 - Sponsorship influencing creative decisions
-- Collapsing memory types into one “AI memory” table
-- Vendor columns/enums in Prisma; teaching domain services vendor names
-- Putting provider secrets in Prisma/source/browser
-- Worker-process extraction / S3-R2 (nice-to-have parallel; not required to *define* 2F)
-- Publishing / UFlix / social / mobile
+- Billing / payments
+- Mobile
+- Worker infrastructure extraction
+- Object-storage migration
+- Provider-specific architecture
+- Generic AI memory
+
+Do not modify `StoryStructure`, `Timeline`, `TimelineClip`, `RenderJob`, `FinishedMovie`, or `Publication` schemas as part of Phase 2F.
 
 ---
 
-## 4. Required interfaces / contracts
+## 4. Contracts
 
-**Keep and consume (already authoritative from 2E):**
+**Consume (already authoritative from Phase 2E):**
 
 - `AiDirectorPort.composePlan(input: DirectorInput): Promise<CreativePlan>`
-- `DirectorInput` privacy rules (`director/privacy.ts`)
-- `creativePlanSchema` / `CREATIVE_PLAN_SCHEMA_VERSION = "1.0"`
-- `DirectorCapabilityGateway` (availability / `require` — never returns `providerKey`)
+- `DirectorInput` privacy rules
+- Versioned `CreativePlan` / `creativePlanSchema`
+- `DirectorCapabilityGateway` (availability / `require`)
 - `DirectorContractService.assembleInput` / `validatePlan`
-- Capability registry + `ProviderSelectionPolicy` for any Director-requested capabilities
-- Typed errors: `DIRECTOR_INPUT_INVALID`, `DIRECTOR_CAPABILITY_UNAVAILABLE`, `DIRECTOR_PLAN_INVALID`, `DIRECTOR_PROVIDER_UNAVAILABLE`, `DIRECTOR_CONSTRAINT_CONFLICT`
+- Capability registry + selection policy for Director-requested capabilities
+- Typed errors for invalid input, unavailable capability, invalid plan, unavailable provider, and constraint conflict
 
-**Add in 2F (thin):**
+**Add in 2F (thin, in service of the must-include list):**
 
-- `DirectorService` (or equivalent) orchestration over the contract + port + jobs + plan store
-- Plan repository/port if persistence should stay swappable (optional; Prisma in service is consistent with current services style)
-- Job payload contract for `AI_DIRECT` (projectId, userId, optional planRevision)
+- `DirectorService` — assemble, request compose via `AiDirectorPort`, validate, persist, attribution
+- `AI_DIRECT` job path — HTTP enqueues; worker performs composition
+- First-class `CreativePlan` store — versioned rows, not an overwrite, not `StoryStructure`
 
-**Do not redefine** ports for Storage / Jobs / Analysis / Renderer in this phase.
+**Do not redefine** Storage, Jobs, Analysis, or Renderer ports in this phase.
 
----
-
-## 5. Database changes (if any)
-
-**Likely required:**
-
-- New **`CreativePlan` (or `DirectorPlan`)** model, e.g.:
-  - `id`, `projectId`, `schemaVersion`, `status` (DRAFT/READY/FAILED/SUPERSEDED)
-  - `plan` JSON (YouFlicks-owned shape only)
-  - provenance: `providerKey` string (attribution style, not vendor enum), optional `modelId` / `modelVersion`, `jobId`
-  - `createdAt` / `updatedAt`; keep history (re-direct supersedes, does not delete)
-- Optional: project status transition support toward `DIRECTING` when a job is running
-
-**Not in 2F:**
-
-- Changing `StoryStructure` / `Timeline` / `RenderJob` schemas for generation
-- Vendor enums or sponsor→creative FKs
-- Generic AI memory table
-
-`StoryStructure.adapterKey` already exists for future Director linkage — **leave unused** until Phase 3 maps plan → story with a clear owned story document.
+**Architectural rule:** a deterministic/local adapter may exist for testing and development. It must never be represented as real production AI merely to make the Director capability appear available. The production Director capability is available only when a genuine configured adapter exists behind `AiDirectorPort`.
 
 ---
 
-## 6. Services required
+## 5. Database / provenance
 
-| Service | Role in 2F |
+`CreativePlan` is a first-class persisted artifact (new model or equivalent). It is **not** dumped into `StoryStructure`.
+
+Required fields / qualities:
+
+- Project linkage
+- Versioning (preserve previous versions; do not overwrite)
+- Status
+- Validated YouFlicks-owned plan JSON (meaning-level only)
+- Timestamps
+- Job linkage
+
+Required provenance:
+
+- `providerKey`
+- `capability`
+- `jobId`
+- Input fingerprint/hash (of assembled Director input)
+
+`modelId` / `modelVersion` may be optional. They must not become provider-specific architectural requirements.
+
+Do not add provider-specific architecture, vendor enums, or a generic AI memory table.
+
+Do not change `StoryStructure`, `Timeline`, `TimelineClip`, `RenderJob`, `FinishedMovie`, or `Publication` schemas in Phase 2F.
+
+---
+
+## 6. Services
+
+| Piece | Role in 2F |
 | --- | --- |
-| `DirectorContractService` | Unchanged foundation: assemble + validate |
-| **New `DirectorService`** | Request plan, enqueue `AI_DIRECT`, load/list plans, mark superseded |
-| **New Director worker path** | Claim `AI_DIRECT`, call port, validate, persist, attribution |
-| **New `AiDirectorPort` adapter** | Local deterministic and/or HTTP adapter; normalize host output at boundary |
-| Existing Taste / Intent / Media / Analysis | Inputs only via assembleInput |
-| Credits / Sponsorship | **Untouched** for creative path; credits may later list Director attribution using existing builder patterns |
+| `DirectorContractService` | Unchanged 2E foundation: assemble input, validate plan |
+| **`DirectorService`** | Assemble input; request composition through `AiDirectorPort`; validate; persist; record attribution |
+| **`AI_DIRECT` worker path** | Perform Director composition off the HTTP request; persist validated plan; record `jobId` and other required provenance |
+| **`AiDirectorPort` adapters** | Replaceable implementations behind the port. A test/local deterministic adapter is allowed only for tests/development/contract verification. A genuine configured adapter is required for production Director availability. |
+| Existing Taste / Intent / Media / Analysis | Inputs only, via assembled Director input |
 
-`container.aiDirector()` becomes configured for the chosen adapter; `renderer()` stays throwing.
+Sponsorship must not influence creative decisions. Credits/billing paths are not part of 2F.
+
+`renderer()` stays unimplemented.
 
 ---
 
-## 7. APIs / UI required (if any)
+## 7. APIs / UI
 
-**APIs (authenticated, owner-only):**
+**Minimal authenticated surface (owner-only):**
 
-- `POST /api/projects/:projectId/director/plan` → `202` + job (enqueue compose)
-- `GET /api/projects/:projectId/director/plan` (latest) and/or `.../plans` (history)
-- Optional: `GET .../director/input` debug/preview of assembled `DirectorInput` (never secrets/sponsors/storage keys)
+- Request / compose — HTTP enqueues `AI_DIRECT`; does not run Director composition inline
+- Status — queued / in progress / ready / failed (or equivalent honest states)
+- View `CreativePlan` — read-only meaning-level plan (intent, concept, tone, arc, strategic decisions, rationale)
 
-**UI (minimal):**
+**Must not appear:**
 
-- On project page: “Compose creative plan” (or equivalent) + status (Queued / Directing / Ready / Failed)
-- Read-only plan viewer (concept, tone, decisions, rationale — fields that exist)
-- **No** storyboard, timeline editor, render, or download movie
-
-Health: extend `/api/health` with Director provider readiness (no secrets), mirroring analysis.
+- Timeline editor
+- Director chat
+- Rendering, download movie, or Generate Film
 
 ---
 
 ## 8. Acceptance criteria
 
-- [ ] `ARCHITECTURE.md` defines Phase 2F explicitly; README “Next phase” points to Phase 3 (or named 2G) after 2F completes
-- [ ] At least one `AiDirectorPort` adapter is registered; `container.aiDirector()` no longer throws `providerNotConfigured` in the configured env
-- [ ] Compose is job-backed (`AI_DIRECT`); HTTP handlers return without waiting on model I/O
-- [ ] Output always passes `validateCreativePlan` + privacy/constraint asserts before persistence
-- [ ] Persisted plan is YouFlicks-owned JSON (`schemaVersion: "1.0"`); raw host JSON is not stored or shown
-- [ ] Re-compose keeps prior plan rows (supersede pattern), analogous to re-analysis
-- [ ] Sponsor data cannot enter Director input or plan generation path
-- [ ] Domain code never branches on vendor names; no new vendor Prisma columns
-- [ ] `PIPELINE_STAGES.director.available === true`; story/timeline/render still false
-- [ ] No `StoryStructure` / `Timeline` / `RenderJob` / `FinishedMovie` writes from Director flow
-- [ ] Typed failure when required Director capability is unavailable — no fake plan
-- [ ] Tests cover privacy, validation, job path, and “unconfigured vs configured” adapter behavior
+Phase 2F is complete only when all of the following are true. A local/deterministic adapter used only in tests or development does **not** satisfy production availability.
+
+- [ ] First-class `CreativePlan` persistence exists: project-linked, versioned, statused, validated YouFlicks-owned JSON, timestamps, job linkage; previous versions preserved
+- [ ] Required provenance persisted: `providerKey`, `capability`, `jobId`, input fingerprint/hash
+- [ ] Optional `modelId` / `modelVersion` are not treated as provider-specific architecture
+- [ ] `DirectorService` assembles input, composes through `AiDirectorPort`, validates, persists, and records attribution
+- [ ] HTTP only enqueues `AI_DIRECT`; composition runs on the job/worker path
+- [ ] Domain logic has no provider names; no provider-specific JSON is persisted; adapters remain replaceable
+- [ ] Test/local deterministic adapter (if present) is not represented as production AI and does not mark production Director available
+- [ ] Production Director is available only when a genuine configured adapter exists behind `AiDirectorPort`
+- [ ] Missing capability → typed error; no fake creative fallback
+- [ ] Recompose uses previous READY `CreativePlan` for `priorDecisions`; no chat system
+- [ ] Sensitive raw Director input is not persisted unnecessarily
+- [ ] Persisted `CreativePlan` is meaning-level only (not cut lists, absolute timings, render specs, timeline state, or NLE instructions)
+- [ ] Minimal authenticated UI: request/compose, status, view plan — no timeline editor, Director chat, or rendering
+- [ ] No writes to or schema changes for `StoryStructure`, `Timeline`, `TimelineClip`, `RenderJob`, `FinishedMovie`, or `Publication`
+- [ ] No Generate Film, evaluation scoring, advertising, sponsorship-influenced creative decisions, billing/payments, mobile, worker extraction, object-storage migration, provider-specific architecture, or generic AI memory
 
 ---
 
@@ -149,63 +219,60 @@ Health: extend `/api/health` with Director provider readiness (no secrets), mirr
 | Phase | Why 2F depends on it |
 | --- | --- |
 | **1** | Auth, Prisma, ports, project shell |
-| **2A** | Media inventory for `DirectorInput.mediaInventory` |
-| **2B–2C** | Normalized `MediaAnalysis` + registry/policy; Director must not re-call vendors ad hoc for understanding already stored |
-| **2D** | Taste + project intent → effective brief; attribution/credits patterns for provenance |
-| **2E** | Entire contract stack 2F executes |
-
-**Practical precondition:** projects used for Director compose should have ingest + at least technical analysis; HTTP vision remains optional. Empty media should fail with a clear typed/constraint error, not a hallucinated plan.
+| **2A** | Media inventory for assembled Director input |
+| **2B–2C** | Normalized `MediaAnalysis` + registry/policy already stored; Director must not invent a parallel provider-specific understanding path |
+| **2D** | Taste + project intent for the creative brief; attribution patterns for provenance |
+| **2E** | The contract 2F executes (`assembleInput`, `AiDirectorPort`, `validatePlan`, capability gateway) |
 
 ---
 
-## 10. Deferred to Phase 2G / Phase 3
+## 10. Phase 3 relationship
 
-**Phase 2G (currently undefined in repo):** do **not** invent product scope under “2G” until needed. If a label is useful after 2F, reserve **2G** for *Director iteration & evaluation* (feedback → inferred `TasteSignal`, real `evaluate` boundary, plan revision loops) — still without story/timeline. Otherwise skip 2G and go 2F → Phase 3.
+Phase 2F prepares the architecture for:
 
-**Phase 3 — Story & timeline (authoritative in `ARCHITECTURE.md`):**
+**`CreativePlan` → `StoryStructure` → `Timeline` → Render**
 
-- Owned `StoryStructure` document derived from `CreativePlan` (normalizer; not raw model JSON)
-- Timeline + clip records + review UI (not full NLE)
-- Director/story services consuming ports only
+Phase 2F does **not** implement that pipeline.
 
-**Later (4+):** render, publish, billing, worker extraction at scale, object storage, ads presentation after film complete.
+Phase 3 (authoritative in `ARCHITECTURE.md` as **Story & timeline**) is where an owned `StoryStructure` and timeline would be derived. Rendering and later stages remain after that.
 
 ---
 
 ## 11. Risks
 
-1. **Scope creep into “Generate Film”** — UI wording and exit criteria must keep plan ≠ movie.
-2. **Using `StoryStructure` as a plan dump** — would blur 2F/3 and invite vendor-shaped payloads; mitigate with a dedicated plan table.
-3. **Commercial adapter before local contract proof** — harder to debug privacy/normalization; mitigate by shipping a **local/deterministic Director adapter first**, HTTP second (same playbook as local technical → `http.vision`).
-4. **Request-coupled worker** — extending Next `after()` drain to `AI_DIRECT` inherits analysis stall risk; acceptable for 2F if documented; extraction remains later.
-5. **Capability vacuum** — `STORY_REASONING` etc. have no adapters today; local Director may need to advertise/self-satisfy capabilities carefully without fake fallbacks.
-6. **Doc drift** — without updating `ARCHITECTURE.md` when implementing, README “2F” and Phase 3 will keep colliding for future agents.
+1. **Treating a test/local adapter as production Director** — would falsely mark the capability available. Mitigate: production availability requires a genuine configured adapter behind `AiDirectorPort`; local/deterministic adapters stay test/dev/contract-only.
+2. **Scope creep into Generate Film / story / timeline / render** — UI and persistence must keep `CreativePlan` meaning-level; plan ≠ movie.
+3. **Dumping the plan into `StoryStructure`** — blurs 2F and Phase 3 and invites provider-shaped payloads. Mitigate: first-class `CreativePlan` artifact only.
+4. **Persisting provider-specific JSON or sensitive raw input** — violates the adapter boundary and reproducibility rules. Persist owned plan JSON plus `jobId` and input fingerprint/hash; do not store host JSON or unnecessary raw input.
+5. **Building Director chat for `priorDecisions`** — iteration continuity is previous READY plan → `priorDecisions`, not a conversational UI.
+6. **Long-running compose on HTTP** — forbidden; enqueue `AI_DIRECT` only. Worker-process extraction is out of scope.
 
 ---
 
-## 12. Recommended implementation sequence
+## 12. Implementation sequence
 
-1. Doc lock: write Phase 2F section into `ARCHITECTURE.md` + align README (decision recorded before code).
-2. Prisma: `CreativePlan` (name TBD) model + migration; no story/timeline changes.
-3. Local/`youflicks.local.director` adapter implementing `AiDirectorPort` (deterministic, testable).
-4. `DirectorService` + `AI_DIRECT` worker path + attribution.
-5. Authenticated plan APIs + minimal project UI (compose + view).
-6. Optional HTTP Director adapter behind env (still normalize to `CreativePlan`).
-7. Exit checklist, flip `PIPELINE_STAGES.director`, declare next phase = Phase 3 (and optionally reserve 2G for iteration).
+Phase 2F is **not started**. When it is requested, implement in this order and stop at the approved boundary:
+
+1. Keep this approved specification as the lock; do not expand into Phase 3.
+2. First-class `CreativePlan` persistence (new model or equivalent) + required provenance; no story/timeline/render schema changes.
+3. `DirectorService`: assemble, compose via `AiDirectorPort`, validate, persist, attribution.
+4. `AI_DIRECT` enqueue + worker path (`jobId`, input fingerprint/hash, no inline HTTP AI).
+5. Adapter boundary: replaceable `AiDirectorPort` implementations. Test/local deterministic adapter only for tests/development/contract verification — never as fake production availability.
+6. Genuine configured adapter required before production Director is available; missing capability → typed error.
+7. Recompose: previous READY plan → `priorDecisions`; preserve prior versions.
+8. Minimal authenticated UI: request/compose, status, view `CreativePlan`.
 
 ---
 
-## 13. Recommendation — what Phase 2F should be
+## 13. What Phase 2F is
 
 **Phase 2F = Director Execution & Creative Plan Persistence.**
 
-It sits cleanly between:
+It sits between:
 
 - **2E** — contracts only (`assembleInput` / `validatePlan` / unconfigured port)
-- **Phase 3** — story structure + timeline from a validated plan
+- **Phase 3** — `CreativePlan` → `StoryStructure` → `Timeline` → Render (not implemented in 2F)
 
-It preserves every locked 1–2E rule (provider-agnostic AI, sponsorship isolation, job-backed AI, no fake creative fallbacks, separate memory types).
+It does **not** mean generating films. It means the platform can ask the Director for a plan and keep that plan as a YouFlicks-owned artifact.
 
-It does **not** mean generating films. It means the platform can, for the first time, **ask the Director for a plan and keep that plan** as a YouFlicks-owned artifact — the bridge Phase 3 needs.
-
-**Phase 2G:** leave undefined in product docs until after 2F ships; if needed later, use it for evaluation/iteration loops, not for story/timeline.
+**Phase 2F is approved as specification only. It is not implemented.**
