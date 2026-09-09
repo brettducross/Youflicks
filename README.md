@@ -4,7 +4,7 @@
 
 YouFlicks is an AI-powered filmmaking platform that turns a person’s photos, videos, memories, and ideas into a finished movie.
 
-This repository currently includes **Phase 1** through **M1** (Story from plan: CreativePlan → versioned StoryStructure). It does not generate timelines or rendered films, take payments, or serve ads.
+This repository currently includes **Phase 1** through **M2** (Cut from story: StoryStructure → versioned Timeline). It does not generate missing assets, rendered films, take payments, or serve ads.
 
 Read [ARCHITECTURE.md](./ARCHITECTURE.md) for the analysis, technology choices, deferred work, roadmap, and MVP definition.
 
@@ -19,15 +19,16 @@ Read [ARCHITECTURE.md](./ARCHITECTURE.md) for the analysis, technology choices, 
 - Taste profile, project creative intent, film credits, and sponsorship **foundation** (no marketplace, no ads served)
 - AI Director **execution (Phase 2F)**: enqueue `AI_DIRECT`, compose through `AiDirectorPort`, validate, and persist a versioned YouFlicks-owned `CreativePlan`
 - **M1 story from plan**: enqueue `AI_STORY`, compose through `StoryComposerPort`, validate, and persist a versioned YouFlicks-owned `StoryStructure` / `StoryDocument` (not a timeline or render)
+- **M2 cut from story**: enqueue `AI_TIMELINE`, compose through `TimelineComposerPort`, validate, and persist a versioned YouFlicks-owned `Timeline` / `TimelineDocument` plus `TimelineClip` rows (review-only; not an NLE, render, or GeneratedAsset)
 - Extensible domain schema: User → Project → Media → Analysis → CreativePlan → Story → Timeline → Render → Movie → Publish
-- Ports for object storage, background jobs, AI Director, media analysis, and rendering
+- Ports for object storage, background jobs, AI Director, story composer, timeline composer, media analysis, and rendering
 - Local filesystem storage adapter (swap later for S3/R2 behind the same port)
 - Structured JSON logging and typed `AppError`s
 
 ## What is intentionally not built
 
-- Timeline / Render generation (M2+)
-- Treating the local/deterministic story composer as production AI
+- Rendering / GeneratedAsset / playback (M3+)
+- Treating the local/deterministic story or timeline composer as production AI
 - Named vendor SDKs in the domain
 - Billing, payments, or an advertising marketplace
 - Publishing / UFlix Global
@@ -120,9 +121,10 @@ src/server/analysis     Owned schemas, normalizer, registry, selection
 src/server/personalization  Taste brief and privacy rules
 src/server/director     Director contract (input, plan, capabilities)
 src/server/story        StoryDocument schema, input, validation, availability
-src/server/ports        Storage, jobs, AI, story composer, renderer, analyzer interfaces
-src/server/adapters     Local storage, Postgres jobs, analysis / Director / story adapters
-src/server/services     Project, Media, Analysis, Taste, Intent, Credits, Director, Story
+src/server/timeline     TimelineDocument schema, input, validation, availability
+src/server/ports        Storage, jobs, AI, story composer, timeline composer, renderer, analyzer interfaces
+src/server/adapters     Local storage, Postgres jobs, analysis / Director / story / timeline adapters
+src/server/services     Project, Media, Analysis, Taste, Intent, Credits, Director, Story, Timeline
 prisma/schema.prisma    Domain schema
 ```
 
@@ -172,9 +174,11 @@ Do not add vendor columns to Prisma. Do not teach domain services a vendor name.
 - Without HTTP credentials, analysis still succeeds through the local technical adapter (technical metadata only).
 - Production Director availability requires a configured Director HTTP adapter (`DIRECTOR_HTTP_*`). Local technical analysis does **not** count as Director availability.
 - `DIRECTOR_ALLOW_LOCAL=true` enables the deterministic local Director for development/tests only. It never advertises production availability.
-- Timeline and rendering are not implemented yet.
+- Rendering is not implemented yet.
 - Production story availability requires a configured story HTTP adapter (`STORY_HTTP_*`). Local deterministic composition does **not** count as production story availability.
 - `STORY_ALLOW_LOCAL=true` enables the deterministic local story composer for development/tests only. It never advertises production availability.
+- Production timeline availability requires a configured timeline HTTP adapter (`TIMELINE_HTTP_*`). Local deterministic composition does **not** count as production timeline availability.
+- `TIMELINE_ALLOW_LOCAL=true` enables the deterministic local timeline composer for development/tests only. It never advertises production availability.
 
 ## Taste and project intent (Phase 2D)
 
@@ -218,10 +222,25 @@ M1 turns a READY CreativePlan into a versioned narrative StoryStructure:
 
 See [PHASE_M1_STORY_ROADMAP_DECISION.md](./PHASE_M1_STORY_ROADMAP_DECISION.md).
 
+## Cut from story (M2)
+
+M2 turns a READY StoryStructure into a versioned executable Timeline:
+
+`API → enqueue AI_TIMELINE → worker → TimelineComposerPort.composeTimeline → validate → persist Timeline + TimelineClip`
+
+- Owner-only compose returns **202** with `jobId` (no inline AI).
+- TimelineDocument is editorial-only (tracks / clips / absolute timings). Timing is illegal on CreativePlan and StoryDocument.
+- Placed clips reference existing `MediaAsset` rows only. Unmet story `mediaRoles` are recorded as `unmetMediaRoles` for M3 — never GeneratedAsset IDs or null-asset slots.
+- Rebuild reads the previous READY TimelineDocument for continuity. No chat. No NLE.
+- Review-only UI: “Your cut”, Build / Rebuild, status, read-only ordered shot list with simple times.
+- Production availability requires a genuine configured timeline adapter. Local deterministic is test/dev only.
+
+See [PHASE_M2_TIMELINE_ROADMAP_DECISION.md](./PHASE_M2_TIMELINE_ROADMAP_DECISION.md).
+
 ## Next phase
 
-M2+ pipeline (not implemented):
+M3+ pipeline (not implemented):
 
-`StoryStructure → Timeline → assets → Render → Playback → FinishedMovie`
+`Timeline → Generated/processed assets → Render → Playback → FinishedMovie`
 
-Do not implement timeline editing, rendering, or Generate Film until those milestones are requested.
+Do not implement asset generation, rendering, playback, or Generate Film until those milestones are requested.

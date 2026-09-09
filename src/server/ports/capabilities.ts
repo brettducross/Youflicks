@@ -37,10 +37,19 @@ export const StoryCapability = {
 
 export type StoryCapabilityValue = (typeof StoryCapability)[keyof typeof StoryCapability];
 
+/** Capabilities the timeline composer may use. Separate from AiDirectorPort and StoryComposerPort. */
+export const TimelineCapability = {
+  TIMELINE_COMPOSITION: "TIMELINE_COMPOSITION",
+} as const;
+
+export type TimelineCapabilityValue =
+  (typeof TimelineCapability)[keyof typeof TimelineCapability];
+
 export const Capability = {
   ...AnalysisCapability,
   ...DirectorCapability,
   ...StoryCapability,
+  ...TimelineCapability,
 } as const;
 
 export type CapabilityValue = (typeof Capability)[keyof typeof Capability];

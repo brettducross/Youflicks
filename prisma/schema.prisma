@@ -240,23 +240,44 @@ model StoryStructure {
   @@map("story_structure")
 }
 
+/// M2 — YouFlicks-owned executable TimelineDocument. Not a StoryStructure.
+/// Each version derives from exactly one READY StoryStructure version.
+/// Versions are preserved. In-progress belongs on Job, not on this row.
 model Timeline {
-  id                String          @id @default(cuid())
-  projectId         String
-  project           Project         @relation(fields: [projectId], references: [id], onDelete: Cascade)
-  storyStructureId  String?
-  storyStructure    StoryStructure? @relation(fields: [storyStructureId], references: [id], onDelete: SetNull)
-  version           Int             @default(1)
-  /// DRAFT | READY | SUPERSEDED
-  status            String          @default("DRAFT")
-  payload           Json?
-  createdAt         DateTime        @default(now())
-  updatedAt         DateTime        @updatedAt
+  id                    String         @id @default(cuid())
+  projectId             String
+  project               Project        @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  version               Int
+  /// DRAFT | READY | SUPERSEDED | FAILED — never PENDING/RUNNING.
+  status                String         @default("DRAFT")
+  /// Validated YouFlicks-owned TimelineDocument JSON (schemaVersion "1.0").
+  payload               Json?
+  jobId                 String?
+  /// SHA-256 of assembled TimelineComposerInput. Raw input is not stored.
+  inputFingerprint      String
+  /// Provenance: exactly one READY StoryStructure version.
+  storyStructureId      String
+  storyStructure        StoryStructure @relation(fields: [storyStructureId], references: [id], onDelete: Restrict)
+  storyStructureVersion Int
+  storyFingerprint      String?
+  /// Convenience copies from StoryStructure provenance — not a second source of truth.
+  creativePlanId        String?
+  creativePlanVersion   Int?
+  /// Adapter key — provenance only, never a vendor enum.
+  providerKey           String
+  /// Capability the timeline composer used (e.g. TIMELINE_COMPOSITION).
+  capability            String
+  modelId               String?
+  modelVersion          String?
+  createdAt             DateTime       @default(now())
+  updatedAt             DateTime       @updatedAt
 
   clips      TimelineClip[]
   renderJobs RenderJob[]
 
   @@unique([projectId, version])
+  @@index([projectId, createdAt])
+  @@index([jobId])
   @@map("timeline")
 }
 
@@ -264,11 +285,14 @@ model TimelineClip {
   id         String     @id @default(cuid())
   timelineId String
   timeline   Timeline   @relation(fields: [timelineId], references: [id], onDelete: Cascade)
-  assetId    String?
-  asset      MediaAsset? @relation(fields: [assetId], references: [id], onDelete: SetNull)
+  /// Required MediaAsset id for every placed clip. Unmet roles are not clip rows.
+  assetId    String
+  asset      MediaAsset @relation(fields: [assetId], references: [id], onDelete: Restrict)
   sortOrder  Int
-  startMs    Int        @default(0)
-  endMs      Int        @default(0)
+  /// Absolute range on the timeline (projection of timelineStartMs / timelineEndMs).
+  startMs    Int
+  endMs      Int
+  /// YouFlicks-owned clip extras: trackKey, source in/out, transition, caption, notes.
   payload    Json?
   createdAt  DateTime   @default(now())
   updatedAt  DateTime   @updatedAt
@@ -343,7 +367,7 @@ model Job {
   id          String    @id @default(cuid())
   projectId   String?
   project     Project?  @relation(fields: [projectId], references: [id], onDelete: Cascade)
-  /// MEDIA_ANALYZE | AI_DIRECT | AI_STORY | RENDER | PUBLISH | …
+  /// MEDIA_ANALYZE | AI_DIRECT | AI_STORY | AI_TIMELINE | RENDER | PUBLISH | …
   type        String
   /// PENDING | RUNNING | SUCCEEDED | FAILED | CANCELLED
   status      String    @default("PENDING")

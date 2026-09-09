@@ -17,7 +17,9 @@ import type { MediaAnalyzerPort } from "@/server/ports/media-analyzer";
 import type { RendererPort } from "@/server/ports/renderer";
 import type { StoragePort } from "@/server/ports/storage";
 import type { StoryComposerPort } from "@/server/ports/story-composer";
+import type { TimelineComposerPort } from "@/server/ports/timeline-composer";
 import { resolveStoryComposerAdapter } from "@/server/story/provider-config";
+import { resolveTimelineComposerAdapter } from "@/server/timeline/provider-config";
 import { AnalysisService } from "@/server/services/analysis";
 import { AnalysisWorker } from "@/server/services/analysis-worker";
 import { AttributionService } from "@/server/services/attribution";
@@ -33,6 +35,9 @@ import { StoryContractService } from "@/server/services/story-contract";
 import { StoryService } from "@/server/services/story";
 import { StoryWorker } from "@/server/services/story-worker";
 import { TasteService } from "@/server/services/taste";
+import { TimelineContractService } from "@/server/services/timeline-contract";
+import { TimelineService } from "@/server/services/timeline";
+import { TimelineWorker } from "@/server/services/timeline-worker";
 
 export type ServiceContainer = {
   storage: StoragePort;
@@ -52,10 +57,14 @@ export type ServiceContainer = {
   story: StoryContractService;
   storyService: StoryService;
   storyWorker: StoryWorker;
+  timeline: TimelineContractService;
+  timelineService: TimelineService;
+  timelineWorker: TimelineWorker;
   providers: ProviderRegistry;
   mediaAnalyzer(): MediaAnalyzerPort;
   aiDirector(): AiDirectorPort;
   storyComposer(): StoryComposerPort;
+  timelineComposer(): TimelineComposerPort;
   renderer(): RendererPort;
 };
 
@@ -138,6 +147,27 @@ function createServices(): ServiceContainer {
     },
   );
   const storyWorker = new StoryWorker(jobs, storyService);
+  const timeline = new TimelineContractService(projects, taste, intent, media, analysis);
+  const timelineService = new TimelineService(
+    jobs,
+    timeline,
+    projects,
+    attribution,
+    () => {
+      const resolved = resolveTimelineComposerAdapter();
+      if (!resolved) return null;
+      return { adapter: resolved.adapter, attribution: resolved.attribution };
+    },
+    () => {
+      const resolved = resolveTimelineComposerAdapter();
+      return {
+        productionAvailable: Boolean(resolved?.productionAvailable),
+        localDevAvailable: Boolean(resolved?.localDevAvailable),
+        canCompose: Boolean(resolved),
+      };
+    },
+  );
+  const timelineWorker = new TimelineWorker(jobs, timelineService);
 
   return {
     storage,
@@ -157,6 +187,9 @@ function createServices(): ServiceContainer {
     story,
     storyService,
     storyWorker,
+    timeline,
+    timelineService,
+    timelineWorker,
     providers,
     mediaAnalyzer() {
       return analyzer;
@@ -172,6 +205,13 @@ function createServices(): ServiceContainer {
       const resolved = resolveStoryComposerAdapter();
       if (!resolved) {
         throw AppError.providerNotConfigured("StoryComposerPort");
+      }
+      return resolved.adapter;
+    },
+    timelineComposer() {
+      const resolved = resolveTimelineComposerAdapter();
+      if (!resolved) {
+        throw AppError.providerNotConfigured("TimelineComposerPort");
       }
       return resolved.adapter;
     },
