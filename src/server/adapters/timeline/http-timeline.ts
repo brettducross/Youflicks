@@ -140,7 +140,9 @@ const TIMELINE_SYSTEM_PROMPT = `You are the YouFlicks timeline composer. Return 
     "id": string,
     "trackKey": "video.primary"|"audio.voice"|"audio.music"|"caption.main",
     "order": number,
-    "assetId": string,
+    "sourceKind": "MEDIA_ASSET"|"GENERATED_ASSET",
+    "assetId"?: string,
+    "generatedAssetId"?: string,
     "storySceneId"?: string,
     "mediaRole"?: string,
     "timelineStartMs": number,
@@ -157,8 +159,9 @@ const TIMELINE_SYSTEM_PROMPT = `You are the YouFlicks timeline composer. Return 
 }
 Rules:
 - Executable editorial cut only. Timing is legal here (timelineStartMs/timelineEndMs, source in/out).
-- Place ONLY existing MediaAsset ids from mediaInventory. Never invent assets, never use GeneratedAsset ids, never emit clips with null/missing assetId.
-- Unmet story mediaRoles go in unmetMediaRoles — not as placeholder clips.
+- Place existing MediaAsset ids from mediaInventory as sourceKind MEDIA_ASSET + assetId.
+- Place READY GeneratedAsset ids from generatedInventory as sourceKind GENERATED_ASSET + generatedAssetId. Exactly one id per clip.
+- Never invent assets. Unmet story mediaRoles go in unmetMediaRoles — not as placeholder clips.
 - Track keys are the fixed YouFlicks vocabulary only. Light transitions only.
 - captionText only on caption.main.
 - Copy source from the input story identity.

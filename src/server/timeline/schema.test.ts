@@ -78,7 +78,7 @@ describe("TimelineDocument schema v1", () => {
     ).toThrow(/StoryDocument|schema/i);
   });
 
-  it("rejects render, VLC, GeneratedAsset, and host JSON smuggling", () => {
+  it("rejects render, VLC, and host JSON smuggling at the document root", () => {
     expect(() => validateTimelineDocument(validDocument({ ffmpeg: { graph: [] } }))).toThrow(
       AppError,
     );
@@ -87,6 +87,27 @@ describe("TimelineDocument schema v1", () => {
       validateTimelineDocument(validDocument({ generatedAssetId: "gen_1" })),
     ).toThrow(AppError);
     expect(() => validateTimelineDocument(validDocument({ renderSpec: {} }))).toThrow(AppError);
+  });
+
+  it("accepts GENERATED_ASSET clips with generatedAssetId and no assetId", () => {
+    const document = validateTimelineDocument(
+      validDocument({
+        clips: [
+          {
+            id: "clip-g",
+            trackKey: "video.primary",
+            order: 0,
+            sourceKind: "GENERATED_ASSET",
+            generatedAssetId: "gen_1",
+            timelineStartMs: 0,
+            timelineEndMs: 1000,
+          },
+        ],
+      }),
+    );
+    expect(document.clips[0]?.sourceKind).toBe("GENERATED_ASSET");
+    expect(document.clips[0]?.generatedAssetId).toBe("gen_1");
+    expect(document.clips[0]?.assetId).toBeUndefined();
   });
 
   it("rejects unknown track keys and captionText on non-caption tracks", () => {

@@ -62,6 +62,7 @@ export type ProviderAttributionView = {
   id: string;
   projectId: string;
   assetId: string | null;
+  generatedAssetId: string | null;
   analysisId: string | null;
   jobId: string | null;
   providerKey: string;

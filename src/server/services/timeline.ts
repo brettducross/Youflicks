@@ -76,6 +76,7 @@ type TimelineJobPayload = {
 type TimelineClipPayload = {
   clipId: string;
   trackKey: string;
+  sourceKind?: string;
   sourceInMs?: number;
   sourceOutMs?: number;
   transitionFromPrevious?: string;
@@ -123,6 +124,11 @@ export class TimelineService {
       throw AppError.providerNotConfigured("TimelineComposerPort");
     }
     return { mode: "production" as const };
+  }
+
+  /** Explicit Rebuild cut (D9). Same compose path — never auto-fired on generation success. */
+  async requestRebuild(userId: string, projectId: string) {
+    return this.requestCompose(userId, projectId);
   }
 
   async requestCompose(userId: string, projectId: string) {
@@ -217,7 +223,12 @@ export class TimelineService {
     const inputFingerprint = fingerprintTimelineComposerInput(input);
 
     const rawDocument = await resolved.adapter.composeTimeline(input);
-    const document = this.contract.validateDocument(source, input.mediaInventory, rawDocument);
+    const document = this.contract.validateDocument(
+      source,
+      input.mediaInventory,
+      rawDocument,
+      input.generatedInventory ?? [],
+    );
     const { attribution } = resolved;
 
     const latestVersion = await prisma.timeline.findFirst({
@@ -262,7 +273,10 @@ export class TimelineService {
         await tx.timelineClip.createMany({
           data: document.clips.map((clip, index) => ({
             timelineId: created.id,
-            assetId: clip.assetId,
+            sourceKind: clip.sourceKind ?? "MEDIA_ASSET",
+            assetId: clip.sourceKind === "GENERATED_ASSET" ? null : clip.assetId ?? null,
+            generatedAssetId:
+              clip.sourceKind === "GENERATED_ASSET" ? clip.generatedAssetId ?? null : null,
             sortOrder: index,
             startMs: clip.timelineStartMs,
             endMs: clip.timelineEndMs,
@@ -364,6 +378,7 @@ function clipPayload(clip: TimelineDocument["clips"][number]): TimelineClipPaylo
   return {
     clipId: clip.id,
     trackKey: clip.trackKey,
+    sourceKind: clip.sourceKind ?? "MEDIA_ASSET",
     sourceInMs: clip.sourceInMs,
     sourceOutMs: clip.sourceOutMs,
     transitionFromPrevious: clip.transitionFromPrevious,

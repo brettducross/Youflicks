@@ -146,4 +146,24 @@ export class PostgresJobQueue implements JobQueuePort {
     });
     return toRecord(row);
   }
+
+  async cancel(id: string): Promise<JobRecord> {
+    const current = await this.db.job.findUniqueOrThrow({ where: { id } });
+    if (
+      current.status === JobStatus.CANCELLED ||
+      current.status === JobStatus.SUCCEEDED ||
+      current.status === JobStatus.FAILED
+    ) {
+      return toRecord(current);
+    }
+    const row = await this.db.job.update({
+      where: { id },
+      data: {
+        status: JobStatus.CANCELLED,
+        finishedAt: new Date(),
+      },
+    });
+    logger.info("jobs.cancel", { jobId: row.id, type: row.type });
+    return toRecord(row);
+  }
 }

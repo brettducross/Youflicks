@@ -18,8 +18,13 @@ import type { RendererPort } from "@/server/ports/renderer";
 import type { StoragePort } from "@/server/ports/storage";
 import type { StoryComposerPort } from "@/server/ports/story-composer";
 import type { TimelineComposerPort } from "@/server/ports/timeline-composer";
+import type { AssetGeneratorPort } from "@/server/ports/asset-generator";
+import { resolveAssetGeneratorAdapter, describeAssetAvailability } from "@/server/assets/provider-config";
 import { resolveStoryComposerAdapter } from "@/server/story/provider-config";
 import { resolveTimelineComposerAdapter } from "@/server/timeline/provider-config";
+import { AssetContractService } from "@/server/services/asset-contract";
+import { AssetService } from "@/server/services/asset";
+import { AssetWorker } from "@/server/services/asset-worker";
 import { AnalysisService } from "@/server/services/analysis";
 import { AnalysisWorker } from "@/server/services/analysis-worker";
 import { AttributionService } from "@/server/services/attribution";
@@ -60,11 +65,15 @@ export type ServiceContainer = {
   timeline: TimelineContractService;
   timelineService: TimelineService;
   timelineWorker: TimelineWorker;
+  assets: AssetContractService;
+  assetService: AssetService;
+  assetWorker: AssetWorker;
   providers: ProviderRegistry;
   mediaAnalyzer(): MediaAnalyzerPort;
   aiDirector(): AiDirectorPort;
   storyComposer(): StoryComposerPort;
   timelineComposer(): TimelineComposerPort;
+  assetGenerator(): AssetGeneratorPort;
   renderer(): RendererPort;
 };
 
@@ -168,6 +177,25 @@ function createServices(): ServiceContainer {
     },
   );
   const timelineWorker = new TimelineWorker(jobs, timelineService);
+  const assets = new AssetContractService(projects, taste, intent);
+  const assetService = new AssetService(
+    jobs,
+    storage,
+    assets,
+    projects,
+    attribution,
+    () => {
+      const resolved = resolveAssetGeneratorAdapter(storage);
+      if (!resolved) return null;
+      return {
+        adapter: resolved.adapter,
+        attributionFor: resolved.attributionFor,
+        supportedCapabilities: resolved.supportedCapabilities,
+      };
+    },
+    () => describeAssetAvailability(resolveAssetGeneratorAdapter(storage)),
+  );
+  const assetWorker = new AssetWorker(jobs, assetService);
 
   return {
     storage,
@@ -190,6 +218,9 @@ function createServices(): ServiceContainer {
     timeline,
     timelineService,
     timelineWorker,
+    assets,
+    assetService,
+    assetWorker,
     providers,
     mediaAnalyzer() {
       return analyzer;
@@ -212,6 +243,13 @@ function createServices(): ServiceContainer {
       const resolved = resolveTimelineComposerAdapter();
       if (!resolved) {
         throw AppError.providerNotConfigured("TimelineComposerPort");
+      }
+      return resolved.adapter;
+    },
+    assetGenerator() {
+      const resolved = resolveAssetGeneratorAdapter(storage);
+      if (!resolved) {
+        throw AppError.providerNotConfigured("AssetGeneratorPort");
       }
       return resolved.adapter;
     },

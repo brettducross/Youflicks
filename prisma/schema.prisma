@@ -103,6 +103,7 @@ model Project {
   updatedAt   DateTime @updatedAt
 
   assets           MediaAsset[]
+  generatedAssets  GeneratedAsset[]
   creativePlans    CreativePlan[]
   storyStructures  StoryStructure[]
   timelines        Timeline[]
@@ -172,11 +173,70 @@ model MediaAsset {
   createdAt   DateTime @default(now())
   updatedAt   DateTime @updatedAt
 
-  analyses MediaAnalysis[]
-  clips    TimelineClip[]
+  analyses     MediaAnalysis[]
+  clips        TimelineClip[]
+  enhancements GeneratedAsset[]
 
   @@index([projectId, createdAt])
   @@map("media_asset")
+}
+
+/// M3 — YouFlicks-owned generated or processed media. Distinct from MediaAsset.
+/// In-progress belongs on Job, not on this row. Bytes live behind StoragePort keys.
+model GeneratedAsset {
+  id          String  @id @default(cuid())
+  projectId   String
+  project     Project @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  /// DRAFT | READY | SUPERSEDED | FAILED — never PENDING/RUNNING.
+  status      String  @default("DRAFT")
+  /// IMAGE | VOICE_OVER | MUSIC | SFX | VIDEO_CLIP | ENHANCEMENT
+  kind        String
+  /// GENERATED | PROCESSED
+  origin      String
+  role        String
+  mimeType    String
+  byteSize    BigInt
+  /// Opaque StoragePort key. Never a vendor URL.
+  storageKey  String
+  previewKey  String?
+  durationMs  Int?
+  width       Int?
+  height      Int?
+  checksum    String?
+  /// Validated YouFlicks-owned GeneratedAssetDocument JSON (schemaVersion "1.0").
+  payload     Json
+  jobId       String?
+  /// SHA-256 of assembled AssetGeneratorInput. Raw input is not stored.
+  inputFingerprint String
+  /// Adapter key — provenance only, never a vendor enum.
+  providerKey      String
+  /// YouFlicks capability string (e.g. IMAGE_GENERATION).
+  capability       String
+  modelId          String?
+  modelVersion     String?
+  /// Fulfillment against a READY Timeline unmet role.
+  timelineId       String?
+  timeline         Timeline? @relation(fields: [timelineId], references: [id], onDelete: SetNull)
+  timelineVersion  Int?
+  storySceneId     String?
+  storyStructureId String?
+  storyStructureVersion Int?
+  sourceMediaAssetId String?
+  sourceMediaAsset   MediaAsset? @relation(fields: [sourceMediaAssetId], references: [id], onDelete: Restrict)
+  /// Prior READY sibling replaced on regenerate.
+  replacesAssetId    String?
+  replacesAsset      GeneratedAsset?  @relation("GeneratedAssetReplacement", fields: [replacesAssetId], references: [id], onDelete: SetNull)
+  replacedBy         GeneratedAsset[] @relation("GeneratedAssetReplacement")
+  createdAt          DateTime @default(now())
+  updatedAt          DateTime @updatedAt
+
+  clips        TimelineClip[]
+  attributions ProviderAttribution[]
+
+  @@index([projectId, createdAt])
+  @@index([jobId])
+  @@index([timelineId, role])
+  @@map("generated_asset")
 }
 
 model MediaAnalysis {
@@ -272,8 +332,9 @@ model Timeline {
   createdAt             DateTime       @default(now())
   updatedAt             DateTime       @updatedAt
 
-  clips      TimelineClip[]
-  renderJobs RenderJob[]
+  clips           TimelineClip[]
+  generatedAssets GeneratedAsset[]
+  renderJobs      RenderJob[]
 
   @@unique([projectId, version])
   @@index([projectId, createdAt])
@@ -285,9 +346,14 @@ model TimelineClip {
   id         String     @id @default(cuid())
   timelineId String
   timeline   Timeline   @relation(fields: [timelineId], references: [id], onDelete: Cascade)
-  /// Required MediaAsset id for every placed clip. Unmet roles are not clip rows.
-  assetId    String
-  asset      MediaAsset @relation(fields: [assetId], references: [id], onDelete: Restrict)
+  /// MEDIA_ASSET | GENERATED_ASSET. Historical M2 rows remain MEDIA_ASSET.
+  sourceKind String     @default("MEDIA_ASSET")
+  /// Required when sourceKind is MEDIA_ASSET. Null when GENERATED_ASSET.
+  assetId    String?
+  asset      MediaAsset? @relation(fields: [assetId], references: [id], onDelete: Restrict)
+  /// Required when sourceKind is GENERATED_ASSET. Null when MEDIA_ASSET.
+  generatedAssetId String?
+  generatedAsset   GeneratedAsset? @relation(fields: [generatedAssetId], references: [id], onDelete: Restrict)
   sortOrder  Int
   /// Absolute range on the timeline (projection of timelineStartMs / timelineEndMs).
   startMs    Int
@@ -367,7 +433,7 @@ model Job {
   id          String    @id @default(cuid())
   projectId   String?
   project     Project?  @relation(fields: [projectId], references: [id], onDelete: Cascade)
-  /// MEDIA_ANALYZE | AI_DIRECT | AI_STORY | AI_TIMELINE | RENDER | PUBLISH | …
+  /// MEDIA_ANALYZE | AI_DIRECT | AI_STORY | AI_TIMELINE | AI_ASSET | RENDER | PUBLISH | …
   type        String
   /// PENDING | RUNNING | SUCCEEDED | FAILED | CANCELLED
   status      String    @default("PENDING")
@@ -481,9 +547,11 @@ model ProviderAttribution {
   id           String   @id @default(cuid())
   projectId    String
   project      Project  @relation(fields: [projectId], references: [id], onDelete: Cascade)
-  assetId      String?
-  analysisId   String?
-  jobId        String?
+  assetId           String?
+  generatedAssetId  String?
+  generatedAsset    GeneratedAsset? @relation(fields: [generatedAssetId], references: [id], onDelete: SetNull)
+  analysisId        String?
+  jobId             String?
   providerKey  String
   capability   String
   modelId      String?
@@ -493,6 +561,7 @@ model ProviderAttribution {
 
   @@index([projectId, recordedAt])
   @@index([assetId])
+  @@index([generatedAssetId])
   @@map("provider_attribution")
 }
 

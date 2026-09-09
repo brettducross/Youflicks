@@ -36,13 +36,21 @@ export const timelineTrackSchema = z
   })
   .strict();
 
+export const TIMELINE_CLIP_SOURCE_KINDS = ["MEDIA_ASSET", "GENERATED_ASSET"] as const;
+
+export type TimelineClipSourceKind = (typeof TIMELINE_CLIP_SOURCE_KINDS)[number];
+
 export const timelineClipSchema = z
   .object({
     id: z.string().min(1).max(64),
     trackKey: z.enum(TIMELINE_TRACK_KEYS),
     order: z.number().int().nonnegative(),
-    /** Required MediaAsset id. Never GeneratedAsset. Never null. */
-    assetId: z.string().min(1).max(128),
+    /** MEDIA_ASSET | GENERATED_ASSET. Historical M2 clips default to MEDIA_ASSET. */
+    sourceKind: z.enum(TIMELINE_CLIP_SOURCE_KINDS).optional().default("MEDIA_ASSET"),
+    /** Required when sourceKind is MEDIA_ASSET. */
+    assetId: z.string().min(1).max(128).optional(),
+    /** Required when sourceKind is GENERATED_ASSET. YouFlicks id only — not vendor JSON. */
+    generatedAssetId: z.string().min(1).max(128).optional(),
     storySceneId: z.string().max(64).optional(),
     mediaRole: z.string().max(64).optional(),
     timelineStartMs: z.number().int().nonnegative(),
@@ -53,7 +61,42 @@ export const timelineClipSchema = z
     captionText: z.string().max(2000).optional(),
     notes: z.string().max(2000).optional(),
   })
-  .strict();
+  .strict()
+  .superRefine((clip, ctx) => {
+    const kind = clip.sourceKind ?? "MEDIA_ASSET";
+    if (kind === "MEDIA_ASSET") {
+      if (!clip.assetId) {
+        ctx.addIssue({
+          code: "custom",
+          message: "MEDIA_ASSET clips require assetId.",
+          path: ["assetId"],
+        });
+      }
+      if (clip.generatedAssetId) {
+        ctx.addIssue({
+          code: "custom",
+          message: "MEDIA_ASSET clips must not include generatedAssetId.",
+          path: ["generatedAssetId"],
+        });
+      }
+    }
+    if (kind === "GENERATED_ASSET") {
+      if (!clip.generatedAssetId) {
+        ctx.addIssue({
+          code: "custom",
+          message: "GENERATED_ASSET clips require generatedAssetId.",
+          path: ["generatedAssetId"],
+        });
+      }
+      if (clip.assetId) {
+        ctx.addIssue({
+          code: "custom",
+          message: "GENERATED_ASSET clips must not include assetId.",
+          path: ["assetId"],
+        });
+      }
+    }
+  });
 
 export const unmetMediaRoleSchema = z
   .object({
@@ -94,7 +137,13 @@ export type TimelineDocument = z.infer<typeof timelineDocumentSchema>;
 export type TimelineContinuitySubset = {
   title?: string;
   clips: Array<
-    Pick<TimelineClipDocument, "assetId" | "trackKey" | "order" | "mediaRole" | "storySceneId">
+    Pick<TimelineClipDocument, "trackKey" | "order"> &
+      Partial<
+        Pick<
+          TimelineClipDocument,
+          "assetId" | "generatedAssetId" | "sourceKind" | "mediaRole" | "storySceneId"
+        >
+      >
   >;
 };
 

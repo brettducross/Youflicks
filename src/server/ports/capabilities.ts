@@ -45,11 +45,26 @@ export const TimelineCapability = {
 export type TimelineCapabilityValue =
   (typeof TimelineCapability)[keyof typeof TimelineCapability];
 
+/** Capabilities asset generation may use. Separate from Director/Story/Timeline ports. */
+export const AssetCapability = {
+  IMAGE_GENERATION: "IMAGE_GENERATION",
+  VOICE_SYNTHESIS: "VOICE_SYNTHESIS",
+  MUSIC_GENERATION: "MUSIC_GENERATION",
+  SFX_GENERATION: "SFX_GENERATION",
+  VIDEO_GENERATION: "VIDEO_GENERATION",
+  MEDIA_ENHANCEMENT: "MEDIA_ENHANCEMENT",
+} as const;
+
+export type AssetCapabilityValue = (typeof AssetCapability)[keyof typeof AssetCapability];
+
+export const ALL_ASSET_CAPABILITIES = Object.values(AssetCapability);
+
 export const Capability = {
   ...AnalysisCapability,
   ...DirectorCapability,
   ...StoryCapability,
   ...TimelineCapability,
+  ...AssetCapability,
 } as const;
 
 export type CapabilityValue = (typeof Capability)[keyof typeof Capability];

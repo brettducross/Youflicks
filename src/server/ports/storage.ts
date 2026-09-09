@@ -2,7 +2,8 @@
  * Object storage port.
  *
  * Implementations must not leak vendor URLs into the domain model.
- * Persist the returned `key` on MediaAsset.storageKey / FinishedMovie.storageKey.
+ * Persist the returned `key` on MediaAsset.storageKey / GeneratedAsset.storageKey.
+ * Never persist vendor URLs as domain truth.
  */
 import type { Readable } from "node:stream";
 

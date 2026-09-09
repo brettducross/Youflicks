@@ -9,8 +9,10 @@ export type { JobQueuePort, JobRecord, EnqueueJobInput, FailJobInput } from "./j
 export type { AiDirectorPort } from "./ai-director";
 export type { StoryComposerPort } from "./story-composer";
 export type { TimelineComposerPort } from "./timeline-composer";
+export type { AssetGeneratorPort } from "./asset-generator";
 export type {
   AnalysisCapabilityValue,
+  AssetCapabilityValue,
   CapabilityValue,
   DirectorCapabilityValue,
   StoryCapabilityValue,
@@ -18,6 +20,7 @@ export type {
 } from "./capabilities";
 export {
   AnalysisCapability,
+  AssetCapability,
   Capability,
   DirectorCapability,
   StoryCapability,

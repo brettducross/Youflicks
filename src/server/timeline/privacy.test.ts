@@ -78,6 +78,18 @@ describe("TimelineComposerInput privacy", () => {
       },
     };
     expect(() => assertTimelineComposerInputPrivacy(withPrior)).not.toThrow();
+    const withGenerated = {
+      ...baseInput(),
+      generatedInventory: [
+        {
+          generatedAssetId: "gen_1",
+          kind: "IMAGE",
+          role: "intimate_portrait",
+          durationMs: 3000,
+        },
+      ],
+    };
+    expect(() => assertTimelineComposerInputPrivacy(withGenerated)).not.toThrow();
     const serialized = JSON.stringify(baseInput());
     expect(serialized).not.toMatch(/apiKey|authorization|sponsor|email|storageKey/i);
     expect(baseInput()).not.toHaveProperty("userId");

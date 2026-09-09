@@ -41,4 +41,5 @@ export interface JobQueuePort {
   claimNext(types?: string[]): Promise<JobRecord | null>;
   complete(id: string, result?: unknown): Promise<JobRecord>;
   fail(id: string, input: FailJobInput): Promise<JobRecord>;
+  cancel(id: string): Promise<JobRecord>;
 }

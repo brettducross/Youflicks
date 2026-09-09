@@ -124,6 +124,31 @@ describe("LocalDeterministicTimelineComposer", () => {
     expect(second.title).toBe(first.title);
   });
 
+  it("places READY GeneratedAssets from generatedInventory and shrinks unmet roles", async () => {
+    const composer = new LocalDeterministicTimelineComposer();
+    const document = await composer.composeTimeline(
+      baseInput({
+        generatedInventory: [
+          {
+            generatedAssetId: "gen_portrait",
+            kind: "IMAGE",
+            role: "intimate_portrait",
+            durationMs: 3000,
+            storySceneId: "scene-arrive",
+          },
+        ],
+      }),
+    );
+    expect(document.clips.some((clip) => clip.sourceKind === "GENERATED_ASSET")).toBe(true);
+    expect(
+      document.clips.some((clip) => clip.generatedAssetId === "gen_portrait"),
+    ).toBe(true);
+    expect(document.unmetMediaRoles?.some((item) => item.role === "intimate_portrait")).toBe(
+      false,
+    );
+    expect(() => validateTimelineDocument(document)).not.toThrow();
+  });
+
   it("does not invent placeholder clips when media is missing", async () => {
     const composer = new LocalDeterministicTimelineComposer();
     const document = await composer.composeTimeline(baseInput({ mediaInventory: [] }));

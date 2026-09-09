@@ -58,6 +58,24 @@ const envSchema = z.object({
     .enum(["true", "false", "1", "0", ""])
     .optional()
     .transform((value) => value === "true" || value === "1"),
+  ASSET_HTTP_PROVIDER_KEY: z.string().default("http.asset"),
+  ASSET_HTTP_BASE_URL: z.string().optional(),
+  ASSET_HTTP_API_KEY: z.string().optional(),
+  ASSET_HTTP_MODEL: z.string().optional(),
+  ASSET_HTTP_TIMEOUT_MS: z.coerce.number().int().positive().default(90_000),
+  /**
+   * Optional comma-separated YouFlicks capability strings the HTTP adapter covers.
+   * Empty means all locked asset capabilities when the HTTP adapter is configured.
+   */
+  ASSET_HTTP_CAPABILITIES: z.string().optional(),
+  /**
+   * Explicit opt-in for local/deterministic asset generation in development/test.
+   * Forced false in production regardless of the env var value.
+   */
+  ASSET_ALLOW_LOCAL: z
+    .enum(["true", "false", "1", "0", ""])
+    .optional()
+    .transform((value) => value === "true" || value === "1"),
 });
 
 export type AppEnv = z.infer<typeof envSchema>;
@@ -97,6 +115,13 @@ function readEnv(): AppEnv {
     TIMELINE_HTTP_MODEL: process.env.TIMELINE_HTTP_MODEL || undefined,
     TIMELINE_HTTP_TIMEOUT_MS: process.env.TIMELINE_HTTP_TIMEOUT_MS ?? 60_000,
     TIMELINE_ALLOW_LOCAL: process.env.TIMELINE_ALLOW_LOCAL ?? "",
+    ASSET_HTTP_PROVIDER_KEY: process.env.ASSET_HTTP_PROVIDER_KEY ?? "http.asset",
+    ASSET_HTTP_BASE_URL: process.env.ASSET_HTTP_BASE_URL || undefined,
+    ASSET_HTTP_API_KEY: process.env.ASSET_HTTP_API_KEY || undefined,
+    ASSET_HTTP_MODEL: process.env.ASSET_HTTP_MODEL || undefined,
+    ASSET_HTTP_TIMEOUT_MS: process.env.ASSET_HTTP_TIMEOUT_MS ?? 90_000,
+    ASSET_HTTP_CAPABILITIES: process.env.ASSET_HTTP_CAPABILITIES || undefined,
+    ASSET_ALLOW_LOCAL: process.env.ASSET_ALLOW_LOCAL ?? "",
   });
 
   if (!parsed.success) {
@@ -115,6 +140,9 @@ function readEnv(): AppEnv {
   }
   if (data.NODE_ENV === "production" && data.TIMELINE_ALLOW_LOCAL) {
     data.TIMELINE_ALLOW_LOCAL = false;
+  }
+  if (data.NODE_ENV === "production" && data.ASSET_ALLOW_LOCAL) {
+    data.ASSET_ALLOW_LOCAL = false;
   }
   return data;
 }
