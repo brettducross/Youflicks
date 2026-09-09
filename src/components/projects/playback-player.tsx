@@ -31,6 +31,7 @@ export function PlaybackPlayer({
   fallbackDurationMs: number | null;
 }) {
   const videoRef = useRef<HTMLVideoElement | null>(null);
+  const pendingPlay = useRef(false);
   const [session, setSession] = useState<PlaybackSession | null>(null);
   const [busy, setBusy] = useState(false);
   const [playing, setPlaying] = useState(false);
@@ -67,18 +68,16 @@ export function PlaybackPlayer({
       }
       setSession(payload.session);
       setDurationMs(payload.session.durationMs || fallbackDurationMs || 0);
+      return payload.session;
     } catch (openError) {
       const message = openError instanceof Error ? openError.message : "Could not start watching.";
       setError(message);
       toast.error(message);
+      return null;
     } finally {
       setBusy(false);
     }
   }, [fallbackDurationMs, projectId, renderJobId]);
-
-  useEffect(() => {
-    void openSession();
-  }, [openSession]);
 
   useEffect(() => {
     return () => {
@@ -88,7 +87,12 @@ export function PlaybackPlayer({
     };
   }, [closeSession, session?.sessionId]);
 
-  function togglePlay() {
+  async function togglePlay() {
+    if (!session) {
+      pendingPlay.current = true;
+      await openSession();
+      return;
+    }
     const video = videoRef.current;
     if (!video) return;
     if (video.paused) {
@@ -118,6 +122,12 @@ export function PlaybackPlayer({
             controls={false}
             disablePictureInPicture
             controlsList="nodownload noplaybackrate noremoteplayback"
+            onLoadedData={() => {
+              if (pendingPlay.current && videoRef.current) {
+                pendingPlay.current = false;
+                void videoRef.current.play();
+              }
+            }}
             onPlay={() => setPlaying(true)}
             onPause={() => setPlaying(false)}
             onTimeUpdate={(event) => setCurrentMs(event.currentTarget.currentTime * 1000)}
@@ -131,14 +141,14 @@ export function PlaybackPlayer({
           />
         ) : (
           <div className="flex aspect-video items-center justify-center text-sm text-muted-foreground">
-            {busy ? <Loader2 className="size-5 animate-spin" /> : "Opening watch session…"}
+            {busy ? <Loader2 className="size-5 animate-spin" /> : "Press Play to watch this render."}
           </div>
         )}
       </div>
 
       <div className="flex items-center gap-3">
-        <Button type="button" size="sm" disabled={!session || busy} onClick={togglePlay}>
-          {playing ? <Pause className="size-4" /> : <Play className="size-4" />}
+        <Button type="button" size="sm" disabled={busy} onClick={() => void togglePlay()}>
+          {busy ? <Loader2 className="size-4 animate-spin" /> : playing ? <Pause className="size-4" /> : <Play className="size-4" />}
           {playing ? "Pause" : "Play"}
         </Button>
         <input
