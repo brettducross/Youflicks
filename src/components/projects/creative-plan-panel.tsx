@@ -209,6 +209,14 @@ export function CreativePlanPanel({
             Verify your email before composing a creative plan. Generation stays locked until
             that address is confirmed.
           </p>
+        ) : availability.generationDenyCode === "SUSPENDED" ? (
+          <p className="text-sm text-muted-foreground">
+            This account cannot start a movie right now.
+          </p>
+        ) : availability.generationDenyCode === "RATE_LIMITED" ? (
+          <p className="text-sm text-muted-foreground">
+            You can start one free movie each hour. Try again when the hour is up.
+          </p>
         ) : !availability.canCompose ? (
           <p className="text-sm text-muted-foreground">
             Production Director AI is not configured. Local technical analysis does not count as

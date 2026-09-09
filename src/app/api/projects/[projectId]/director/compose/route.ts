@@ -41,7 +41,7 @@ export async function GET(_request: Request, context: RouteContext) {
     const { projectId } = await context.params;
     const services = getServices();
     await services.projects.getForUser(user.id, projectId);
-    const gate = await services.accountLifecycle.getAccountGate(user.id);
+    const gate = await services.entitlements.getPlatformGate(user.id);
     return NextResponse.json(
       withGenerationHonesty(services.directorService.getAvailability(), gate),
     );

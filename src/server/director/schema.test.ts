@@ -20,6 +20,29 @@ describe("CreativePlan schema", () => {
     expect(plan.concept).toBe("Harbor afternoon");
   });
 
+  it("rejects planKind on CreativePlan validation", () => {
+    expect(() =>
+      validateCreativePlan({
+        schemaVersion: CREATIVE_PLAN_SCHEMA_VERSION,
+        concept: "Harbor afternoon",
+        planKind: "FREE",
+      }),
+    ).toThrow(AppError);
+    expect(() =>
+      validateCreativePlan({
+        schemaVersion: CREATIVE_PLAN_SCHEMA_VERSION,
+        concept: "Harbor afternoon",
+        planKind: "FREE",
+      }),
+    ).toThrow(/commercial entitlement/i);
+    expect(() =>
+      validateCreativePlan({
+        schemaVersion: CREATIVE_PLAN_SCHEMA_VERSION,
+        decisions: [{ kind: "tone", summary: "warm", planKind: "SUBSCRIPTION" }],
+      }),
+    ).toThrow(/commercial entitlement/i);
+  });
+
   it("rejects an invalid decision object", () => {
     expect(() =>
       validateCreativePlan({

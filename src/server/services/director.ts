@@ -15,8 +15,8 @@ import {
 } from "@/server/domain/status";
 import type { AiDirectorPort } from "@/server/ports/ai-director";
 import type { JobQueuePort, JobRecord } from "@/server/ports/jobs";
-import { AccountLifecycleService } from "@/server/services/account-lifecycle";
 import { AttributionService } from "@/server/services/attribution";
+import { EntitlementService } from "@/server/services/entitlement";
 import { DirectorContractService } from "@/server/services/director-contract";
 import { ProjectService } from "@/server/services/projects";
 
@@ -79,7 +79,7 @@ export class DirectorService {
     private readonly attribution: AttributionService,
     private readonly resolveDirector: () => ResolvedDirectorRuntime | null,
     private readonly availability: () => DirectorAvailability,
-    private readonly accounts: AccountLifecycleService,
+    private readonly entitlements: EntitlementService,
   ) {}
 
   getAvailability(): DirectorAvailability {
@@ -107,8 +107,8 @@ export class DirectorService {
 
   async requestCompose(userId: string, projectId: string) {
     await this.projects.getForUser(userId, projectId);
-    await this.accounts.requireGeneration(userId, { projectId });
     this.requireComposeCapability();
+    await this.entitlements.requireGeneration(userId, { projectId });
 
     const job = await this.jobs.enqueue({
       type: JobType.AI_DIRECT,

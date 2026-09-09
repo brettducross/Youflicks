@@ -10,7 +10,7 @@ export const runtime = "nodejs";
 export async function GET() {
   try {
     const user = await requireApiUser();
-    const gate = await getServices().accountLifecycle.getAccountGate(user.id);
+    const gate = await getServices().entitlements.getPlatformGate(user.id);
     return NextResponse.json({
       emailVerified: gate.emailVerified,
       canGenerate: gate.canGenerate,

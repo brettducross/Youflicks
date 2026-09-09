@@ -1,6 +1,6 @@
 /**
  * M8.1 account gate types. Email verification only.
- * Quotas, planKind, watermark, and ads belong in later M8 slices.
+ * Quotas, planKind, watermark, and ads are resolved by EntitlementService (M8.2+).
  */
 
 export const AccountDenyCode = {

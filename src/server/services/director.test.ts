@@ -1,7 +1,7 @@
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import { AppError } from "@/lib/errors";
 import { LocalDeterministicDirector } from "@/server/adapters/director/local-deterministic";
 import { LocalStorageAdapter } from "@/server/adapters/storage/local";
@@ -23,6 +23,7 @@ import type { MediaAnalysisAdapter } from "@/server/ports/media-analysis-adapter
 import type { DirectorInput } from "@/server/director/input";
 import type { CreativePlan } from "@/server/director/schema";
 import { AccountLifecycleService } from "@/server/services/account-lifecycle";
+import { EntitlementService } from "@/server/services/entitlement";
 import { AnalysisService } from "@/server/services/analysis";
 import { AttributionService } from "@/server/services/attribution";
 import { DirectorContractService } from "@/server/services/director-contract";
@@ -149,9 +150,21 @@ describe("DirectorService Phase 2F", () => {
     await prisma.creativePlan.deleteMany({ where: { projectId } });
     await prisma.providerAttribution.deleteMany({ where: { projectId } });
     await prisma.job.deleteMany({ where: { projectId } });
+    await prisma.generationAuthorization.deleteMany({
+      where: { userId: { in: [ownerId, strangerId] } },
+    });
+    await prisma.accountPlatformState.deleteMany({
+      where: { userId: { in: [ownerId, strangerId] } },
+    });
     await prisma.project.deleteMany({ where: { id: projectId } });
     await prisma.user.deleteMany({ where: { id: { in: [ownerId, strangerId] } } });
     if (dir) await rm(dir, { recursive: true, force: true });
+  });
+
+  afterEach(async () => {
+    await prisma.generationAuthorization.deleteMany({
+      where: { userId: { in: [ownerId, strangerId] } },
+    });
   });
 
   function harness(options: {
@@ -181,7 +194,7 @@ describe("DirectorService Phase 2F", () => {
         localDevAvailable,
         canCompose: Boolean(options.adapter) && (productionAvailable || localDevAvailable),
       }),
-      new AccountLifecycleService(),
+      new EntitlementService(new AccountLifecycleService()),
     );
     return { director, worker: new DirectorWorker(jobs, director) };
   }
@@ -251,6 +264,7 @@ describe("DirectorService Phase 2F", () => {
     const v1 = await director.getLatestReady(ownerId, projectId);
     expect(v1).not.toBeNull();
 
+    await prisma.generationAuthorization.deleteMany({ where: { userId: ownerId } });
     const second = await director.requestCompose(ownerId, projectId);
     await worker.processNext();
     const latest = await director.getLatestReady(ownerId, projectId);
@@ -289,6 +303,7 @@ describe("DirectorService Phase 2F", () => {
     const ready = await director.getLatestReady(ownerId, projectId);
     expect(ready?.plan.decisions?.length).toBeGreaterThan(0);
 
+    await prisma.generationAuthorization.deleteMany({ where: { userId: ownerId } });
     await director.requestCompose(ownerId, projectId);
     await worker.processNext();
     expect(Array.isArray(seenPrior)).toBe(true);
@@ -506,6 +521,76 @@ describe("DirectorService Phase 2F", () => {
     expect(await prisma.storyStructure.count({ where: { projectId } })).toBe(storiesBefore);
     expect(await prisma.timeline.count({ where: { projectId } })).toBe(timelinesBefore);
     expect(await prisma.renderJob.count({ where: { projectId } })).toBe(rendersBefore);
+    expect(json).not.toMatch(/planKind|adsEnabled|watermarkRequired|Billing|stripe/i);
+  });
+
+  it("denies a second AI_DIRECT enqueue within the rolling hour", async () => {
+    const local = new LocalDeterministicDirector();
+    const { director } = harness({
+      adapter: local,
+      productionAvailable: false,
+      localDevAvailable: true,
+    });
+    const jobsBefore = await prisma.job.count({
+      where: { projectId, type: JobType.AI_DIRECT },
+    });
+    await director.requestCompose(ownerId, projectId);
+    await expect(director.requestCompose(ownerId, projectId)).rejects.toMatchObject({
+      code: "RATE_LIMITED",
+      status: 429,
+    });
+    expect(
+      await prisma.job.count({ where: { projectId, type: JobType.AI_DIRECT } }),
+    ).toBe(jobsBefore + 1);
+  });
+
+  it("denies AI_DIRECT enqueue when requested duration exceeds the free max", async () => {
+    await intent.upsert(ownerId, projectId, { desiredDurationMs: 720_000 });
+    try {
+      const local = new LocalDeterministicDirector();
+      const { director } = harness({
+        adapter: local,
+        productionAvailable: false,
+        localDevAvailable: true,
+      });
+      const jobsBefore = await prisma.job.count({
+        where: { projectId, type: JobType.AI_DIRECT },
+      });
+      await expect(director.requestCompose(ownerId, projectId)).rejects.toMatchObject({
+        code: "DURATION_EXCEEDS_PLAN",
+        status: 403,
+      });
+      expect(
+        await prisma.job.count({ where: { projectId, type: JobType.AI_DIRECT } }),
+      ).toBe(jobsBefore);
+      expect(
+        await prisma.generationAuthorization.count({ where: { userId: ownerId } }),
+      ).toBe(0);
+    } finally {
+      await intent.upsert(ownerId, projectId, { desiredDurationMs: 90_000 });
+    }
+  });
+
+  it("does not let a stranger enqueue or burn the owner movie-generation quota", async () => {
+    const local = new LocalDeterministicDirector();
+    const { director } = harness({
+      adapter: local,
+      productionAvailable: false,
+      localDevAvailable: true,
+    });
+    await expect(director.requestCompose(strangerId, projectId)).rejects.toMatchObject({
+      code: "NOT_FOUND",
+    });
+    expect(
+      await prisma.generationAuthorization.count({ where: { userId: ownerId } }),
+    ).toBe(0);
+    expect(
+      await prisma.generationAuthorization.count({ where: { userId: strangerId } }),
+    ).toBe(0);
+    await director.requestCompose(ownerId, projectId);
+    expect(
+      await prisma.generationAuthorization.count({ where: { userId: ownerId } }),
+    ).toBe(1);
   });
 
   async function directorPlansCount() {
