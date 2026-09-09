@@ -15,6 +15,7 @@ function baseSession(): PlaybackSession {
   return {
     sessionId: "token.sig",
     renderJobId: "rj_1",
+    finishedMovieId: "m1",
     durationMs: 3000,
     mimeType: "video/mp4",
     transport: "APP_STREAM",
@@ -25,6 +26,9 @@ function baseSession(): PlaybackSession {
 describe("Playback privacy", () => {
   it("accepts a minimized watch request", () => {
     expect(() => assertPlaybackOpenInputPrivacy(baseInput())).not.toThrow();
+    expect(() =>
+      assertPlaybackOpenInputPrivacy({ projectId: "p1", finishedMovieId: "m1", startMs: 0 }),
+    ).not.toThrow();
     const serialized = JSON.stringify(baseInput());
     expect(serialized).not.toMatch(/apiKey|authorization|sponsor|email|ffmpeg|vlc|cdn/i);
   });

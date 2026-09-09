@@ -11,6 +11,7 @@ import { StoryPanel } from "@/components/projects/story-panel";
 import { MissingPiecesPanel } from "@/components/projects/missing-pieces-panel";
 import { TimelinePanel } from "@/components/projects/timeline-panel";
 import { RenderPanel } from "@/components/projects/render-panel";
+import { LibraryPanel } from "@/components/projects/library-panel";
 import { cn } from "@/lib/utils";
 import { requireUser } from "@/server/auth/session";
 import { projectStatusLabel } from "@/server/domain/status";
@@ -49,6 +50,8 @@ export default async function ProjectDetailPage({
   const unmetRoles = timeline?.document.unmetMediaRoles ?? [];
   const latestRender = await services.renderService.getLatestSuccessful(user.id, id);
   const renderAvailability = services.renderService.getAvailability();
+  const movies = await services.movieService.list(user.id, id);
+  const movieAvailability = await services.movieService.getAvailability(user.id, id);
 
   return (
     <main className="mx-auto w-full max-w-6xl px-4 py-8 sm:px-6">
@@ -124,6 +127,12 @@ export default async function ProjectDetailPage({
         initialAvailability={renderAvailability}
         timelineReady={Boolean(timeline)}
         unmetRoleCount={unmetRoles.length}
+      />
+
+      <LibraryPanel
+        projectId={project.id}
+        initialMovies={movies}
+        initialCanKeep={movieAvailability.canKeep}
       />
     </main>
   );

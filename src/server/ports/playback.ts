@@ -8,8 +8,9 @@ import type {
 /**
  * Provider-neutral playback port.
  *
- * Adapters open an ephemeral viewing session against a SUCCEEDED RenderJob.
- * VLC / libVLC and HTML5 media are adapters only — never Prisma or domain schema.
+ * Adapters open an ephemeral viewing session against a SUCCEEDED RenderJob
+ * or a READY FinishedMovie (M6 finishedMovieId). VLC / libVLC and HTML5 media
+ * are adapters only — never Prisma or domain schema.
  * This port does not create FinishedMovie, Publication, or mutate render bytes.
  */
 export interface PlaybackPort {

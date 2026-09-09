@@ -13,6 +13,7 @@ export type PlaybackSessionRecord = {
   viewerId: string;
   projectId: string;
   renderJobId: string;
+  finishedMovieId?: string;
   outputKey: string;
   mimeType: string;
   durationMs: number;
@@ -29,6 +30,7 @@ type TokenPayload = {
   uid: string;
   pid: string;
   rid: string;
+  mid?: string;
   key: string;
   mime: string;
   dur: number;
@@ -58,6 +60,7 @@ export class PlaybackSessionStore {
     viewerId: string;
     projectId: string;
     renderJobId: string;
+    finishedMovieId?: string;
     outputKey: string;
     mimeType: string;
     durationMs: number;
@@ -73,6 +76,7 @@ export class PlaybackSessionStore {
       uid: input.viewerId,
       pid: input.projectId,
       rid: input.renderJobId,
+      mid: input.finishedMovieId,
       key: outputKey,
       mime: input.mimeType,
       dur: input.durationMs,
@@ -87,6 +91,7 @@ export class PlaybackSessionStore {
       viewerId: input.viewerId,
       projectId: input.projectId,
       renderJobId: input.renderJobId,
+      finishedMovieId: input.finishedMovieId,
       outputKey,
       mimeType: input.mimeType,
       durationMs: input.durationMs,
@@ -116,7 +121,12 @@ export class PlaybackSessionStore {
         : record.expiresAt <= this.now()
           ? "EXPIRED"
           : "OPEN";
-      return { sessionId, renderJobId: record.renderJobId, state };
+      return {
+        sessionId,
+        renderJobId: record.renderJobId,
+        finishedMovieId: record.finishedMovieId,
+        state,
+      };
     } catch (error) {
       if (error instanceof AppError && error.code === "PLAYBACK_SESSION_INVALID") {
         return { sessionId, renderJobId: "", state: "EXPIRED" };
@@ -134,6 +144,7 @@ export class PlaybackSessionStore {
     return {
       sessionId: record.sessionId,
       renderJobId: record.renderJobId,
+      finishedMovieId: record.finishedMovieId,
       durationMs: record.durationMs,
       mimeType: record.mimeType,
       transport: record.transport,
@@ -171,6 +182,7 @@ export class PlaybackSessionStore {
       viewerId: payload.uid,
       projectId: payload.pid,
       renderJobId: payload.rid,
+      finishedMovieId: payload.mid,
       outputKey: payload.key,
       mimeType: payload.mime,
       durationMs: payload.dur,

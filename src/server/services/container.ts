@@ -52,6 +52,8 @@ import { RenderContractService } from "@/server/services/render-contract";
 import { RenderService } from "@/server/services/render";
 import { RenderWorker } from "@/server/services/render-worker";
 import { PlaybackService } from "@/server/services/playback";
+import { MovieService } from "@/server/services/movie";
+import { MovieWorker } from "@/server/services/movie-worker";
 
 export type ServiceContainer = {
   storage: StoragePort;
@@ -81,6 +83,8 @@ export type ServiceContainer = {
   renderService: RenderService;
   renderWorker: RenderWorker;
   playbackService: PlaybackService;
+  movieService: MovieService;
+  movieWorker: MovieWorker;
   providers: ProviderRegistry;
   mediaAnalyzer(): MediaAnalyzerPort;
   aiDirector(): AiDirectorPort;
@@ -236,6 +240,8 @@ function createServices(): ServiceContainer {
     vlcPlayback,
     () => vlcPlayback.available(),
   );
+  const movieService = new MovieService(jobs, storage, projects, () => true);
+  const movieWorker = new MovieWorker(jobs, movieService);
 
   return {
     storage,
@@ -265,6 +271,8 @@ function createServices(): ServiceContainer {
     renderService,
     renderWorker,
     playbackService,
+    movieService,
+    movieWorker,
     providers,
     mediaAnalyzer() {
       return analyzer;

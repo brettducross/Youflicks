@@ -42,6 +42,12 @@ export const ErrorCodes = {
   PLAYBACK_OUTPUT_INVALID: "PLAYBACK_OUTPUT_INVALID",
   PLAYBACK_ADAPTER_UNAVAILABLE: "PLAYBACK_ADAPTER_UNAVAILABLE",
   PLAYBACK_SESSION_INVALID: "PLAYBACK_SESSION_INVALID",
+  MOVIE_INPUT_INVALID: "MOVIE_INPUT_INVALID",
+  MOVIE_RENDER_REQUIRED: "MOVIE_RENDER_REQUIRED",
+  MOVIE_SOURCE_MISSING: "MOVIE_SOURCE_MISSING",
+  MOVIE_OUTPUT_INVALID: "MOVIE_OUTPUT_INVALID",
+  MOVIE_STORAGE_UNAVAILABLE: "MOVIE_STORAGE_UNAVAILABLE",
+  MOVIE_NOT_READY: "MOVIE_NOT_READY",
   INTERNAL: "INTERNAL",
 } as const;
 
@@ -260,6 +266,32 @@ export class AppError extends Error {
 
   static playbackSessionInvalid(message = "That watch session is not valid.") {
     return new AppError(ErrorCodes.PLAYBACK_SESSION_INVALID, message, 403);
+  }
+
+  static movieInputInvalid(message: string, details?: Record<string, unknown>) {
+    return new AppError(ErrorCodes.MOVIE_INPUT_INVALID, message, 422, details);
+  }
+
+  static movieRenderRequired(
+    message = "A successful render is required before you can keep this film.",
+  ) {
+    return new AppError(ErrorCodes.MOVIE_RENDER_REQUIRED, message, 422);
+  }
+
+  static movieSourceMissing(message = "The render file is missing from storage.") {
+    return new AppError(ErrorCodes.MOVIE_SOURCE_MISSING, message, 404);
+  }
+
+  static movieOutputInvalid(message: string, details?: Record<string, unknown>) {
+    return new AppError(ErrorCodes.MOVIE_OUTPUT_INVALID, message, 422, details);
+  }
+
+  static movieStorageUnavailable(message = "Library storage is not writable.") {
+    return new AppError(ErrorCodes.MOVIE_STORAGE_UNAVAILABLE, message, 503);
+  }
+
+  static movieNotReady(message = "That film is not ready to watch.") {
+    return new AppError(ErrorCodes.MOVIE_NOT_READY, message, 422);
   }
 }
 
