@@ -48,3 +48,6 @@ export type {
   VerificationEmailPort,
   VerificationEmailMessage,
 } from "./verification-email";
+export type { EntitlementPort } from "./entitlement";
+export type { RateLimitPort, RateLimitRecordInput } from "./rate-limit";
+export type { AbuseSignalPort } from "./abuse-signal";

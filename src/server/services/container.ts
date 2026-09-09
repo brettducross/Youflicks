@@ -27,6 +27,7 @@ import { resolveRendererAdapter, describeRenderAvailability } from "@/server/ren
 import { resolveStoryComposerAdapter } from "@/server/story/provider-config";
 import { resolveTimelineComposerAdapter } from "@/server/timeline/provider-config";
 import { AccountLifecycleService } from "@/server/services/account-lifecycle";
+import { EntitlementService } from "@/server/services/entitlement";
 import { AssetContractService } from "@/server/services/asset-contract";
 import { AssetService } from "@/server/services/asset";
 import { AssetWorker } from "@/server/services/asset-worker";
@@ -67,6 +68,7 @@ export type ServiceContainer = {
   storage: StoragePort;
   jobs: JobQueuePort;
   accountLifecycle: AccountLifecycleService;
+  entitlements: EntitlementService;
   projects: ProjectService;
   media: MediaService;
   analysis: AnalysisService;
@@ -151,6 +153,7 @@ function createServices(): ServiceContainer {
       headers: await headers(),
     });
   });
+  const entitlements = new EntitlementService(accountLifecycle);
   const directorService = new DirectorService(
     jobs,
     director,
@@ -169,7 +172,7 @@ function createServices(): ServiceContainer {
         canCompose: Boolean(resolved),
       };
     },
-    accountLifecycle,
+    entitlements,
   );
   const directorWorker = new DirectorWorker(jobs, directorService);
   const story = new StoryContractService(projects, taste, intent, media);
@@ -282,6 +285,7 @@ function createServices(): ServiceContainer {
     storage,
     jobs,
     accountLifecycle,
+    entitlements,
     projects,
     media,
     analysis,

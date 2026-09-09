@@ -32,6 +32,8 @@ model User {
   tasteProfile             TasteProfile?
   sponsorshipPreference    UserSponsorshipPreference?
   sponsors                 Sponsor[]
+  platformState            AccountPlatformState?
+  generationAuthorizations GenerationAuthorization[]
 
   @@map("user")
 }
@@ -710,4 +712,38 @@ model SponsorPlacement {
 
   @@index([projectId])
   @@map("sponsor_placement")
+}
+
+// ---------------------------------------------------------------------------
+// M8.2 — Platform entitlements / rate limit / abuse (not creative, not M8.3 meters)
+// GenerationAuthorization records authorized MOVIE_GENERATION attempts at the
+// AI_DIRECT enqueue gate. This is not UsageEvent / EngineCostEvent (M8.3).
+// ---------------------------------------------------------------------------
+
+/// Simple abuse quarantine + row lock for the free-tier generation window.
+model AccountPlatformState {
+  userId      String   @id
+  user        User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  quarantined Boolean  @default(false)
+  reason      String?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  @@map("account_platform_state")
+}
+
+/// Authorized movie-generation attempts. Kind is an open string (MOVIE_GENERATION).
+/// Counted per user for the rolling-hour free allowance. Not a CreativePlan.
+model GenerationAuthorization {
+  id         String   @id @default(cuid())
+  userId     String
+  user       User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  /// MOVIE_GENERATION
+  kind       String
+  projectId  String?
+  recordedAt DateTime @default(now())
+  createdAt  DateTime @default(now())
+
+  @@index([userId, kind, recordedAt])
+  @@map("generation_authorization")
 }

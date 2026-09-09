@@ -55,6 +55,10 @@ export const ErrorCodes = {
   PUBLICATION_TOKEN_INVALID: "PUBLICATION_TOKEN_INVALID",
   PUBLICATION_REVOKED: "PUBLICATION_REVOKED",
   EMAIL_UNVERIFIED: "EMAIL_UNVERIFIED",
+  RATE_LIMITED: "RATE_LIMITED",
+  DURATION_EXCEEDS_PLAN: "DURATION_EXCEEDS_PLAN",
+  SUSPENDED: "SUSPENDED",
+  INSUFFICIENT_CREDITS: "INSUFFICIENT_CREDITS",
   INTERNAL: "INTERNAL",
 } as const;
 
@@ -332,6 +336,24 @@ export class AppError extends Error {
 
   static emailUnverified(message = "Verify your email before starting a movie.") {
     return new AppError(ErrorCodes.EMAIL_UNVERIFIED, message, 403);
+  }
+
+  static rateLimited(
+    message = "You can start one free movie each hour. Try again when the hour is up.",
+  ) {
+    return new AppError(ErrorCodes.RATE_LIMITED, message, 429);
+  }
+
+  static durationExceedsPlan(message = "Free movies can be at most 5 minutes long.") {
+    return new AppError(ErrorCodes.DURATION_EXCEEDS_PLAN, message, 403);
+  }
+
+  static suspended(message = "This account cannot start a movie right now.") {
+    return new AppError(ErrorCodes.SUSPENDED, message, 403);
+  }
+
+  static insufficientCredits(message = "This account does not have enough credits to start a movie.") {
+    return new AppError(ErrorCodes.INSUFFICIENT_CREDITS, message, 403);
   }
 }
 

@@ -6,6 +6,8 @@ import {
 } from "@/server/director/schema";
 import type { DirectorInput } from "@/server/director/input";
 
+const COMMERCIAL_PLAN_KEYS = new Set(["planKind"]);
+
 export function validateCreativePlan(raw: unknown): CreativePlan {
   const parsed = creativePlanSchema.safeParse(raw);
   if (!parsed.success) {
@@ -13,7 +15,36 @@ export function validateCreativePlan(raw: unknown): CreativePlan {
       issues: parsed.error.issues.map((issue) => issue.message),
     });
   }
+  assertNoCommercialPlanFields(parsed.data);
   return parsed.data;
+}
+
+/** Entitlements are platform gates — never CreativePlan meaning. */
+export function assertNoCommercialPlanFields(plan: CreativePlan) {
+  const hits: string[] = [];
+  walkCommercialKeys(plan, "plan", hits);
+  if (hits.length > 0) {
+    throw AppError.directorPlanInvalid(
+      "Creative plans must not include commercial entitlement fields.",
+      { paths: hits },
+    );
+  }
+}
+
+function walkCommercialKeys(value: unknown, path: string, hits: string[]) {
+  if (!value || typeof value !== "object") {
+    return;
+  }
+  if (Array.isArray(value)) {
+    value.forEach((item, index) => walkCommercialKeys(item, `${path}[${index}]`, hits));
+    return;
+  }
+  for (const [key, child] of Object.entries(value as Record<string, unknown>)) {
+    if (COMMERCIAL_PLAN_KEYS.has(key)) {
+      hits.push(`${path}.${key}`);
+    }
+    walkCommercialKeys(child, `${path}.${key}`, hits);
+  }
 }
 
 export function assertPlanSchemaVersion(plan: CreativePlan) {

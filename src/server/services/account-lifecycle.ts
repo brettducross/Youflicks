@@ -20,14 +20,14 @@ export type AdapterAvailability = {
 export type GenerationHonesty = {
   canGenerate: boolean;
   emailVerified: boolean;
-  generationDenyCode: AccountGate["denyCode"];
+  generationDenyCode: string | null;
 };
 
 export type DirectorGenerationAvailability = AdapterAvailability & GenerationHonesty;
 
 /**
  * M8.1 — Account lifecycle on Better Auth `User.emailVerified`.
- * authorizeGeneration is email-only; rate limits and entitlements are M8.2.
+ * Email-only authorizeGeneration is preserved. Quotas live on EntitlementService (M8.2).
  */
 export class AccountLifecycleService {
   constructor(
@@ -108,7 +108,7 @@ export class AccountLifecycleService {
 
 export function withGenerationHonesty(
   availability: AdapterAvailability,
-  gate: AccountGate,
+  gate: { canGenerate: boolean; emailVerified: boolean; denyCode: string | null },
 ): DirectorGenerationAvailability {
   return {
     ...availability,

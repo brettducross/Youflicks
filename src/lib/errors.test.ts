@@ -28,4 +28,15 @@ describe("isAppError", () => {
     expect(toErrorResponse(error).status).toBe(403);
     expect(toErrorResponse(error).body.error.code).toBe("EMAIL_UNVERIFIED");
   });
+
+  it("maps M8.2 entitlement denies to typed HTTP codes", () => {
+    expect(toErrorResponse(AppError.rateLimited()).status).toBe(429);
+    expect(toErrorResponse(AppError.rateLimited()).body.error.code).toBe("RATE_LIMITED");
+    expect(toErrorResponse(AppError.durationExceedsPlan()).status).toBe(403);
+    expect(toErrorResponse(AppError.durationExceedsPlan()).body.error.code).toBe(
+      "DURATION_EXCEEDS_PLAN",
+    );
+    expect(toErrorResponse(AppError.suspended()).status).toBe(403);
+    expect(toErrorResponse(AppError.suspended()).body.error.code).toBe("SUSPENDED");
+  });
 });

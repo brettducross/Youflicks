@@ -6,6 +6,7 @@ import { DirectorCapabilityGateway } from "@/server/director/capabilities";
 import type { DirectorInput, DirectorMediaItem } from "@/server/director/input";
 import { assertDirectorInputPrivacy, isIgnoreGeneralTaste } from "@/server/director/privacy";
 import {
+  assertNoCommercialPlanFields,
   assertNoInventedConfidence,
   assertPlanRespectsConstraints,
   assertPlanSchemaVersion,
@@ -81,6 +82,7 @@ export class DirectorContractService {
     const plan = validateCreativePlan(raw);
     assertPlanSchemaVersion(plan);
     assertNoInventedConfidence(plan);
+    assertNoCommercialPlanFields(plan);
     assertPlanRespectsConstraints(input, plan);
     return plan;
   }
