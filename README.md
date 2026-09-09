@@ -4,7 +4,7 @@
 
 YouFlicks is an AI-powered filmmaking platform that turns a person’s photos, videos, memories, and ideas into a finished movie.
 
-This repository currently includes **Phase 1** through **M6** (FinishedMovie / Library keep: explicit “Keep this film”). It does not share/export, take payments, or serve ads.
+This repository currently includes **Phase 1** through **M7** (Share / Export / Publication of a READY kept film). It does not take payments or serve ads.
 
 Read [ARCHITECTURE.md](./ARCHITECTURE.md) for the analysis, technology choices, deferred work, roadmap, and MVP definition.
 
@@ -24,6 +24,7 @@ Read [ARCHITECTURE.md](./ARCHITECTURE.md) for the analysis, technology choices, 
 - **M4 render**: enqueue `RENDER`, assemble a YouFlicks-owned `RenderManifest`, render through `RendererPort`, and persist `RenderJob` + opaque StoragePort output (not FinishedMovie, not playback)
 - **M5 playback**: open an ephemeral watch session through `PlaybackPort`, stream a SUCCEEDED render’s opaque StoragePort key to the owner (not a library keep, not share)
 - **M6 library keep**: explicit Keep copies a SUCCEEDED render into a durable `FinishedMovie` library artifact through `MovieService` + StoragePort (not share, not Publication)
+- **M7 share / export**: explicit Export (owner attachment) and Share link (time-limited revocable watch-only token) through `PublicationService` + `PublicationPort` against exactly one READY FinishedMovie
 - Extensible domain schema: User → Project → Media → Analysis → CreativePlan → Story → Timeline → Render → Movie → Publish
 - Ports for object storage, background jobs, AI Director, story composer, timeline composer, asset generator, media analysis, rendering, and playback
 - Local filesystem storage adapter (swap later for S3/R2 behind the same port)
@@ -31,11 +32,11 @@ Read [ARCHITECTURE.md](./ARCHITECTURE.md) for the analysis, technology choices, 
 
 ## What is intentionally not built
 
-- Share / export / Publication product writes (M7)
+- Treating a share link as a public CDN or a second library keep
 - Treating the local/deterministic story, timeline, asset, or renderer adapters as production
 - Named vendor SDKs in the domain
-- Billing, payments, or an advertising marketplace
-- Publishing / UFlix Global
+- Billing, payments, subscriptions, or an advertising marketplace (M8)
+- UFlix Global / social publishing destinations (optional later adapters)
 - Social features
 - Mobile apps
 - Treating the local/deterministic Director as production AI
@@ -127,9 +128,10 @@ src/server/director     Director contract (input, plan, capabilities)
 src/server/story        StoryDocument schema, input, validation, availability
 src/server/timeline     TimelineDocument schema, input, validation, availability
 src/server/movie        FinishedMovie library keep (privacy, fingerprint, opaque keys)
-src/server/ports        Storage, jobs, AI, story composer, timeline composer, renderer, playback, analyzer interfaces
-src/server/adapters     Local storage, Postgres jobs, analysis / Director / story / timeline / renderer / playback adapters
-src/server/services     Project, Media, Analysis, Taste, Intent, Credits, Director, Story, Timeline, Render, Playback, Movie
+src/server/publication  Publication share/export (tokens, privacy, destination keys)
+src/server/ports        Storage, jobs, AI, story composer, timeline composer, renderer, playback, publication, analyzer interfaces
+src/server/adapters     Local storage, Postgres jobs, analysis / Director / story / timeline / renderer / playback / publication adapters
+src/server/services     Project, Media, Analysis, Taste, Intent, Credits, Director, Story, Timeline, Render, Playback, Movie, Publication
 prisma/schema.prisma    Domain schema
 ```
 
@@ -179,7 +181,7 @@ Do not add vendor columns to Prisma. Do not teach domain services a vendor name.
 - Without HTTP credentials, analysis still succeeds through the local technical adapter (technical metadata only).
 - Production Director availability requires a configured Director HTTP adapter (`DIRECTOR_HTTP_*`). Local technical analysis does **not** count as Director availability.
 - `DIRECTOR_ALLOW_LOCAL=true` enables the deterministic local Director for development/tests only. It never advertises production availability.
-- Rendering, watch, and explicit library keep are implemented. Share/export is not.
+- Rendering, watch, explicit library keep, and explicit share/export are implemented. Billing is not.
 - Production story availability requires a configured story HTTP adapter (`STORY_HTTP_*`). Local deterministic composition does **not** count as production story availability.
 - `STORY_ALLOW_LOCAL=true` enables the deterministic local story composer for development/tests only. It never advertises production availability.
 - Production timeline availability requires a configured timeline HTTP adapter (`TIMELINE_HTTP_*`). Local deterministic composition does **not** count as production timeline availability.
@@ -291,15 +293,31 @@ M6 lets the project owner explicitly keep a successful render:
 - Bytes are copied into `projects/{projectId}/movies/{movieId}/…`. FinishedMovie is not a thin pointer to render output.
 - `GET .../movies` lists kept films. `POST .../movies/:id/archive` soft-archives (no immediate byte delete).
 - Watch a kept film with `POST .../playback/open` `{ finishedMovieId }` — same PlaybackPort session pattern as M5.
-- Minimal UI: “Keep this film”, Library list, Watch, Archive. No Share / Export / Publish.
+- Minimal UI: “Keep this film”, Library list, Watch, Archive. Share / Export is a separate M7 action.
 - Job type is `LIBRARY_KEEP` only. There is no `AI_LIBRARY` or `AI_MOVIE`.
 
 See [PHASE_M6_FINISHED_MOVIE_ROADMAP_DECISION.md](./PHASE_M6_FINISHED_MOVIE_ROADMAP_DECISION.md).
 
+## Share / export (M7)
+
+M7 lets the project owner explicitly export or share a READY kept film:
+
+`API → PublicationService → PublicationPort (DOWNLOAD | SHARE_LINK) → Publication`
+
+- Owner-only `POST .../movies/:id/export` streams an attachment (`Content-Disposition: attachment`) and records a `DOWNLOAD` Publication (**200**), or returns `{ jobId, status: ACCEPTED }` (**202**) when `PUBLISH` is async.
+- Owner-only `POST .../movies/:id/share-link` creates a time-limited, revocable watch-only token. Payload stores `expiresAt` + `tokenFingerprint` — never the raw token.
+- `GET .../movies/:id/publications` lists status. `POST .../publications/:id/revoke` sets `REVOKED`.
+- Recipients watch at `/watch/{token}` through Playback share-token auth. No project APIs, Keep, or re-export.
+- Permanent unauthenticated public CDN of library bytes is forbidden.
+- Job type is `PUBLISH` only. There is no `AI_PUBLISH` or `AI_SHARE`.
+- Honesty flags: `canExport` / `canShareLink`. Missing destinations fail as unavailable.
+
+See [PHASE_M7_SHARE_EXPORT_ROADMAP_DECISION.md](./PHASE_M7_SHARE_EXPORT_ROADMAP_DECISION.md).
+
 ## Next phase
 
-M7+ pipeline (not implemented):
+M8 pipeline (not implemented):
 
-`Share / Export / Publication`
+`Platform / billing`
 
-Do not implement share, export, or Generate Film until those milestones are requested.
+Do not implement billing or subscriptions until that milestone is requested. After M7 CLOSED the autonomous charter **STOP**s unless Brett extends.

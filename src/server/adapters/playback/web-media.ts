@@ -22,6 +22,8 @@ export class WebMediaPlaybackAdapter implements PlaybackPort {
       projectId: input.projectId,
       renderJobId: input.renderJobId ?? "",
       finishedMovieId: input.finishedMovieId,
+      publicationId: input.publicationId,
+      shareWatch: Boolean(input.publicationId || input.shareToken),
       outputKey: source.outputKey,
       mimeType: source.mimeType,
       durationMs: source.durationMs,

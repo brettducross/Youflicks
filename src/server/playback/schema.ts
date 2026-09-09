@@ -12,6 +12,7 @@ export type PlaybackStatusState = (typeof PLAYBACK_STATUS_STATES)[number];
 
 /**
  * Soft-locked public open input. M6 extends with finishedMovieId (code only).
+ * M7 SHARE_LINK recipients add shareToken / publicationId (code only — do not rewrite M5/M6 locks).
  * Exactly one of renderJobId / finishedMovieId after service resolution.
  */
 export type PlaybackOpenInput = {
@@ -19,6 +20,10 @@ export type PlaybackOpenInput = {
   renderJobId?: string;
   finishedMovieId?: string;
   startMs?: number;
+  /** M7 watch-only auth. Verified by PublicationService before PlaybackPort.open. */
+  shareToken?: string;
+  /** Resolved SHARE_LINK publication; binds the session for revoke checks. */
+  publicationId?: string;
 };
 
 /**

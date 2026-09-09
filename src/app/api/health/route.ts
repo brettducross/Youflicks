@@ -19,6 +19,9 @@ export async function GET() {
       };
     });
     const playback = getServices().playbackService.getAvailability();
+    const shareConfigured = Boolean(
+      (env.SHARE_TOKEN_SECRET?.trim() || env.BETTER_AUTH_SECRET).length >= 16,
+    );
     return NextResponse.json({
       ok: true,
       service: "youflicks",
@@ -31,6 +34,10 @@ export async function GET() {
         webAvailable: playback.webAvailable,
         nativeAvailable: playback.nativeAvailable,
         canWatch: playback.canWatch,
+      },
+      publication: {
+        downloadAvailable: true,
+        shareLinkAvailable: shareConfigured,
       },
     });
   } catch (error) {

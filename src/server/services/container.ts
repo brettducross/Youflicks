@@ -54,6 +54,11 @@ import { RenderWorker } from "@/server/services/render-worker";
 import { PlaybackService } from "@/server/services/playback";
 import { MovieService } from "@/server/services/movie";
 import { MovieWorker } from "@/server/services/movie-worker";
+import { PublicationAdapterRegistry } from "@/server/adapters/publication/registry";
+import { ShareTokenStore } from "@/server/publication/tokens";
+import { PublicationService } from "@/server/services/publication";
+import { PublicationWorker } from "@/server/services/publication-worker";
+import type { PublicationPort } from "@/server/ports/publication";
 
 export type ServiceContainer = {
   storage: StoragePort;
@@ -85,6 +90,8 @@ export type ServiceContainer = {
   playbackService: PlaybackService;
   movieService: MovieService;
   movieWorker: MovieWorker;
+  publicationService: PublicationService;
+  publicationWorker: PublicationWorker;
   providers: ProviderRegistry;
   mediaAnalyzer(): MediaAnalyzerPort;
   aiDirector(): AiDirectorPort;
@@ -93,6 +100,7 @@ export type ServiceContainer = {
   assetGenerator(): AssetGeneratorPort;
   renderer(): RendererPort;
   playback(): PlaybackPort;
+  publication(): PublicationPort;
 };
 
 function createStorage(): StoragePort {
@@ -232,6 +240,21 @@ function createServices(): ServiceContainer {
   const playbackSessions = new PlaybackSessionStore(env.BETTER_AUTH_SECRET);
   const webPlayback = new WebMediaPlaybackAdapter(playbackSessions);
   const vlcPlayback = new VlcPlaybackAdapter(playbackSessions);
+  const shareSecret = env.SHARE_TOKEN_SECRET?.trim() || env.BETTER_AUTH_SECRET;
+  const shareTokens = new ShareTokenStore(shareSecret, () => Date.now(), env.SHARE_LINK_TTL_MS);
+  const publicationAdapters = new PublicationAdapterRegistry();
+  const publicationService = new PublicationService(
+    jobs,
+    storage,
+    projects,
+    publicationAdapters,
+    shareTokens,
+    {
+      publicOrigin: env.BETTER_AUTH_URL,
+      shareTokenConfigured: () => shareTokens.configured,
+    },
+  );
+  const publicationWorker = new PublicationWorker(jobs, publicationService);
   const playbackService = new PlaybackService(
     storage,
     projects,
@@ -239,6 +262,7 @@ function createServices(): ServiceContainer {
     webPlayback,
     vlcPlayback,
     () => vlcPlayback.available(),
+    publicationService,
   );
   const movieService = new MovieService(jobs, storage, projects, () => true);
   const movieWorker = new MovieWorker(jobs, movieService);
@@ -273,6 +297,8 @@ function createServices(): ServiceContainer {
     playbackService,
     movieService,
     movieWorker,
+    publicationService,
+    publicationWorker,
     providers,
     mediaAnalyzer() {
       return analyzer;
@@ -314,6 +340,9 @@ function createServices(): ServiceContainer {
     },
     playback() {
       return webPlayback;
+    },
+    publication() {
+      return publicationAdapters.get("DOWNLOAD");
     },
   };
 }

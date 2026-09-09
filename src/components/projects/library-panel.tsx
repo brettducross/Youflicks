@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { Archive, Loader2, RefreshCw } from "lucide-react";
 import { PlaybackPlayer } from "@/components/projects/playback-player";
+import { ShareExportPanel } from "@/components/projects/share-export-panel";
 import { toast } from "sonner";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -293,6 +294,9 @@ export function LibraryPanel({
                       finishedMovieId={movie.id}
                       fallbackDurationMs={movie.durationMs}
                     />
+                  ) : null}
+                  {movie.status === "READY" ? (
+                    <ShareExportPanel projectId={projectId} movieId={movie.id} />
                   ) : null}
                 </li>
               );

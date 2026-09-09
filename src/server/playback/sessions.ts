@@ -14,6 +14,8 @@ export type PlaybackSessionRecord = {
   projectId: string;
   renderJobId: string;
   finishedMovieId?: string;
+  publicationId?: string;
+  shareWatch?: boolean;
   outputKey: string;
   mimeType: string;
   durationMs: number;
@@ -31,6 +33,8 @@ type TokenPayload = {
   pid: string;
   rid: string;
   mid?: string;
+  pub?: string;
+  sw?: 1;
   key: string;
   mime: string;
   dur: number;
@@ -39,7 +43,10 @@ type TokenPayload = {
   exp: number;
 };
 
-function appStreamPath(projectId: string, sessionId: string) {
+function appStreamPath(projectId: string, sessionId: string, shareWatch?: boolean) {
+  if (shareWatch) {
+    return `/api/share/sessions/${encodeURIComponent(sessionId)}/stream`;
+  }
   return `/api/projects/${projectId}/playback/sessions/${encodeURIComponent(sessionId)}/stream`;
 }
 
@@ -61,6 +68,8 @@ export class PlaybackSessionStore {
     projectId: string;
     renderJobId: string;
     finishedMovieId?: string;
+    publicationId?: string;
+    shareWatch?: boolean;
     outputKey: string;
     mimeType: string;
     durationMs: number;
@@ -70,6 +79,7 @@ export class PlaybackSessionStore {
     const outputKey = assertOpaqueStorageKey(input.outputKey);
     const nonce = randomBytes(16).toString("base64url");
     const expiresAt = this.now() + this.ttlMs;
+    const shareWatch = Boolean(input.shareWatch || input.publicationId);
     const sessionId = this.sign({
       v: 1,
       sid: nonce,
@@ -77,6 +87,8 @@ export class PlaybackSessionStore {
       pid: input.projectId,
       rid: input.renderJobId,
       mid: input.finishedMovieId,
+      pub: input.publicationId,
+      sw: shareWatch ? 1 : undefined,
       key: outputKey,
       mime: input.mimeType,
       dur: input.durationMs,
@@ -84,7 +96,8 @@ export class PlaybackSessionStore {
       tr: input.transport,
       exp: expiresAt,
     });
-    const streamPath = input.transport === "APP_STREAM" ? appStreamPath(input.projectId, sessionId) : undefined;
+    const streamPath =
+      input.transport === "APP_STREAM" ? appStreamPath(input.projectId, sessionId, shareWatch) : undefined;
     assertAppRelativeStreamPath(streamPath);
     return {
       sessionId,
@@ -92,6 +105,8 @@ export class PlaybackSessionStore {
       projectId: input.projectId,
       renderJobId: input.renderJobId,
       finishedMovieId: input.finishedMovieId,
+      publicationId: input.publicationId,
+      shareWatch,
       outputKey,
       mimeType: input.mimeType,
       durationMs: input.durationMs,
@@ -175,7 +190,9 @@ export class PlaybackSessionStore {
     }
     assertOpaqueStorageKey(payload.key);
     const reconstructedId = `${body}.${sig}`;
-    const streamPath = payload.tr === "APP_STREAM" ? appStreamPath(payload.pid, reconstructedId) : undefined;
+    const shareWatch = payload.sw === 1 || Boolean(payload.pub);
+    const streamPath =
+      payload.tr === "APP_STREAM" ? appStreamPath(payload.pid, reconstructedId, shareWatch) : undefined;
     assertAppRelativeStreamPath(streamPath);
     return {
       sessionId: reconstructedId,
@@ -183,6 +200,8 @@ export class PlaybackSessionStore {
       projectId: payload.pid,
       renderJobId: payload.rid,
       finishedMovieId: payload.mid,
+      publicationId: payload.pub,
+      shareWatch,
       outputKey: payload.key,
       mimeType: payload.mime,
       durationMs: payload.dur,
