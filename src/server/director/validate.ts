@@ -13,6 +13,11 @@ const COMMERCIAL_PLAN_KEYS = new Set([
   "usageEvent",
   "billing",
   "invoice",
+  "adsEnabled",
+  "watermarkRequired",
+  "advertising",
+  "watermarkPolicy",
+  "advertisingPort",
 ]);
 
 export function validateCreativePlan(raw: unknown): CreativePlan {

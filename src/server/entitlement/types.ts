@@ -85,6 +85,14 @@ export type PlatformGate = {
   denyCode: EntitlementDenyCodeValue | null;
 };
 
+/** Account / chrome honesty. Not a CreativePlan and not a billing catalog. */
+export type EntitlementSummary = {
+  watermarkRequired: boolean;
+  adsEnabled: boolean;
+  maxOutputDurationMs: number;
+  remainingMovieGenerations: number;
+};
+
 export type SubscriptionGrant = {
   planKey: string;
   movieGenerationsPerHour?: number;

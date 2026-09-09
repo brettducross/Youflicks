@@ -310,6 +310,25 @@ describe("EntitlementService M8.2 free-tier gate", () => {
     await expect(entitlements.resolve(missingId)).rejects.toMatchObject({ code: "NOT_FOUND" });
   });
 
+  it("reports free-tier entitlement honesty and enforces produced duration", async () => {
+    await prisma.generationAuthorization.deleteMany({ where: { userId: verifiedId } });
+    const summary = await entitlements.getEntitlementSummary(verifiedId);
+    expect(summary).toEqual({
+      watermarkRequired: true,
+      adsEnabled: true,
+      maxOutputDurationMs: FREE_MAX_OUTPUT_DURATION_MS,
+      remainingMovieGenerations: 1,
+    });
+    await expect(entitlements.assertOutputDuration(verifiedId, 299_999)).resolves.toBeUndefined();
+    await expect(entitlements.assertOutputDuration(verifiedId, null)).resolves.toBeUndefined();
+    await expect(
+      entitlements.assertOutputDuration(verifiedId, FREE_MAX_OUTPUT_DURATION_MS + 1),
+    ).rejects.toMatchObject({
+      code: "DURATION_EXCEEDS_PLAN",
+      status: 403,
+    });
+  });
+
   it("mergeSnapshot stays FREE for empty stubs and never invents prices", () => {
     const snapshot = mergeSnapshot(verifiedId, [], [], new Date("2026-09-09T00:00:00.000Z"));
     expect(snapshot.planKind).toBe(PlanKind.FREE);

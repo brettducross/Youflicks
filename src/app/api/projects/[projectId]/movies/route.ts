@@ -16,11 +16,18 @@ export async function GET(request: Request, context: RouteContext) {
     const { projectId } = await context.params;
     const includeArchived = new URL(request.url).searchParams.get("includeArchived") === "1";
     const services = getServices();
-    const [movies, availability] = await Promise.all([
+    const [movies, availability, presentation] = await Promise.all([
       services.movieService.list(user.id, projectId, { includeArchived }),
       services.movieService.getAvailability(user.id, projectId),
+      services.presentation.forUser(user.id),
     ]);
-    return NextResponse.json({ movies, ...availability });
+    return NextResponse.json({
+      movies,
+      ...availability,
+      watermarkRequired: presentation.watermarkRequired,
+      adsEnabled: presentation.adsEnabled,
+      ads: presentation.ads.filter((surface) => surface.key === "LIBRARY_BANNER"),
+    });
   } catch (error) {
     const { status, body } = toErrorResponse(error);
     return NextResponse.json(body, { status });

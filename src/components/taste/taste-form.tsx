@@ -7,6 +7,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import { TasteDimension, TasteOrigin, TasteSignalKind, WHAT_MATTERS_OPTIONS } from "@/server/domain/personalization";
+import type { AdsHonesty } from "@/server/advertising/types";
 import type { SponsorshipPreferenceView, TasteProfileView } from "@/server/personalization/views";
 import { cn } from "@/lib/utils";
 
@@ -17,9 +18,11 @@ function valuesFor(profile: TasteProfileView, dimension: string) {
 export function TasteForm({
   initialProfile,
   initialSponsorship,
+  adsHonesty,
 }: {
   initialProfile: TasteProfileView;
   initialSponsorship: SponsorshipPreferenceView;
+  adsHonesty?: AdsHonesty;
 }) {
   const [movies, setMovies] = useState(valuesFor(initialProfile, TasteDimension.FAVORITE_FILMS).join("\n"));
   const [kind, setKind] = useState(valuesFor(initialProfile, TasteDimension.GENRES).join(", "));
@@ -153,6 +156,11 @@ export function TasteForm({
         <p className="mt-2 text-sm text-muted-foreground">
           Off by default. Sponsors never see this profile, your footage, or your analysis.
         </p>
+        {adsHonesty?.adsRequired ? (
+          <p className="mt-2 text-sm text-foreground" data-testid="free-ads-honesty">
+            {adsHonesty.message}
+          </p>
+        ) : null}
         <div className="mt-3 grid gap-2">
           {(
             [
@@ -165,10 +173,14 @@ export function TasteForm({
             <label key={key} className="flex items-center gap-2 text-sm">
               <input
                 type="checkbox"
-                checked={prefs[key]}
+                checked={key === "allowVideoAds" && adsHonesty?.adsRequired ? true : prefs[key]}
+                disabled={key === "allowVideoAds" && adsHonesty?.preferenceCannotOptOut}
                 onChange={(event) => setPrefs((current) => ({ ...current, [key]: event.target.checked }))}
               />
               {label}
+              {key === "allowVideoAds" && adsHonesty?.adsRequired
+                ? " (required on the free plan)"
+                : ""}
             </label>
           ))}
         </div>

@@ -22,6 +22,7 @@ import {
   type AuthorizeGenerationIntent,
   type AuthorizeGenerationResult,
   type EntitlementSnapshot,
+  type EntitlementSummary,
   type GenerationConstraints,
   type PlatformGate,
   type PrepaidGrant,
@@ -130,6 +131,27 @@ export class EntitlementService implements EntitlementPort {
       throw denyToError(decision.code, decision.message);
     }
     return decision;
+  }
+
+  async getEntitlementSummary(userId: string): Promise<EntitlementSummary> {
+    const snapshot = await this.resolve(userId);
+    const used = await this.countMovieGenerations(userId);
+    return {
+      watermarkRequired: snapshot.watermarkRequired,
+      adsEnabled: snapshot.adsEnabled,
+      maxOutputDurationMs: snapshot.maxOutputDurationMs,
+      remainingMovieGenerations: Math.max(0, snapshot.movieGenerationsPerHour - used),
+    };
+  }
+
+  async assertOutputDuration(userId: string, durationMs: number | null | undefined) {
+    if (durationMs == null) {
+      return;
+    }
+    const snapshot = await this.resolve(userId);
+    if (durationMs > snapshot.maxOutputDurationMs) {
+      throw AppError.durationExceedsPlan();
+    }
   }
 
   async setQuarantined(userId: string, quarantined: boolean, reason?: string | null) {

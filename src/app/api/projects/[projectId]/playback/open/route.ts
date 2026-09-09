@@ -21,13 +21,22 @@ export async function POST(request: Request, context: RouteContext) {
       startMs?: number;
       surface?: "web" | "native";
     };
-    const session = await getServices().playbackService.open(user.id, projectId, {
+    const services = getServices();
+    const session = await services.playbackService.open(user.id, projectId, {
       renderJobId: body.renderJobId,
       finishedMovieId: body.finishedMovieId,
       startMs: body.startMs,
       surface: body.surface,
     });
-    return NextResponse.json({ session });
+    const presentation = await services.presentation.forUser(user.id);
+    return NextResponse.json({
+      session,
+      presentation: {
+        watermarkRequired: presentation.watermarkRequired,
+        watermark: presentation.watermark,
+        ads: presentation.ads.filter((surface) => surface.key === "POST_FILM"),
+      },
+    });
   } catch (error) {
     if (!isAppError(error)) {
       logger.error("playback.open_failed", {

@@ -36,6 +36,7 @@ import {
   type ShareWatchGrant,
 } from "@/server/publication/schema";
 import { ShareTokenStore } from "@/server/publication/tokens";
+import { EntitlementService } from "@/server/services/entitlement";
 import { ProjectService } from "@/server/services/projects";
 
 export type PublishQueuePayload = {
@@ -72,6 +73,7 @@ export class PublicationService implements PublicationShareAccess {
       publicOrigin?: string;
       defaultShareTtlMs?: number;
     } = {},
+    private readonly entitlements: EntitlementService = new EntitlementService(),
   ) {}
 
   async getAvailability(
@@ -108,6 +110,7 @@ export class PublicationService implements PublicationShareAccess {
     await this.projects.getForUser(userId, projectId);
     assertPublicationInputPrivacy(body);
     const movie = await this.requireReadyMovie(projectId, movieId);
+    await this.entitlements.assertOutputDuration(userId, movie.durationMs);
     if (!this.storageReadable() || !this.adapters.has(PublicationDestination.DOWNLOAD)) {
       throw AppError.publicationDestinationUnavailable("Export is not available.");
     }
@@ -149,6 +152,7 @@ export class PublicationService implements PublicationShareAccess {
     await this.projects.getForUser(userId, projectId);
     assertPublicationInputPrivacy(body);
     const movie = await this.requireReadyMovie(projectId, movieId);
+    await this.entitlements.assertOutputDuration(userId, movie.durationMs);
     if (!this.shareConfigured() || !this.adapters.has(PublicationDestination.SHARE_LINK)) {
       throw AppError.publicationDestinationUnavailable("Share links are not available.");
     }
@@ -463,6 +467,13 @@ export class PublicationService implements PublicationShareAccess {
       );
     }
     const movie = await this.requireReadyMovieById(input.movieId);
+    const owner = await prisma.project.findUnique({
+      where: { id: movie.projectId },
+      select: { ownerId: true },
+    });
+    if (owner) {
+      await this.entitlements.assertOutputDuration(owner.ownerId, movie.durationMs);
+    }
     const storageKey = assertLibraryStorageKey(movie.storageKey ?? "");
     const exists = await this.storage.exists(storageKey);
     if (!exists) {

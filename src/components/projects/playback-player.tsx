@@ -3,6 +3,8 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Loader2, Pause, Play } from "lucide-react";
 import { toast } from "sonner";
+import { PostFilmAd, type AdSurfaceView } from "@/components/commercial/ad-surface";
+import { WatermarkChrome } from "@/components/commercial/watermark-chrome";
 import { Button } from "@/components/ui/button";
 
 type PlaybackSession = {
@@ -40,6 +42,9 @@ export function PlaybackPlayer({
   const [currentMs, setCurrentMs] = useState(0);
   const [durationMs, setDurationMs] = useState(fallbackDurationMs ?? 0);
   const [error, setError] = useState<string | null>(null);
+  const [watermarkRequired, setWatermarkRequired] = useState(false);
+  const [postFilmAd, setPostFilmAd] = useState<AdSurfaceView | null>(null);
+  const [ended, setEnded] = useState(false);
 
   const closeSession = useCallback(
     async (sessionId: string) => {
@@ -67,6 +72,11 @@ export function PlaybackPlayer({
       });
       const payload = (await response.json()) as {
         session?: PlaybackSession;
+        presentation?: {
+          watermarkRequired?: boolean;
+          watermark?: { required?: boolean; label?: string };
+          ads?: AdSurfaceView[];
+        };
         error?: { message?: string };
       };
       if (!response.ok || !payload.session?.streamPath) {
@@ -74,6 +84,9 @@ export function PlaybackPlayer({
       }
       setSession(payload.session);
       setDurationMs(payload.session.durationMs || fallbackDurationMs || 0);
+      setWatermarkRequired(Boolean(payload.presentation?.watermarkRequired));
+      setPostFilmAd(payload.presentation?.ads?.[0] ?? null);
+      setEnded(false);
       return payload.session;
     } catch (openError) {
       const message = openError instanceof Error ? openError.message : "Could not start watching.";
@@ -143,6 +156,7 @@ export function PlaybackPlayer({
                 setDurationMs(next * 1000);
               }
             }}
+            onEnded={() => setEnded(true)}
             onError={() => setError("This render couldn’t be played.")}
           />
         ) : (
@@ -150,6 +164,7 @@ export function PlaybackPlayer({
             {busy ? <Loader2 className="size-5 animate-spin" /> : "Press Play to watch this render."}
           </div>
         )}
+        <WatermarkChrome required={watermarkRequired} />
       </div>
 
       <div className="flex items-center gap-3">
@@ -173,10 +188,12 @@ export function PlaybackPlayer({
       </div>
 
       {error ? <p className="text-xs text-destructive">{error}</p> : null}
+      {ended ? <PostFilmAd surface={postFilmAd} /> : null}
       <p className="text-xs text-muted-foreground">
         {finishedMovieId
           ? "Watching a film from your library. Watching is not sharing."
           : "Watching this render. Watching does not keep it in your library."}
+        {watermarkRequired ? " Free-plan watermark is on the player, not in the story." : ""}
       </p>
     </div>
   );

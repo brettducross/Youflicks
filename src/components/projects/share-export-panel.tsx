@@ -18,6 +18,8 @@ type PublicationsPayload = {
   publications?: PublicationView[];
   canExport?: boolean;
   canShareLink?: boolean;
+  watermarkRequired?: boolean;
+  adsEnabled?: boolean;
   error?: { message?: string };
 };
 
@@ -61,6 +63,7 @@ export function ShareExportPanel({
   const [busy, setBusy] = useState(false);
   const [copiedId, setCopiedId] = useState<string | null>(null);
   const [latestShareUrl, setLatestShareUrl] = useState<string | null>(null);
+  const [watermarkRequired, setWatermarkRequired] = useState(false);
 
   const refresh = useCallback(async () => {
     const response = await fetch(`/api/projects/${projectId}/movies/${movieId}/publications`);
@@ -71,6 +74,7 @@ export function ShareExportPanel({
     setPublications(payload.publications ?? []);
     setCanExport(Boolean(payload.canExport));
     setCanShareLink(Boolean(payload.canShareLink));
+    setWatermarkRequired(Boolean(payload.watermarkRequired));
   }, [movieId, projectId]);
 
   async function exportFilm() {
@@ -171,6 +175,7 @@ export function ShareExportPanel({
         <p className="text-xs text-muted-foreground">
           Export downloads the film. A share link lets someone watch only — it expires and you can
           revoke it. This is not automatic when you keep or watch.
+          {watermarkRequired ? " Free-plan exports keep the presentation watermark policy." : ""}
         </p>
       </div>
       <div className="flex flex-wrap gap-2">

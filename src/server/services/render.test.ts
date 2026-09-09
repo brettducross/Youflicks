@@ -38,6 +38,7 @@ import { RenderContractService } from "@/server/services/render-contract";
 import { RenderService } from "@/server/services/render";
 import { RenderWorker } from "@/server/services/render-worker";
 import { emptyRenderAvailability, describeRenderAvailability } from "@/server/render/provider-config";
+import { FREE_MAX_OUTPUT_DURATION_MS } from "@/server/entitlement/types";
 
 const PNG_1X1 = Buffer.from(
   "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==",
@@ -672,6 +673,42 @@ describe("RenderService M4", () => {
     });
     expect(recorded?.capability).toBe(RenderCapability.VIDEO_RENDER);
     expect(recorded?.providerKey).toBe("test.renderer");
+  });
+
+  it("applies WatermarkPolicy to free local output without writing ads into the manifest", async () => {
+    const local = new LocalDeterministicRenderer(storage);
+    const { render, worker } = harness({
+      adapter: local,
+      productionAvailable: false,
+      localDevAvailable: true,
+    });
+    const queued = await render.requestRender(ownerId, projectId);
+    await worker.processNext();
+    const latest = await render.getLatestSuccessful(ownerId, projectId);
+    expect(latest).not.toBeNull();
+    const row = await prisma.renderJob.findFirstOrThrow({ where: { id: latest!.id } });
+    const stored = await storage.get(row.outputKey!);
+    expect(stored).not.toBeNull();
+    expect(Buffer.from(stored!.body).toString("utf8")).toContain("watermark=YouFlicks");
+    expect(JSON.stringify(row.payload)).not.toMatch(/adsEnabled|planKind|IN_MOVIE|AdvertisingPort/i);
+  });
+
+  it("fails typed when produced duration exceeds the free max", async () => {
+    const { render, worker } = harness({
+      adapter: scriptedRenderer(async (input) => {
+        const local = new LocalDeterministicRenderer(storage);
+        const result = await local.render(input);
+        return { ...result, durationMs: FREE_MAX_OUTPUT_DURATION_MS + 1 };
+      }),
+      productionAvailable: true,
+    });
+    const queued = await render.requestRender(ownerId, projectId);
+    await worker.processNext();
+    const status = await render.getJobStatus(ownerId, projectId, queued.jobId);
+    expect(status.status).toBe(JobStatus.FAILED);
+    expect(status.error).toMatch(/5 minutes/i);
+    const usage = await prisma.usageEvent.findMany({ where: { jobId: queued.jobId } });
+    expect(usage[0]).toMatchObject({ kind: "RENDER_SECONDS", outcome: "FAILED" });
   });
 
   async function seedReadyStory(document: StoryDocument) {

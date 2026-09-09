@@ -16,9 +16,11 @@ import type { RenderAvailability } from "@/server/render/provider-config";
 import type { RenderJobPayloadDocument, RenderOutputProfile } from "@/server/render/schema";
 import type { UsageMeterPort } from "@/server/ports/usage-meter";
 import { AttributionService } from "@/server/services/attribution";
+import { EntitlementService } from "@/server/services/entitlement";
 import { ProjectService } from "@/server/services/projects";
 import { RenderContractService } from "@/server/services/render-contract";
 import { UsageMeterService } from "@/server/services/usage-meter";
+import { WatermarkPolicyService } from "@/server/services/watermark-policy";
 import { UsageKind, UsageOutcome } from "@/server/usage/types";
 
 export type RenderView = {
@@ -83,6 +85,8 @@ export class RenderService {
     private readonly resolveRenderer: () => ResolvedRenderRuntime | null,
     private readonly availability: () => RenderAvailability,
     private readonly usage: UsageMeterPort = new UsageMeterService(),
+    private readonly entitlements: EntitlementService = new EntitlementService(),
+    private readonly watermark: WatermarkPolicyService = new WatermarkPolicyService(),
   ) {}
 
   getAvailability(): RenderAvailability {
@@ -120,6 +124,7 @@ export class RenderService {
       projectId,
       outputProfile,
     );
+    await this.entitlements.assertOutputDuration(userId, manifest.totalDurationMs);
     const inputFingerprint = fingerprintRenderRequest({
       projectId,
       timelineId: timeline.id,
@@ -308,6 +313,24 @@ export class RenderService {
     }
     await this.assertStoredBytes(result);
 
+    try {
+      await this.entitlements.assertOutputDuration(userId, result.durationMs);
+    } catch (error) {
+      await this.usage.recordJobUsage({
+        userId,
+        projectId,
+        jobId: job.id,
+        kind: UsageKind.RENDER_SECONDS,
+        quantity: (result.durationMs ?? 0) / 1000,
+        outcome: UsageOutcome.FAILED,
+        providerKey: attribution.providerKey,
+        capability: attribution.capability,
+      });
+      throw error;
+    }
+
+    const watermarked = await this.applyWatermarkPolicy(userId, result);
+
     if (await this.isCancelled(job.id)) {
       await this.mirrorRenderJobStatus(job.id, RenderJobStatus.CANCELLED);
       return { cancelled: true, renderJobId: renderJob.id };
@@ -318,16 +341,16 @@ export class RenderService {
       projectId,
       jobId: job.id,
       kind: UsageKind.RENDER_SECONDS,
-      quantity: (result.durationMs ?? 0) / 1000,
+      quantity: (watermarked.durationMs ?? 0) / 1000,
       outcome: UsageOutcome.SUCCEEDED,
       providerKey: attribution.providerKey,
       capability: attribution.capability,
     });
 
-    const stored = await this.storage.get(result.storageKey);
-    const byteSize = result.byteSize ?? stored?.body.byteLength ?? null;
+    const stored = await this.storage.get(watermarked.storageKey);
+    const byteSize = watermarked.byteSize ?? stored?.body.byteLength ?? null;
     const checksum =
-      result.checksum ??
+      watermarked.checksum ??
       (stored ? createHash("sha256").update(stored.body).digest("hex") : null);
 
     await prisma.renderJob.update({
@@ -338,9 +361,9 @@ export class RenderService {
         capability: attribution.capability,
         modelId: attribution.modelId,
         modelVersion: attribution.modelVersion,
-        outputKey: result.storageKey,
-        mimeType: result.mimeType,
-        durationMs: result.durationMs,
+        outputKey: watermarked.storageKey,
+        mimeType: watermarked.mimeType,
+        durationMs: watermarked.durationMs,
         byteSize: byteSize !== null ? BigInt(byteSize) : null,
         checksum,
         error: null,
@@ -431,6 +454,35 @@ export class RenderService {
   private async isCancelled(jobId: string) {
     const current = await this.jobs.get(jobId);
     return current?.status === JobStatus.CANCELLED;
+  }
+
+  private async applyWatermarkPolicy(
+    userId: string,
+    result: { storageKey: string; mimeType: string; durationMs: number; byteSize?: number; checksum?: string },
+  ) {
+    const snapshot = await this.entitlements.resolve(userId);
+    const decision = this.watermark.decide(snapshot);
+    if (!decision.required) {
+      return result;
+    }
+    const stored = await this.storage.get(result.storageKey);
+    if (!stored) {
+      return result;
+    }
+    const applied = this.watermark.applyToOutput(stored.body, decision);
+    if (!applied.mutated) {
+      return result;
+    }
+    await this.storage.put({
+      key: result.storageKey,
+      body: applied.bytes,
+      contentType: stored.contentType ?? result.mimeType,
+    });
+    return {
+      ...result,
+      byteSize: applied.bytes.byteLength,
+      checksum: createHash("sha256").update(applied.bytes).digest("hex"),
+    };
   }
 
   private async assertStoredBytes(result: { storageKey: string; checksum?: string }) {
