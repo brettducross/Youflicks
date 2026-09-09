@@ -18,6 +18,7 @@ export async function GET() {
         capabilities: [...health.capabilities],
       };
     });
+    const playback = getServices().playbackService.getAvailability();
     return NextResponse.json({
       ok: true,
       service: "youflicks",
@@ -25,6 +26,11 @@ export async function GET() {
       analysis: {
         preferredProviderKey: env.ANALYSIS_PROVIDER ?? null,
         providers,
+      },
+      playback: {
+        webAvailable: playback.webAvailable,
+        nativeAvailable: playback.nativeAvailable,
+        canWatch: playback.canWatch,
       },
     });
   } catch (error) {

@@ -14,6 +14,7 @@ import { resolveDirectorAdapter } from "@/server/director/provider-config";
 import type { AiDirectorPort } from "@/server/ports/ai-director";
 import type { JobQueuePort } from "@/server/ports/jobs";
 import type { MediaAnalyzerPort } from "@/server/ports/media-analyzer";
+import type { PlaybackPort } from "@/server/ports/playback";
 import type { RendererPort } from "@/server/ports/renderer";
 import type { StoragePort } from "@/server/ports/storage";
 import type { StoryComposerPort } from "@/server/ports/story-composer";
@@ -44,9 +45,13 @@ import { TasteService } from "@/server/services/taste";
 import { TimelineContractService } from "@/server/services/timeline-contract";
 import { TimelineService } from "@/server/services/timeline";
 import { TimelineWorker } from "@/server/services/timeline-worker";
+import { WebMediaPlaybackAdapter } from "@/server/adapters/playback/web-media";
+import { VlcPlaybackAdapter } from "@/server/adapters/playback/vlc";
+import { PlaybackSessionStore } from "@/server/playback/sessions";
 import { RenderContractService } from "@/server/services/render-contract";
 import { RenderService } from "@/server/services/render";
 import { RenderWorker } from "@/server/services/render-worker";
+import { PlaybackService } from "@/server/services/playback";
 
 export type ServiceContainer = {
   storage: StoragePort;
@@ -75,6 +80,7 @@ export type ServiceContainer = {
   render: RenderContractService;
   renderService: RenderService;
   renderWorker: RenderWorker;
+  playbackService: PlaybackService;
   providers: ProviderRegistry;
   mediaAnalyzer(): MediaAnalyzerPort;
   aiDirector(): AiDirectorPort;
@@ -82,6 +88,7 @@ export type ServiceContainer = {
   timelineComposer(): TimelineComposerPort;
   assetGenerator(): AssetGeneratorPort;
   renderer(): RendererPort;
+  playback(): PlaybackPort;
 };
 
 function createStorage(): StoragePort {
@@ -218,6 +225,17 @@ function createServices(): ServiceContainer {
     () => describeRenderAvailability(resolveRendererAdapter(storage)),
   );
   const renderWorker = new RenderWorker(jobs, renderService);
+  const playbackSessions = new PlaybackSessionStore(env.BETTER_AUTH_SECRET);
+  const webPlayback = new WebMediaPlaybackAdapter(playbackSessions);
+  const vlcPlayback = new VlcPlaybackAdapter(playbackSessions);
+  const playbackService = new PlaybackService(
+    storage,
+    projects,
+    playbackSessions,
+    webPlayback,
+    vlcPlayback,
+    () => vlcPlayback.available(),
+  );
 
   return {
     storage,
@@ -246,6 +264,7 @@ function createServices(): ServiceContainer {
     render,
     renderService,
     renderWorker,
+    playbackService,
     providers,
     mediaAnalyzer() {
       return analyzer;
@@ -284,6 +303,9 @@ function createServices(): ServiceContainer {
         throw AppError.providerNotConfigured("RendererPort");
       }
       return resolved.adapter;
+    },
+    playback() {
+      return webPlayback;
     },
   };
 }

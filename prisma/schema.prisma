@@ -368,7 +368,8 @@ model TimelineClip {
 }
 
 /// M4 — YouFlicks-owned render of exactly one READY Timeline.
-/// Successful render stops at SUCCEEDED + opaque outputKey. Not FinishedMovie (M6).
+/// Successful render stops at SUCCEEDED + opaque outputKey.
+/// M5 watches that key through PlaybackPort. Not FinishedMovie (M6).
 model RenderJob {
   id               String   @id @default(cuid())
   projectId        String
