@@ -4,7 +4,7 @@
 
 YouFlicks is an AI-powered filmmaking platform that turns a person’s photos, videos, memories, and ideas into a finished movie.
 
-This repository currently includes **Phase 1** through **M5** (Playback: SUCCEEDED RenderJob → owner watch via PlaybackPort). It does not promote FinishedMovie library keeps, share/export, take payments, or serve ads.
+This repository currently includes **Phase 1** through **M6** (FinishedMovie / Library keep: explicit “Keep this film”). It does not share/export, take payments, or serve ads.
 
 Read [ARCHITECTURE.md](./ARCHITECTURE.md) for the analysis, technology choices, deferred work, roadmap, and MVP definition.
 
@@ -22,7 +22,8 @@ Read [ARCHITECTURE.md](./ARCHITECTURE.md) for the analysis, technology choices, 
 - **M2 cut from story**: enqueue `AI_TIMELINE`, compose through `TimelineComposerPort`, validate, and persist a versioned YouFlicks-owned `Timeline` / `TimelineDocument` plus `TimelineClip` rows (review-only; not an NLE, render, or GeneratedAsset)
 - **M3 missing pieces**: enqueue `AI_ASSET`, generate through `AssetGeneratorPort`, and persist `GeneratedAsset` rows distinct from `MediaAsset`
 - **M4 render**: enqueue `RENDER`, assemble a YouFlicks-owned `RenderManifest`, render through `RendererPort`, and persist `RenderJob` + opaque StoragePort output (not FinishedMovie, not playback)
-- **M5 playback**: open an ephemeral watch session through `PlaybackPort`, stream a SUCCEEDED render’s opaque StoragePort key to the owner (not FinishedMovie, not share)
+- **M5 playback**: open an ephemeral watch session through `PlaybackPort`, stream a SUCCEEDED render’s opaque StoragePort key to the owner (not a library keep, not share)
+- **M6 library keep**: explicit Keep copies a SUCCEEDED render into a durable `FinishedMovie` library artifact through `MovieService` + StoragePort (not share, not Publication)
 - Extensible domain schema: User → Project → Media → Analysis → CreativePlan → Story → Timeline → Render → Movie → Publish
 - Ports for object storage, background jobs, AI Director, story composer, timeline composer, asset generator, media analysis, rendering, and playback
 - Local filesystem storage adapter (swap later for S3/R2 behind the same port)
@@ -30,7 +31,7 @@ Read [ARCHITECTURE.md](./ARCHITECTURE.md) for the analysis, technology choices, 
 
 ## What is intentionally not built
 
-- FinishedMovie / share / export (M6–M7)
+- Share / export / Publication product writes (M7)
 - Treating the local/deterministic story, timeline, asset, or renderer adapters as production
 - Named vendor SDKs in the domain
 - Billing, payments, or an advertising marketplace
@@ -125,9 +126,10 @@ src/server/personalization  Taste brief and privacy rules
 src/server/director     Director contract (input, plan, capabilities)
 src/server/story        StoryDocument schema, input, validation, availability
 src/server/timeline     TimelineDocument schema, input, validation, availability
+src/server/movie        FinishedMovie library keep (privacy, fingerprint, opaque keys)
 src/server/ports        Storage, jobs, AI, story composer, timeline composer, renderer, playback, analyzer interfaces
 src/server/adapters     Local storage, Postgres jobs, analysis / Director / story / timeline / renderer / playback adapters
-src/server/services     Project, Media, Analysis, Taste, Intent, Credits, Director, Story, Timeline, Render, Playback
+src/server/services     Project, Media, Analysis, Taste, Intent, Credits, Director, Story, Timeline, Render, Playback, Movie
 prisma/schema.prisma    Domain schema
 ```
 
@@ -177,7 +179,7 @@ Do not add vendor columns to Prisma. Do not teach domain services a vendor name.
 - Without HTTP credentials, analysis still succeeds through the local technical adapter (technical metadata only).
 - Production Director availability requires a configured Director HTTP adapter (`DIRECTOR_HTTP_*`). Local technical analysis does **not** count as Director availability.
 - `DIRECTOR_ALLOW_LOCAL=true` enables the deterministic local Director for development/tests only. It never advertises production availability.
-- Rendering and watch are implemented for a SUCCEEDED RenderJob. Library keep (FinishedMovie) is not.
+- Rendering, watch, and explicit library keep are implemented. Share/export is not.
 - Production story availability requires a configured story HTTP adapter (`STORY_HTTP_*`). Local deterministic composition does **not** count as production story availability.
 - `STORY_ALLOW_LOCAL=true` enables the deterministic local story composer for development/tests only. It never advertises production availability.
 - Production timeline availability requires a configured timeline HTTP adapter (`TIMELINE_HTTP_*`). Local deterministic composition does **not** count as production timeline availability.
@@ -274,14 +276,30 @@ M5 lets the project owner watch a successful render:
 - `POST .../playback/close` ends the session. Sessions are short-lived signed tokens, not Prisma rows.
 - Web uses `WebMediaPlaybackAdapter` (`APP_STREAM`). VLC/libVLC is `VlcPlaybackAdapter` only — never a Prisma column or domain type.
 - Job type is not invented: there is no `AI_PLAYBACK`.
-- Minimal UI: Watch on “Your movie”, play / pause / seek / time. No Share, Keep, or NLE.
+- Minimal UI: Watch on “Your movie”, play / pause / seek / time. Keep this film is a separate M6 action.
 
 See [PHASE_M5_PLAYBACK_ROADMAP_DECISION.md](./PHASE_M5_PLAYBACK_ROADMAP_DECISION.md).
 
+## Library keep (M6)
+
+M6 lets the project owner explicitly keep a successful render:
+
+`API → MovieService.keep → StoragePort copy → FinishedMovie READY`
+
+- Owner-only `POST .../movies/keep` returns the kept film (**200**) or `{ jobId, status: ACCEPTED }` (**202**) when copy is async (`LIBRARY_KEEP`).
+- Keep is never automatic on render success or watch open.
+- Bytes are copied into `projects/{projectId}/movies/{movieId}/…`. FinishedMovie is not a thin pointer to render output.
+- `GET .../movies` lists kept films. `POST .../movies/:id/archive` soft-archives (no immediate byte delete).
+- Watch a kept film with `POST .../playback/open` `{ finishedMovieId }` — same PlaybackPort session pattern as M5.
+- Minimal UI: “Keep this film”, Library list, Watch, Archive. No Share / Export / Publish.
+- Job type is `LIBRARY_KEEP` only. There is no `AI_LIBRARY` or `AI_MOVIE`.
+
+See [PHASE_M6_FINISHED_MOVIE_ROADMAP_DECISION.md](./PHASE_M6_FINISHED_MOVIE_ROADMAP_DECISION.md).
+
 ## Next phase
 
-M6+ pipeline (not implemented):
+M7+ pipeline (not implemented):
 
-`FinishedMovie → Share/Export`
+`Share / Export / Publication`
 
-Do not implement library keep, share, or Generate Film until those milestones are requested.
+Do not implement share, export, or Generate Film until those milestones are requested.

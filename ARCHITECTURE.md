@@ -54,7 +54,7 @@ YouFlicks starts as a **modular monolith**: one Next.js application with a clear
                             │
 ┌───────────────────────────▼─────────────────────────────────┐
 │                   Application services                       │
-│     Auth  Projects  Media  Story  Timeline  Render  Playback │
+│     Auth  Projects  Media  Story  Timeline  Render  Playback  Movie │
 └───────┬───────────┬───────────┬───────────┬─────────────────┘
         │           │           │           │
         ▼           ▼           ▼           ▼
@@ -89,7 +89,7 @@ These tables exist in Phase 1 so later features extend rows instead of inventing
 - **StoryStructure** — versioned narrative StoryDocument derived from exactly one READY CreativePlan (M1)
 - **Timeline / TimelineClip** — editorial structure used for rendering
 - **RenderJob** — a request to produce a movie from a timeline
-- **FinishedMovie** — a completed render
+- **FinishedMovie** — an explicit library keep of one SUCCEEDED RenderJob (M6)
 - **Publication** — an attempt to publish a movie somewhere
 - **Job** — generic background work (analysis, direction, render, publish)
 
@@ -169,7 +169,7 @@ Raise these before changing them:
 
 | Deferred | Why |
 | --- | --- |
-| Timeline / render / playback | M2 persists Timeline. M3 persists GeneratedAsset. M4 persists RenderJob. M5 watches a successful render. FinishedMovie remains later. |
+| Timeline / render / playback / library | M2 persists Timeline. M3 persists GeneratedAsset. M4 persists RenderJob. M5 watches a successful render. M6 keeps a FinishedMovie. Share/export remains later. |
 | Named commercial analysis SDKs | Adapters may speak HTTP. Domain code must not import a vendor SDK or vendor enum. |
 | Cost-aware / ML provider routing | `ProviderSelectionPolicy` is replaceable. Phase 2C is deterministic. |
 | Billing / usage accounting | Routing hints exist (`estimatedCost`, `estimatedLatency`, `qualityTier`). No charges. |
@@ -626,17 +626,43 @@ Rules:
 - Sessions are runtime (signed, short-lived). Not a FinishedMovie. No `AI_PLAYBACK` job.
 - VLC / libVLC is adapter-only (`VlcPlaybackAdapter`, `NATIVE_HANDLE`). Web uses `WebMediaPlaybackAdapter` (`APP_STREAM`).
 - Opaque StoragePort keys only. Vendor CDN URLs are not domain truth.
-- Zero `FinishedMovie` / `Publication` writes. Library keep is M6.
+- Zero `FinishedMovie` / `Publication` writes on watch. Library keep is M6.
 
 Authoritative specification: [PHASE_M5_PLAYBACK_ROADMAP_DECISION.md](./PHASE_M5_PLAYBACK_ROADMAP_DECISION.md).
 
-### M6+ — FinishedMovie, Share (not this milestone)
+### M6 — FinishedMovie / Library keep
 
-FinishedMovie library keep and Share/Export remain later milestones. Do not leak those concepts backward into CreativePlan, StoryDocument, TimelineDocument, GeneratedAssetDocument, RenderManifest, or playback sessions.
+**M6 = explicit Keep of a SUCCEEDED RenderJob → durable FinishedMovie library artifact.**
 
-### Phase 4 — FinishedMovie
+```
+HTTP (owner) → MovieService.keep
+ ↓
+require SUCCEEDED RenderJob + writable StoragePort
+ ↓
+durable copy RenderJob.outputKey → projects/{projectId}/movies/{movieId}/…
+ ↓
+persist FinishedMovie READY | enqueue LIBRARY_KEEP (202)
+ ↓
+list / get / archive (soft)
+ ↓
+watch kept film → PlaybackPort.open({ finishedMovieId })
+```
 
-FinishedMovie promotion remains a later milestone.
+Rules:
+
+- FinishedMovie is a first-class library keep. Distinct from RenderJob and PlaybackSession.
+- Explicit Keep only. No silent keep on render success or watch open.
+- Durable StoragePort copy — not a thin pointer to render output.
+- Status READY | ARCHIVED | FAILED. Transient copy is never listed as a kept film.
+- Job type is **`LIBRARY_KEEP` only**. Ban `AI_LIBRARY` / `AI_MOVIE`. No new creative AI port.
+- Zero Publication product writes. No Share / Export / Publish chrome.
+- Watch kept films reuses PlaybackPort with `finishedMovieId` (M5 lock file unchanged).
+
+Authoritative specification: [PHASE_M6_FINISHED_MOVIE_ROADMAP_DECISION.md](./PHASE_M6_FINISHED_MOVIE_ROADMAP_DECISION.md).
+
+### M7+ — Share / Export (not this milestone)
+
+Share/Export/Publication product writes remain later. Do not leak those concepts backward into CreativePlan, StoryDocument, TimelineDocument, GeneratedAssetDocument, RenderManifest, playback sessions, or FinishedMovie keep.
 
 ### Phase 5 — Publish & harden
 
@@ -725,6 +751,21 @@ M5 exit criteria:
 - [x] Minimal player UI only (no NLE / Share / library keep)
 - [x] Zero FinishedMovie / Publication writes
 - [x] Upstream ports and PHASE_2F–M4 locks untouched
+
+M6 exit criteria:
+
+- [x] Owner can explicitly Keep a SUCCEEDED RenderJob → FinishedMovie READY with opaque library storageKey
+- [x] Durable StoragePort copy (not a thin render pointer)
+- [x] No silent FinishedMovie on Render SUCCEEDED or Playback open
+- [x] Status READY | ARCHIVED | FAILED; transient copy never listed
+- [x] Multiple keeps per project; soft archive; prior keeps preserved
+- [x] Cross-user blocked on keep / list / get / archive / stream
+- [x] Opaque StoragePort keys only; no vendor URL domain truth
+- [x] Minimal Keep + Library UI — no NLE / Share / Export / Publish
+- [x] Zero Publication product writes
+- [x] `LIBRARY_KEEP` only when async; no `AI_LIBRARY` / `AI_MOVIE`
+- [x] Watch kept film via PlaybackPort `finishedMovieId` (M5 lock untouched)
+- [x] `canKeep` honesty: owner + SUCCEEDED render + storage writable
 
 Phase 2D exit criteria:
 

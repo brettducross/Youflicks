@@ -37,7 +37,8 @@ export class VlcPlaybackAdapter implements PlaybackPort {
     const record = this.sessions.issue({
       viewerId: source.viewerId,
       projectId: input.projectId,
-      renderJobId: input.renderJobId,
+      renderJobId: input.renderJobId ?? "",
+      finishedMovieId: input.finishedMovieId,
       outputKey: source.outputKey,
       mimeType: source.mimeType,
       durationMs: source.durationMs,

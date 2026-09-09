@@ -28,6 +28,7 @@ export const JobType = {
   AI_TIMELINE: "AI_TIMELINE",
   AI_ASSET: "AI_ASSET",
   RENDER: "RENDER",
+  LIBRARY_KEEP: "LIBRARY_KEEP",
   PUBLISH: "PUBLISH",
 } as const;
 
@@ -98,6 +99,26 @@ export type RenderJobStatusValue = (typeof RenderJobStatus)[keyof typeof RenderJ
 
 export const RENDER_JOB_STATUSES = Object.values(RenderJobStatus);
 
+export const FinishedMovieStatus = {
+  READY: "READY",
+  ARCHIVED: "ARCHIVED",
+  FAILED: "FAILED",
+} as const;
+
+export type FinishedMovieStatusValue =
+  (typeof FinishedMovieStatus)[keyof typeof FinishedMovieStatus];
+
+export const FINISHED_MOVIE_STATUSES = Object.values(FinishedMovieStatus);
+
+export function finishedMovieStatusLabel(status: string): string {
+  const labels: Record<string, string> = {
+    READY: "Kept",
+    ARCHIVED: "Archived",
+    FAILED: "Couldn’t keep",
+  };
+  return labels[status] ?? status;
+}
+
 export function analysisStatusLabel(status: string): string {
   const labels: Record<string, string> = {
     NOT_ANALYZED: "Not analyzed",
@@ -124,7 +145,7 @@ export const PIPELINE_STAGES = [
   { id: "timeline", label: "Timeline", available: false },
   { id: "render", label: "Rendering", available: false },
   { id: "playback", label: "Playback", available: true },
-  { id: "movie", label: "Finished movie", available: false },
+  { id: "movie", label: "Finished movie", available: true },
   { id: "credits", label: "Credits & sponsorship", available: true },
   { id: "publish", label: "Publishing", available: false },
 ] as const;

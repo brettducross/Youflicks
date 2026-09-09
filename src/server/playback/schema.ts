@@ -10,10 +10,14 @@ export const PLAYBACK_STATUS_STATES = ["OPEN", "CLOSED", "EXPIRED"] as const;
 
 export type PlaybackStatusState = (typeof PLAYBACK_STATUS_STATES)[number];
 
-/** Soft-locked public open input. Engineer-gate TypeScript shape. */
+/**
+ * Soft-locked public open input. M6 extends with finishedMovieId (code only).
+ * Exactly one of renderJobId / finishedMovieId after service resolution.
+ */
 export type PlaybackOpenInput = {
   projectId: string;
-  renderJobId: string;
+  renderJobId?: string;
+  finishedMovieId?: string;
   startMs?: number;
 };
 
@@ -32,6 +36,7 @@ export type PlaybackResolvedSource = {
 export type PlaybackSession = {
   sessionId: string;
   renderJobId: string;
+  finishedMovieId?: string;
   durationMs: number;
   mimeType: string;
   transport: PlaybackTransport;
@@ -41,6 +46,7 @@ export type PlaybackSession = {
 export type PlaybackStatus = {
   sessionId: string;
   renderJobId: string;
+  finishedMovieId?: string;
   state: PlaybackStatusState;
 };
 

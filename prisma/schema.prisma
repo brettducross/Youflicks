@@ -409,25 +409,38 @@ model RenderJob {
   @@map("render_job")
 }
 
+/// M6 — YouFlicks-owned library keep of exactly one SUCCEEDED RenderJob.
+/// Durable StoragePort copy (not a thin render pointer). Not Publication (M7).
+/// Status READY | ARCHIVED | FAILED. Transient copy lives on Job, not PROCESSING.
 model FinishedMovie {
-  id          String     @id @default(cuid())
-  projectId   String
-  project     Project    @relation(fields: [projectId], references: [id], onDelete: Cascade)
-  renderJobId String?
-  renderJob   RenderJob? @relation(fields: [renderJobId], references: [id], onDelete: SetNull)
-  title       String
-  durationMs  Int?
-  storageKey  String?
-  /// PROCESSING | READY | FAILED
-  status      String     @default("PROCESSING")
-  createdAt   DateTime   @default(now())
-  updatedAt   DateTime   @updatedAt
+  id               String    @id @default(cuid())
+  projectId        String
+  project          Project   @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  /// Required on keep — exactly one SUCCEEDED RenderJob.
+  renderJobId      String
+  renderJob        RenderJob @relation(fields: [renderJobId], references: [id], onDelete: Restrict)
+  title            String
+  /// READY | ARCHIVED | FAILED
+  status           String
+  /// Opaque library StoragePort key. Required when READY. Never a vendor URL.
+  storageKey       String?
+  durationMs       Int?
+  mimeType         String?
+  byteSize         BigInt?
+  checksum         String?
+  /// Optional hash(source outputKey + renderJobId).
+  inputFingerprint String?
+  keptAt           DateTime?
+  createdAt        DateTime  @default(now())
+  updatedAt        DateTime  @updatedAt
 
   publications Publication[]
   credits      FilmCredits[]
   placements   SponsorPlacement[]
 
   @@index([projectId, createdAt])
+  @@index([projectId, status])
+  @@index([renderJobId])
   @@map("finished_movie")
 }
 
@@ -453,7 +466,7 @@ model Job {
   id          String    @id @default(cuid())
   projectId   String?
   project     Project?  @relation(fields: [projectId], references: [id], onDelete: Cascade)
-  /// MEDIA_ANALYZE | AI_DIRECT | AI_STORY | AI_TIMELINE | AI_ASSET | RENDER | PUBLISH | …
+  /// MEDIA_ANALYZE | AI_DIRECT | AI_STORY | AI_TIMELINE | AI_ASSET | RENDER | LIBRARY_KEEP | PUBLISH | …
   type        String
   /// PENDING | RUNNING | SUCCEEDED | FAILED | CANCELLED
   status      String    @default("PENDING")

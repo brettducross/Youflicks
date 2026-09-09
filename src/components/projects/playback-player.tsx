@@ -24,10 +24,12 @@ function formatClock(ms: number) {
 export function PlaybackPlayer({
   projectId,
   renderJobId,
+  finishedMovieId,
   fallbackDurationMs,
 }: {
   projectId: string;
-  renderJobId: string;
+  renderJobId?: string;
+  finishedMovieId?: string;
   fallbackDurationMs: number | null;
 }) {
   const videoRef = useRef<HTMLVideoElement | null>(null);
@@ -57,7 +59,11 @@ export function PlaybackPlayer({
       const response = await fetch(`/api/projects/${projectId}/playback/open`, {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ renderJobId, surface: "web" }),
+        body: JSON.stringify(
+          finishedMovieId
+            ? { finishedMovieId, surface: "web" }
+            : { renderJobId, surface: "web" },
+        ),
       });
       const payload = (await response.json()) as {
         session?: PlaybackSession;
@@ -77,7 +83,7 @@ export function PlaybackPlayer({
     } finally {
       setBusy(false);
     }
-  }, [fallbackDurationMs, projectId, renderJobId]);
+  }, [fallbackDurationMs, finishedMovieId, projectId, renderJobId]);
 
   useEffect(() => {
     return () => {
@@ -167,7 +173,11 @@ export function PlaybackPlayer({
       </div>
 
       {error ? <p className="text-xs text-destructive">{error}</p> : null}
-      <p className="text-xs text-muted-foreground">Watching this render. It is not kept in a library and is not shared.</p>
+      <p className="text-xs text-muted-foreground">
+        {finishedMovieId
+          ? "Watching a film from your library. Watching is not sharing."
+          : "Watching this render. Watching does not keep it in your library."}
+      </p>
     </div>
   );
 }

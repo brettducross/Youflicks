@@ -225,7 +225,7 @@ export function RenderPanel({
           <div>
             <CardTitle className="font-heading text-xl">Your movie</CardTitle>
             <CardDescription className="mt-1.5">
-              Render this cut into a movie file, then watch it. Not an editor, and not a library keep.
+              Render this cut into a movie file, then watch it. Keep this film is a separate library step.
             </CardDescription>
           </div>
           <div className="flex flex-wrap items-center gap-2">
@@ -257,7 +257,7 @@ export function RenderPanel({
           </p>
         ) : (
           <p className="text-sm text-muted-foreground">
-            Render assembles the current cut. Watch plays that file. It does not keep a library film.
+            Render assembles the current cut. Watch plays that file. Keep this film is a separate step.
           </p>
         )}
 
@@ -324,6 +324,7 @@ export function RenderPanel({
               >
                 {watching ? "Hide player" : "Watch"}
               </Button>
+              <KeepThisFilmButton projectId={projectId} renderJobId={render.id} disabled={busy} />
             </div>
             {watching ? (
               <PlaybackPlayer
@@ -333,7 +334,7 @@ export function RenderPanel({
               />
             ) : (
               <p className="text-xs text-muted-foreground">
-                Watch plays this render. It does not keep a library film or share it.
+                Watch plays this render. Keep this film stores a copy in your library. Neither shares it.
               </p>
             )}
           </div>
@@ -342,5 +343,69 @@ export function RenderPanel({
         )}
       </CardContent>
     </Card>
+  );
+}
+
+function KeepThisFilmButton({
+  projectId,
+  renderJobId,
+  disabled,
+}: {
+  projectId: string;
+  renderJobId: string;
+  disabled: boolean;
+}) {
+  const [canKeep, setCanKeep] = useState(false);
+  const [keeping, setKeeping] = useState(false);
+
+  useEffect(() => {
+    void (async () => {
+      const response = await fetch(`/api/projects/${projectId}/movies`);
+      const payload = (await response.json()) as { canKeep?: boolean };
+      if (response.ok) {
+        setCanKeep(Boolean(payload.canKeep));
+      }
+    })();
+  }, [projectId]);
+
+  if (!canKeep) {
+    return null;
+  }
+
+  async function keepFilm() {
+    setKeeping(true);
+    try {
+      const response = await fetch(`/api/projects/${projectId}/movies/keep`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ renderJobId }),
+      });
+      const payload = (await response.json()) as {
+        movie?: { title?: string };
+        jobId?: string;
+        error?: { message?: string };
+      };
+      if (!response.ok) {
+        throw new Error(payload.error?.message || "Could not keep this film.");
+      }
+      if (response.status === 202 && payload.jobId) {
+        toast.message("Keeping this film.");
+        window.dispatchEvent(new CustomEvent("youflicks:library-keep", { detail: { jobId: payload.jobId } }));
+        return;
+      }
+      toast.success("Kept in your library.");
+      window.dispatchEvent(new CustomEvent("youflicks:library-changed"));
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "Couldn’t keep this film.");
+    } finally {
+      setKeeping(false);
+    }
+  }
+
+  return (
+    <Button type="button" variant="outline" disabled={disabled || keeping} onClick={() => void keepFilm()}>
+      {keeping ? <Loader2 className="size-4 animate-spin" /> : null}
+      Keep this film
+    </Button>
   );
 }
