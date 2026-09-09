@@ -2,6 +2,7 @@ import "server-only";
 
 import type { Prisma } from "@/generated/prisma/client";
 import { AppError } from "@/lib/errors";
+import { prisma } from "@/server/db";
 import { resolveEffectiveCreativeBrief } from "@/server/personalization/brief";
 import { AnalysisService } from "@/server/services/analysis";
 import { IntentService } from "@/server/services/intent";
@@ -11,9 +12,11 @@ import { TasteService } from "@/server/services/taste";
 import type { StoryDocument } from "@/server/story/schema";
 import { storyDocumentSchema } from "@/server/story/schema";
 import { fingerprintStoryDocument } from "@/server/timeline/fingerprint";
+import { GeneratedAssetStatus } from "@/server/domain/status";
 import type {
   TimelineAnalysisSummary,
   TimelineComposerInput,
+  TimelineGeneratedInventoryItem,
   TimelineMediaInventoryItem,
 } from "@/server/timeline/input";
 import { assertTimelineComposerInputPrivacy } from "@/server/timeline/privacy";
@@ -62,6 +65,11 @@ export class TimelineContractService {
       understanding.map((item) => [item.assetId, minimizeAnalysis(item.analysis)]),
     );
 
+    const generatedRows = await prisma.generatedAsset.findMany({
+      where: { projectId, status: GeneratedAssetStatus.READY },
+      orderBy: { createdAt: "desc" },
+    });
+
     const input: TimelineComposerInput = {
       projectId,
       story: source.document,
@@ -71,6 +79,7 @@ export class TimelineContractService {
       mediaInventory: assets.map((asset) =>
         toInventoryItem(asset, summaryByAsset.get(asset.id)),
       ),
+      generatedInventory: generatedRows.map(toGeneratedInventoryItem),
       projectIntent: intent,
       effectiveBrief,
       priorTimeline,
@@ -84,6 +93,7 @@ export class TimelineContractService {
     source: ReadyStoryStructureSource,
     inventory: TimelineMediaInventoryItem[],
     raw: unknown,
+    generatedInventory: TimelineGeneratedInventoryItem[] = [],
   ): TimelineDocument {
     const document = validateTimelineDocument(raw);
     if (
@@ -99,13 +109,26 @@ export class TimelineContractService {
       );
     }
 
-    const allowedIds = new Set(inventory.map((item) => item.assetId));
+    const allowedMediaIds = new Set(inventory.map((item) => item.assetId));
+    const allowedGeneratedIds = new Set(
+      generatedInventory.map((item) => item.generatedAssetId),
+    );
     for (const clip of document.clips) {
-      if (!allowedIds.has(clip.assetId)) {
-        throw AppError.timelineDocumentInvalid(
-          "Every placed clip must reference an existing MediaAsset in this project.",
-          { clipId: clip.id, assetId: clip.assetId },
-        );
+      const kind = clip.sourceKind ?? "MEDIA_ASSET";
+      if (kind === "MEDIA_ASSET") {
+        if (!clip.assetId || !allowedMediaIds.has(clip.assetId)) {
+          throw AppError.timelineDocumentInvalid(
+            "Every MEDIA_ASSET clip must reference an existing MediaAsset in this project.",
+            { clipId: clip.id, assetId: clip.assetId },
+          );
+        }
+      } else if (kind === "GENERATED_ASSET") {
+        if (!clip.generatedAssetId || !allowedGeneratedIds.has(clip.generatedAssetId)) {
+          throw AppError.timelineDocumentInvalid(
+            "Every GENERATED_ASSET clip must reference an existing READY GeneratedAsset in this project.",
+            { clipId: clip.id, generatedAssetId: clip.generatedAssetId },
+          );
+        }
       }
     }
 
@@ -151,6 +174,22 @@ export function extractPriorTimeline(
     };
   }
   return undefined;
+}
+
+function toGeneratedInventoryItem(row: {
+  id: string;
+  kind: string;
+  role: string;
+  durationMs: number | null;
+  storySceneId: string | null;
+}): TimelineGeneratedInventoryItem {
+  return {
+    generatedAssetId: row.id,
+    kind: row.kind,
+    role: row.role,
+    durationMs: row.durationMs,
+    storySceneId: row.storySceneId ?? undefined,
+  };
 }
 
 function toInventoryItem(

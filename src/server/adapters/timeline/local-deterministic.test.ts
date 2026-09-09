@@ -98,7 +98,9 @@ describe("LocalDeterministicTimelineComposer", () => {
     const attribution = composer.executionAttribution();
     expect(attribution.providerKey).toBe("youflicks.local.timeline");
     expect(attribution.capability).toBe(TimelineCapability.TIMELINE_COMPOSITION);
-    expect(JSON.stringify(document)).not.toMatch(/generatedAsset|ffmpeg|vlc|libvlc/i);
+    expect(JSON.stringify(document)).not.toMatch(/ffmpeg|vlc|libvlc/i);
+    expect(document.clips.every((clip) => !clip.generatedAssetId)).toBe(true);
+    expect(document).not.toHaveProperty("generatedAsset");
   });
 
   it("uses priorTimeline for rebuild continuity of clip choices", async () => {
@@ -122,6 +124,31 @@ describe("LocalDeterministicTimelineComposer", () => {
     );
     expect(second.clips[0]?.assetId).toBe(first.clips[0]?.assetId);
     expect(second.title).toBe(first.title);
+  });
+
+  it("places READY GeneratedAssets from generatedInventory and shrinks unmet roles", async () => {
+    const composer = new LocalDeterministicTimelineComposer();
+    const document = await composer.composeTimeline(
+      baseInput({
+        generatedInventory: [
+          {
+            generatedAssetId: "gen_portrait",
+            kind: "IMAGE",
+            role: "intimate_portrait",
+            durationMs: 3000,
+            storySceneId: "scene-arrive",
+          },
+        ],
+      }),
+    );
+    expect(document.clips.some((clip) => clip.sourceKind === "GENERATED_ASSET")).toBe(true);
+    expect(
+      document.clips.some((clip) => clip.generatedAssetId === "gen_portrait"),
+    ).toBe(true);
+    expect(
+      document.unmetMediaRoles?.some((item) => item.role === "intimate_portrait") ?? false,
+    ).toBe(false);
+    expect(() => validateTimelineDocument(document)).not.toThrow();
   });
 
   it("does not invent placeholder clips when media is missing", async () => {

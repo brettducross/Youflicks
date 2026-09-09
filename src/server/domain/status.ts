@@ -26,6 +26,7 @@ export const JobType = {
   AI_DIRECT: "AI_DIRECT",
   AI_STORY: "AI_STORY",
   AI_TIMELINE: "AI_TIMELINE",
+  AI_ASSET: "AI_ASSET",
   RENDER: "RENDER",
   PUBLISH: "PUBLISH",
 } as const;
@@ -72,6 +73,18 @@ export const TimelineStatus = {
 export type TimelineStatusValue = (typeof TimelineStatus)[keyof typeof TimelineStatus];
 
 export const TIMELINE_STATUSES = Object.values(TimelineStatus);
+
+export const GeneratedAssetStatus = {
+  DRAFT: "DRAFT",
+  READY: "READY",
+  SUPERSEDED: "SUPERSEDED",
+  FAILED: "FAILED",
+} as const;
+
+export type GeneratedAssetStatusValue =
+  (typeof GeneratedAssetStatus)[keyof typeof GeneratedAssetStatus];
+
+export const GENERATED_ASSET_STATUSES = Object.values(GeneratedAssetStatus);
 
 export function analysisStatusLabel(status: string): string {
   const labels: Record<string, string> = {

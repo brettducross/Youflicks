@@ -169,7 +169,7 @@ Raise these before changing them:
 
 | Deferred | Why |
 | --- | --- |
-| Timeline / render / playback | M2 persists Timeline only. M3+ starts GeneratedAsset → Render. |
+| Timeline / render / playback | M2 persists Timeline. M3 persists GeneratedAsset. Render/playback remain later. |
 | Named commercial analysis SDKs | Adapters may speak HTTP. Domain code must not import a vendor SDK or vendor enum. |
 | Cost-aware / ML provider routing | `ProviderSelectionPolicy` is replaceable. Phase 2C is deterministic. |
 | Billing / usage accounting | Routing hints exist (`estimatedCost`, `estimatedLatency`, `qualityTier`). No charges. |
@@ -529,18 +529,51 @@ Rules:
 - Do **not** extend or overload `AiDirectorPort` or `StoryComposerPort`. Cut composition is `TimelineComposerPort` only.
 - Timeline is **not** a renamed StoryStructure. It owns editorial execution (clips, tracks, absolute timings).
 - Timing (`timelineStartMs` / `timelineEndMs`, source in/out) is legal only on Timeline / TimelineClip.
-- Place only existing `MediaAsset` rows. Unmet story `mediaRoles` are `unmetMediaRoles` for M3 — no GeneratedAsset IDs, no null-asset clips.
+- M2 placed only existing `MediaAsset` rows. M3 extends clip identity with `sourceKind: MEDIA_ASSET | GENERATED_ASSET` on explicit Rebuild cut. Unmet roles stay in `unmetMediaRoles`.
 - In-progress belongs on Job (`PENDING` | `RUNNING` | …). Timeline status is only `DRAFT` | `READY` | `SUPERSEDED` | `FAILED`.
 - Production timeline availability requires a genuine configured adapter (`TIMELINE_HTTP_*`). Local deterministic (`TIMELINE_ALLOW_LOCAL` / tests) never advertises production availability.
 - Minimal UI: “Your cut”, Build / Rebuild, status, read-only ordered shot list with simple times. No NLE, Director chat, or Generate Film.
 
 Authoritative specification: [PHASE_M2_TIMELINE_ROADMAP_DECISION.md](./PHASE_M2_TIMELINE_ROADMAP_DECISION.md).
 
-### M3+ — Generated assets, render, playback (not this milestone)
+### M3 — Generated & processed assets
 
-**`Timeline → assets → Render → Playback → FinishedMovie`**
+**M3 = READY Timeline `unmetMediaRoles` → versioned GeneratedAsset (distinct from MediaAsset).**
 
-M3 (future lock) fills unmet media roles. Rendering, playback, and FinishedMovie remain later milestones. Do not leak those concepts backward into CreativePlan, StoryDocument, or TimelineDocument.
+```
+HTTP (owner) → enqueue AI_ASSET (202 + jobId)
+ ↓
+AssetWorker claims AI_ASSET
+ ↓
+assemble AssetGeneratorInput from READY Timeline unmet roles
+  (+ privacy-minimized story hints; no vendor JSON)
+ ↓
+fingerprint input (persist hash only)
+ ↓
+AssetGeneratorPort.generate (one asset per call; batch in AssetService)
+ ↓
+validate GeneratedAssetDocument (schema v1; StoragePort opaque keys)
+ ↓
+persist GeneratedAsset (prior READY for same role → SUPERSEDED)
+ ↓
+record ProviderAttribution (outside the port return)
+ ↓
+explicit Rebuild cut (D9) may place GENERATED_ASSET clips on Timeline vN+1
+```
+
+Rules:
+
+- Do **not** overload Director/Story/Timeline compose ports. Generation is `AssetGeneratorPort` only.
+- `GeneratedAsset` ≠ `MediaAsset`. User footage stays on MediaAsset.
+- Job type is **`AI_ASSET` only**. In-progress lives on Job. GeneratedAsset status is `DRAFT | READY | SUPERSEDED | FAILED`.
+- No silent Timeline rewrite on generation success. Rebuild cut is an explicit user action.
+- No RenderJob execution, FinishedMovie, Publication, VLC, NLE, or billing.
+
+Authoritative specification: [PHASE_M3_GENERATED_ASSETS_ROADMAP_DECISION.md](./PHASE_M3_GENERATED_ASSETS_ROADMAP_DECISION.md).
+
+### M4+ — Render, playback, FinishedMovie (not this milestone)
+
+Rendering, playback, and FinishedMovie remain later milestones. Do not leak those concepts backward into CreativePlan, StoryDocument, TimelineDocument, or GeneratedAssetDocument.
 
 ### Phase 4 — Render & movie
 
@@ -601,6 +634,17 @@ M2 exit criteria:
 - [x] Production vs local timeline availability honesty
 - [x] Review-only UI only (no NLE)
 - [x] No RenderJob / FinishedMovie / Publication / GeneratedAsset writes
+
+M3 exit criteria:
+
+- [x] First-class `GeneratedAsset` persistence distinct from MediaAsset
+- [x] `AssetService` + `AI_ASSET` enqueue/worker path
+- [x] HTTP returns 202; generation runs off-request
+- [x] Fulfillment from READY Timeline `unmetMediaRoles` without vendor JSON in Story/Timeline
+- [x] Timeline clip `sourceKind` + explicit Rebuild cut (no silent rewrite)
+- [x] Production vs local per-capability honesty
+- [x] Review-only Missing pieces UI (no NLE / render / VLC)
+- [x] No RenderJob execution / FinishedMovie / Publication product paths
 
 Phase 2D exit criteria:
 
@@ -670,9 +714,10 @@ src/server/personalization  Taste brief, privacy boundary
 src/server/director     Director input, plan schema, capability gateway, fingerprint
 src/server/story        StoryDocument schema, input, validation, availability
 src/server/timeline     TimelineDocument schema, input, validation, availability
+src/server/assets       GeneratedAssetDocument schema, input, validation, availability
 src/server/ports        Interfaces
-src/server/adapters     Local storage, Postgres jobs, analysis + Director + story + timeline adapters
-src/server/services     Project, Media, Analysis, Director, Story, Timeline, Taste, Intent, Credits
+src/server/adapters     Local storage, Postgres jobs, analysis + Director + story + timeline + asset adapters
+src/server/services     Project, Media, Analysis, Director, Story, Timeline, Assets, Taste, Intent, Credits
 prisma/schema.prisma    Extensible domain schema
 docker-compose.yml      Local Postgres
 ```

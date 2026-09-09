@@ -8,6 +8,7 @@ import { ProjectService } from "@/server/services/projects";
 export type RecordAttributionInput = {
   projectId: string;
   assetId?: string | null;
+  generatedAssetId?: string | null;
   analysisId?: string | null;
   jobId?: string | null;
   providerKey: string;
@@ -23,6 +24,7 @@ export class AttributionService {
     id: string;
     projectId: string;
     assetId: string | null;
+    generatedAssetId: string | null;
     analysisId: string | null;
     jobId: string | null;
     providerKey: string;
@@ -35,6 +37,7 @@ export class AttributionService {
       id: row.id,
       projectId: row.projectId,
       assetId: row.assetId,
+      generatedAssetId: row.generatedAssetId,
       analysisId: row.analysisId,
       jobId: row.jobId,
       providerKey: row.providerKey,
@@ -50,6 +53,7 @@ export class AttributionService {
       data: {
         projectId: input.projectId,
         assetId: input.assetId ?? null,
+        generatedAssetId: input.generatedAssetId ?? null,
         analysisId: input.analysisId ?? null,
         jobId: input.jobId ?? null,
         providerKey: input.providerKey,

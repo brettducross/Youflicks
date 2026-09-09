@@ -25,9 +25,22 @@ export type TimelineMediaInventoryItem = {
 };
 
 /**
+ * Privacy-minimized READY GeneratedAsset inventory for explicit Rebuild cut (D8).
+ * Ids and role/kind only — no storage keys, vendor URLs, or host JSON.
+ */
+export type TimelineGeneratedInventoryItem = {
+  generatedAssetId: string;
+  kind: string;
+  role: string;
+  durationMs: number | null;
+  storySceneId?: string;
+};
+
+/**
  * Provider-neutral timeline composer input.
  * Must not include credentials, sponsor records, raw storage keys,
- * user email/identity, render manifests, playback config, or GeneratedAsset records.
+ * user email/identity, render manifests, playback config, or vendor host JSON.
+ * generatedInventory is YouFlicks ids only (D8) — not GeneratedAsset documents.
  */
 export type TimelineComposerInput = {
   projectId: string;
@@ -36,6 +49,7 @@ export type TimelineComposerInput = {
   storyStructureVersion: number;
   storyFingerprint?: string;
   mediaInventory: TimelineMediaInventoryItem[];
+  generatedInventory?: TimelineGeneratedInventoryItem[];
   projectIntent: CreativeIntentView;
   effectiveBrief: EffectiveCreativeBrief;
   priorTimeline?: TimelineDocument | TimelineContinuitySubset;

@@ -22,7 +22,6 @@ const FORBIDDEN_INPUT_KEYS = [
   "tasteProfile",
   "signals",
   "generatedAsset",
-  "generatedAssetId",
   "generatedAssets",
   "render",
   "renderSpec",
@@ -39,7 +38,6 @@ const FORBIDDEN_INPUT_KEYS = [
 
 const FORBIDDEN_DOCUMENT_KEYS = [
   "generatedAsset",
-  "generatedAssetId",
   "generatedAssets",
   "render",
   "renderSpec",
@@ -67,11 +65,23 @@ function walk(value: unknown, path: string, hits: string[], forbidden: string[])
     return;
   }
   for (const [key, child] of Object.entries(value as Record<string, unknown>)) {
-    if (forbidden.includes(key)) {
-      hits.push(`${path}.${key}`);
+    const childPath = `${path}.${key}`;
+    if (key === "generatedAssetId" && !isAllowedGeneratedAssetIdPath(childPath)) {
+      hits.push(childPath);
     }
-    walk(child, `${path}.${key}`, hits, forbidden);
+    if (forbidden.includes(key)) {
+      hits.push(childPath);
+    }
+    walk(child, childPath, hits, forbidden);
   }
+}
+
+/** YouFlicks clip/inventory ids are legal. Root-level or vendor-blob ids are not. */
+function isAllowedGeneratedAssetIdPath(path: string) {
+  return (
+    /\.clips\[\d+\]\.generatedAssetId$/.test(path) ||
+    /\.generatedInventory\[\d+\]\.generatedAssetId$/.test(path)
+  );
 }
 
 /** Timeline composer input must be a minimized YouFlicks brief. */
@@ -80,7 +90,7 @@ export function assertTimelineComposerInputPrivacy(input: TimelineComposerInput)
   walk(input, "timelineComposerInput", hits, FORBIDDEN_INPUT_KEYS);
   if (hits.length > 0) {
     throw AppError.timelineInputInvalid(
-      "Timeline composer input contains private, sponsor, render, or GeneratedAsset fields that must not be sent.",
+      "Timeline composer input contains private, sponsor, render, or vendor-host fields that must not be sent.",
       { paths: hits },
     );
   }
@@ -95,7 +105,7 @@ export function assertNoSmuggledRenderFields(value: unknown) {
   walk(value, "timelineDocument", hits, FORBIDDEN_DOCUMENT_KEYS);
   if (hits.length > 0) {
     throw AppError.timelineDocumentInvalid(
-      "Timeline documents must not include render, VLC, GeneratedAsset, sponsor, or provider-host fields.",
+      "Timeline documents must not include render, VLC, sponsor, or provider-host fields.",
       { paths: hits },
     );
   }

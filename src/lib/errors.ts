@@ -25,6 +25,11 @@ export const ErrorCodes = {
   TIMELINE_PROVIDER_UNAVAILABLE: "TIMELINE_PROVIDER_UNAVAILABLE",
   TIMELINE_STORY_REQUIRED: "TIMELINE_STORY_REQUIRED",
   TIMELINE_CAPABILITY_UNAVAILABLE: "TIMELINE_CAPABILITY_UNAVAILABLE",
+  ASSET_INPUT_INVALID: "ASSET_INPUT_INVALID",
+  ASSET_DOCUMENT_INVALID: "ASSET_DOCUMENT_INVALID",
+  ASSET_PROVIDER_UNAVAILABLE: "ASSET_PROVIDER_UNAVAILABLE",
+  ASSET_TIMELINE_REQUIRED: "ASSET_TIMELINE_REQUIRED",
+  ASSET_CAPABILITY_UNAVAILABLE: "ASSET_CAPABILITY_UNAVAILABLE",
   INTERNAL: "INTERNAL",
 } as const;
 
@@ -164,6 +169,33 @@ export class AppError extends Error {
 
   static timelineCapabilityUnavailable(message = "Cut composition is not available.") {
     return new AppError(ErrorCodes.TIMELINE_CAPABILITY_UNAVAILABLE, message, 503);
+  }
+
+  static assetInputInvalid(message: string, details?: Record<string, unknown>) {
+    return new AppError(ErrorCodes.ASSET_INPUT_INVALID, message, 422, details);
+  }
+
+  static assetDocumentInvalid(message: string, details?: Record<string, unknown>) {
+    return new AppError(ErrorCodes.ASSET_DOCUMENT_INVALID, message, 422, details);
+  }
+
+  static assetProviderUnavailable(message = "A required asset generator adapter is unavailable.") {
+    return new AppError(ErrorCodes.ASSET_PROVIDER_UNAVAILABLE, message, 503);
+  }
+
+  static assetTimelineRequired(
+    message = "A READY cut is required before making missing pieces.",
+  ) {
+    return new AppError(ErrorCodes.ASSET_TIMELINE_REQUIRED, message, 422);
+  }
+
+  static assetCapabilityUnavailable(capability: string) {
+    return new AppError(
+      ErrorCodes.ASSET_CAPABILITY_UNAVAILABLE,
+      `No ready adapter can perform ${capability}.`,
+      503,
+      { capability },
+    );
   }
 }
 

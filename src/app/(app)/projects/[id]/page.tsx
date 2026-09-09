@@ -8,6 +8,7 @@ import { MediaLibrary } from "@/components/media/media-library";
 import { CreativeIntentForm } from "@/components/projects/creative-intent-form";
 import { CreativePlanPanel } from "@/components/projects/creative-plan-panel";
 import { StoryPanel } from "@/components/projects/story-panel";
+import { MissingPiecesPanel } from "@/components/projects/missing-pieces-panel";
 import { TimelinePanel } from "@/components/projects/timeline-panel";
 import { cn } from "@/lib/utils";
 import { requireUser } from "@/server/auth/session";
@@ -49,6 +50,9 @@ export default async function ProjectDetailPage({
   const timeline = await services.timelineService.getLatestReady(user.id, id);
   const timelines = await services.timelineService.listTimelines(user.id, id);
   const timelineAvailability = services.timelineService.getAvailability();
+  const generatedAssets = await services.assetService.listAssets(user.id, id);
+  const assetAvailability = services.assetService.getAvailability();
+  const unmetRoles = timeline?.document.unmetMediaRoles ?? [];
 
   return (
     <main className="mx-auto w-full max-w-6xl px-4 py-8 sm:px-6">
@@ -108,6 +112,14 @@ export default async function ProjectDetailPage({
         initialTimelines={timelines}
         initialAvailability={timelineAvailability}
         storyReady={Boolean(story)}
+      />
+
+      <MissingPiecesPanel
+        projectId={project.id}
+        initialAssets={generatedAssets}
+        initialAvailability={assetAvailability}
+        initialUnmetRoles={unmetRoles}
+        timelineReady={Boolean(timeline)}
       />
 
       <div className="mt-10 grid gap-4 md:grid-cols-2">

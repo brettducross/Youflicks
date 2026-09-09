@@ -55,4 +55,20 @@ describe("PostgresJobQueue", () => {
     });
     expect(failed.status).toBe(JobStatus.FAILED);
   });
+
+  it("cancels a pending or running job without rewriting a succeeded job", async () => {
+    const created = await queue.enqueue({ type: "TEST_QUEUE", payload: {} });
+    ids.push(created.id);
+    const cancelled = await queue.cancel(created.id);
+    expect(cancelled.status).toBe(JobStatus.CANCELLED);
+    const again = await queue.cancel(created.id);
+    expect(again.status).toBe(JobStatus.CANCELLED);
+
+    const done = await queue.enqueue({ type: "TEST_QUEUE", payload: {} });
+    ids.push(done.id);
+    await queue.claimNext(["TEST_QUEUE"]);
+    await queue.complete(done.id, { ok: true });
+    const left = await queue.cancel(done.id);
+    expect(left.status).toBe(JobStatus.SUCCEEDED);
+  });
 });

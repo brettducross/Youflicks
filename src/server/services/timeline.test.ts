@@ -489,6 +489,7 @@ describe("TimelineService M2", () => {
     });
     const storiesBefore = await prisma.storyStructure.count({ where: { projectId } });
     const plansBefore = await prisma.creativePlan.count({ where: { projectId } });
+    const generatedBefore = await prisma.generatedAsset.count({ where: { projectId } });
     const rendersBefore = await prisma.renderJob.count({ where: { projectId } });
     const moviesBefore = await prisma.finishedMovie.count({ where: { projectId } });
     const publicationsBefore = await prisma.publication.count();
@@ -497,10 +498,10 @@ describe("TimelineService M2", () => {
     await worker.processNext();
     const row = await timeline.getLatestReady(ownerId, projectId);
     const json = JSON.stringify(row!.document);
-    expect(json).not.toMatch(/generatedAsset|ffmpeg|vlc|libvlc|renderSpec/i);
+    expect(json).not.toMatch(/ffmpeg|vlc|libvlc|renderSpec/i);
     expect(row!.document.clips[0]).toHaveProperty("timelineStartMs");
     expect(row!.status).toBe(TimelineStatus.READY);
-    expect("generatedAsset" in prisma).toBe(false);
+    expect(await prisma.generatedAsset.count({ where: { projectId } })).toBe(generatedBefore);
 
     const storedStory = await prisma.storyStructure.findFirst({
       where: { projectId, status: StoryStructureStatus.READY },

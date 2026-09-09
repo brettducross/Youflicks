@@ -141,9 +141,16 @@ function assertClipsReferenceTracks(document: TimelineDocument) {
 
 function assertNoNullAssetSlots(document: TimelineDocument) {
   for (const clip of document.clips) {
-    if (!clip.assetId) {
+    const kind = clip.sourceKind ?? "MEDIA_ASSET";
+    if (kind === "MEDIA_ASSET" && !clip.assetId) {
       throw AppError.timelineDocumentInvalid(
-        "Placed clips must reference an existing MediaAsset. Unmet roles belong in unmetMediaRoles.",
+        "MEDIA_ASSET clips must reference an existing MediaAsset. Unmet roles belong in unmetMediaRoles.",
+        { clipId: clip.id },
+      );
+    }
+    if (kind === "GENERATED_ASSET" && !clip.generatedAssetId) {
+      throw AppError.timelineDocumentInvalid(
+        "GENERATED_ASSET clips must reference an existing GeneratedAsset.",
         { clipId: clip.id },
       );
     }
