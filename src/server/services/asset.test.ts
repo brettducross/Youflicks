@@ -3,6 +3,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import type { Prisma } from "@/generated/prisma/client";
+import { AppError } from "@/lib/errors";
 import { LocalDeterministicAssetGenerator } from "@/server/adapters/assets/local-deterministic";
 import { LocalDeterministicTimelineComposer } from "@/server/adapters/timeline/local-deterministic";
 import { LocalStorageAdapter } from "@/server/adapters/storage/local";
@@ -300,7 +301,7 @@ describe("AssetService M3", () => {
   it("records FAILED ASSET_CALL when generate throws", async () => {
     const { assets, worker } = harness({
       adapter: scriptedGenerator(() => {
-        throw new Error("asset engine down");
+        throw AppError.jobFailed("asset engine down");
       }),
       productionAvailable: true,
     });

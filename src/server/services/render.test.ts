@@ -3,6 +3,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import type { Prisma } from "@/generated/prisma/client";
+import { AppError } from "@/lib/errors";
 import { LocalDeterministicRenderer } from "@/server/adapters/renderer/local-deterministic";
 import { LocalStorageAdapter } from "@/server/adapters/storage/local";
 import { PostgresJobQueue } from "@/server/adapters/jobs/postgres";
@@ -329,7 +330,7 @@ describe("RenderService M4", () => {
   it("records FAILED RENDER_SECONDS when the renderer throws", async () => {
     const { render, worker } = harness({
       adapter: scriptedRenderer(() => {
-        throw new Error("render engine down");
+        throw AppError.jobFailed("render engine down");
       }),
       productionAvailable: true,
     });

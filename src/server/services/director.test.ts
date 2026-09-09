@@ -576,7 +576,7 @@ describe("DirectorService Phase 2F", () => {
   it("records FAILED UsageEvent when Director compose throws", async () => {
     const { director, worker } = harness({
       adapter: scriptedDirector(() => {
-        throw new Error("provider down");
+        throw AppError.jobFailed("provider down");
       }),
       productionAvailable: true,
     });
