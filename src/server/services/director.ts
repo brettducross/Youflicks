@@ -16,9 +16,12 @@ import {
 import type { AiDirectorPort } from "@/server/ports/ai-director";
 import type { JobQueuePort, JobRecord } from "@/server/ports/jobs";
 import { AttributionService } from "@/server/services/attribution";
+import type { UsageMeterPort } from "@/server/ports/usage-meter";
 import { EntitlementService } from "@/server/services/entitlement";
 import { DirectorContractService } from "@/server/services/director-contract";
 import { ProjectService } from "@/server/services/projects";
+import { UsageMeterService } from "@/server/services/usage-meter";
+import { UsageKind, UsageOutcome } from "@/server/usage/types";
 
 export type CreativePlanView = {
   id: string;
@@ -80,6 +83,7 @@ export class DirectorService {
     private readonly resolveDirector: () => ResolvedDirectorRuntime | null,
     private readonly availability: () => DirectorAvailability,
     private readonly entitlements: EntitlementService,
+    private readonly usage: UsageMeterPort = new UsageMeterService(),
   ) {}
 
   getAvailability(): DirectorAvailability {
@@ -225,9 +229,34 @@ export class DirectorService {
     const input = { ...assembled, priorDecisions };
 
     const inputFingerprint = fingerprintDirectorInput(input);
-    const rawPlan = await resolved.adapter.composePlan(input);
-    const plan = this.contract.validatePlan(input, rawPlan);
     const { attribution } = resolved;
+    let rawPlan;
+    try {
+      rawPlan = await resolved.adapter.composePlan(input);
+    } catch (error) {
+      await this.usage.recordJobUsage({
+        userId,
+        projectId,
+        jobId: job.id,
+        kind: UsageKind.MOVIE_GENERATION,
+        quantity: 1,
+        outcome: UsageOutcome.FAILED,
+        providerKey: attribution.providerKey,
+        capability: attribution.capability,
+      });
+      throw error;
+    }
+    await this.usage.recordJobUsage({
+      userId,
+      projectId,
+      jobId: job.id,
+      kind: UsageKind.MOVIE_GENERATION,
+      quantity: 1,
+      outcome: UsageOutcome.SUCCEEDED,
+      providerKey: attribution.providerKey,
+      capability: attribution.capability,
+    });
+    const plan = this.contract.validatePlan(input, rawPlan);
 
     const latestVersion = await prisma.creativePlan.findFirst({
       where: { projectId },

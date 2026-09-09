@@ -6,7 +6,14 @@ import {
 } from "@/server/director/schema";
 import type { DirectorInput } from "@/server/director/input";
 
-const COMMERCIAL_PLAN_KEYS = new Set(["planKind"]);
+const COMMERCIAL_PLAN_KEYS = new Set([
+  "planKind",
+  "engineCost",
+  "costUnits",
+  "usageEvent",
+  "billing",
+  "invoice",
+]);
 
 export function validateCreativePlan(raw: unknown): CreativePlan {
   const parsed = creativePlanSchema.safeParse(raw);
@@ -25,7 +32,7 @@ export function assertNoCommercialPlanFields(plan: CreativePlan) {
   walkCommercialKeys(plan, "plan", hits);
   if (hits.length > 0) {
     throw AppError.directorPlanInvalid(
-      "Creative plans must not include commercial entitlement fields.",
+      "Creative plans must not include commercial entitlement or engine-cost fields.",
       { paths: hits },
     );
   }

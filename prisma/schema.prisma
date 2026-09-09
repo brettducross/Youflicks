@@ -34,6 +34,7 @@ model User {
   sponsors                 Sponsor[]
   platformState            AccountPlatformState?
   generationAuthorizations GenerationAuthorization[]
+  usageEvents              UsageEvent[]
 
   @@map("user")
 }
@@ -746,4 +747,58 @@ model GenerationAuthorization {
 
   @@index([userId, kind, recordedAt])
   @@map("generation_authorization")
+}
+
+// ---------------------------------------------------------------------------
+// M8.3 — Ops usage metering + engine cost attribution (not creative, not billing)
+// UsageEvent is append-only ops metering. GenerationAuthorization (M8.2) remains
+// the free-tier MOVIE_GENERATION meter. EngineCostEvent is ops/finance only —
+// never fed to Director / Story / Timeline / CreativePlan.
+// Not Invoice / Subscription / CreditLedger / BillingPort (M8.5).
+// ---------------------------------------------------------------------------
+
+/// Append-only ops meter. Kind is an open string
+/// (MOVIE_GENERATION | RENDER_SECONDS | ASSET_CALL | …).
+model UsageEvent {
+  id         String   @id @default(cuid())
+  userId     String
+  user       User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  projectId  String?
+  jobId      String?
+  /// MOVIE_GENERATION | RENDER_SECONDS | ASSET_CALL | …
+  kind       String
+  quantity   Float
+  /// SUCCEEDED | FAILED — open string
+  outcome    String   @default("SUCCEEDED")
+  recordedAt DateTime @default(now())
+  createdAt  DateTime @default(now())
+  engineCosts EngineCostEvent[]
+
+  @@index([userId, kind, recordedAt])
+  @@index([jobId])
+  @@index([projectId])
+  @@map("usage_event")
+}
+
+/// Internal engine economics. providerKey is provenance, never a vendor enum.
+/// Linked to UsageEvent and optionally Job. Ops/finance only.
+model EngineCostEvent {
+  id           String     @id @default(cuid())
+  usageEventId String
+  usageEvent   UsageEvent @relation(fields: [usageEventId], references: [id], onDelete: Cascade)
+  jobId        String?
+  /// Provenance key (open string). Never a Prisma vendor enum.
+  providerKey  String
+  capability   String
+  /// Estimated or actual cost units — not currency, not a CreativePlan field.
+  costUnits    Float
+  /// ESTIMATED | ACTUAL — open string
+  costKind     String     @default("ESTIMATED")
+  recordedAt   DateTime   @default(now())
+  createdAt    DateTime   @default(now())
+
+  @@index([usageEventId])
+  @@index([jobId])
+  @@index([providerKey, capability])
+  @@map("engine_cost_event")
 }

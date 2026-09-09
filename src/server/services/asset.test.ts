@@ -3,6 +3,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import type { Prisma } from "@/generated/prisma/client";
+import { AppError } from "@/lib/errors";
 import { LocalDeterministicAssetGenerator } from "@/server/adapters/assets/local-deterministic";
 import { LocalDeterministicTimelineComposer } from "@/server/adapters/timeline/local-deterministic";
 import { LocalStorageAdapter } from "@/server/adapters/storage/local";
@@ -201,6 +202,12 @@ describe("AssetService M3", () => {
     await prisma.generatedAsset.deleteMany({ where: { projectId } });
     await prisma.timeline.deleteMany({ where: { projectId } });
     await prisma.storyStructure.deleteMany({ where: { projectId } });
+    await prisma.engineCostEvent.deleteMany({
+      where: { usageEvent: { userId: { in: [ownerId, strangerId] } } },
+    });
+    await prisma.usageEvent.deleteMany({
+      where: { userId: { in: [ownerId, strangerId] } },
+    });
     await prisma.providerAttribution.deleteMany({ where: { projectId } });
     await prisma.job.deleteMany({ where: { projectId } });
     await prisma.project.deleteMany({ where: { id: projectId } });
@@ -291,6 +298,27 @@ describe("AssetService M3", () => {
     expect(timeline).not.toHaveProperty("generate");
   });
 
+  it("records FAILED ASSET_CALL when generate throws", async () => {
+    const { assets, worker } = harness({
+      adapter: scriptedGenerator(() => {
+        throw AppError.jobFailed("asset engine down");
+      }),
+      productionAvailable: true,
+    });
+    const queued = await assets.requestGenerate(ownerId, projectId);
+    await worker.processNext();
+    const usage = await prisma.usageEvent.findMany({
+      where: { jobId: queued.jobId },
+      include: { engineCosts: true },
+    });
+    expect(usage.length).toBeGreaterThan(0);
+    expect(usage[0]).toMatchObject({
+      kind: "ASSET_CALL",
+      outcome: "FAILED",
+    });
+    expect(usage[0]!.engineCosts[0]?.providerKey).toBe("test.asset");
+  });
+
   it("HTTP request only enqueues AI_ASSET; worker persists READY GeneratedAsset", async () => {
     const local = new LocalDeterministicAssetGenerator(storage);
     const { assets, worker } = harness({
@@ -323,6 +351,20 @@ describe("AssetService M3", () => {
 
     const status = await assets.getJobStatus(ownerId, projectId, queued.jobId);
     expect(status.status).toBe(JobStatus.SUCCEEDED);
+
+    const usage = await prisma.usageEvent.findMany({
+      where: { jobId: queued.jobId },
+      include: { engineCosts: true },
+    });
+    expect(usage.length).toBeGreaterThan(0);
+    expect(usage.every((event) => event.kind === "ASSET_CALL")).toBe(true);
+    expect(usage.every((event) => event.outcome === "SUCCEEDED")).toBe(true);
+    expect(usage[0]!.engineCosts[0]).toMatchObject({
+      providerKey: "test.asset",
+      capability: AssetCapability.IMAGE_GENERATION,
+      costKind: "ESTIMATED",
+    });
+    expect(JSON.stringify(ready[0]!.document)).not.toMatch(/engineCost|costUnits|usageEvent/i);
   });
 
   it("requires a READY Timeline before enqueue", async () => {

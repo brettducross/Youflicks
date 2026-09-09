@@ -3,6 +3,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import type { Prisma } from "@/generated/prisma/client";
+import { AppError } from "@/lib/errors";
 import { LocalDeterministicRenderer } from "@/server/adapters/renderer/local-deterministic";
 import { LocalStorageAdapter } from "@/server/adapters/storage/local";
 import { PostgresJobQueue } from "@/server/adapters/jobs/postgres";
@@ -197,6 +198,12 @@ describe("RenderService M4", () => {
     await prisma.generatedAsset.deleteMany({ where: { projectId } });
     await prisma.timeline.deleteMany({ where: { projectId } });
     await prisma.storyStructure.deleteMany({ where: { projectId } });
+    await prisma.engineCostEvent.deleteMany({
+      where: { usageEvent: { userId: { in: [ownerId, strangerId] } } },
+    });
+    await prisma.usageEvent.deleteMany({
+      where: { userId: { in: [ownerId, strangerId] } },
+    });
     await prisma.providerAttribution.deleteMany({ where: { projectId } });
     await prisma.job.deleteMany({ where: { projectId } });
     await prisma.project.deleteMany({ where: { id: projectId } });
@@ -299,6 +306,47 @@ describe("RenderService M4", () => {
     const status = await render.getJobStatus(ownerId, projectId, queued.jobId);
     expect(status.status).toBe(JobStatus.SUCCEEDED);
     expect(status.renderStatus).toBe(RenderJobStatus.SUCCEEDED);
+
+    const usage = await prisma.usageEvent.findMany({
+      where: { jobId: queued.jobId },
+      include: { engineCosts: true },
+    });
+    expect(usage).toHaveLength(1);
+    expect(usage[0]).toMatchObject({
+      kind: "RENDER_SECONDS",
+      outcome: "SUCCEEDED",
+      userId: ownerId,
+      projectId,
+    });
+    expect(usage[0]!.quantity).toBeGreaterThan(0);
+    expect(usage[0]!.engineCosts[0]).toMatchObject({
+      providerKey: "test.renderer",
+      capability: RenderCapability.VIDEO_RENDER,
+      costKind: "ESTIMATED",
+    });
+    expect(JSON.stringify(row.payload)).not.toMatch(/engineCost|costUnits|usageEvent/i);
+  });
+
+  it("records FAILED RENDER_SECONDS when the renderer throws", async () => {
+    const { render, worker } = harness({
+      adapter: scriptedRenderer(() => {
+        throw AppError.jobFailed("render engine down");
+      }),
+      productionAvailable: true,
+    });
+    const queued = await render.requestRender(ownerId, projectId);
+    await worker.processNext();
+    const usage = await prisma.usageEvent.findMany({
+      where: { jobId: queued.jobId },
+      include: { engineCosts: true },
+    });
+    expect(usage).toHaveLength(1);
+    expect(usage[0]).toMatchObject({
+      kind: "RENDER_SECONDS",
+      outcome: "FAILED",
+      quantity: 0,
+    });
+    expect(usage[0]!.engineCosts[0]?.providerKey).toBe("test.renderer");
   });
 
   it("renders a READY Timeline even when unmetMediaRoles remain", async () => {

@@ -43,6 +43,29 @@ describe("CreativePlan schema", () => {
     ).toThrow(/commercial entitlement/i);
   });
 
+  it("rejects engine cost and usage fields on CreativePlan validation", () => {
+    expect(() =>
+      validateCreativePlan({
+        schemaVersion: CREATIVE_PLAN_SCHEMA_VERSION,
+        concept: "Harbor afternoon",
+        engineCost: { costUnits: 12 },
+      }),
+    ).toThrow(/engine-cost/i);
+    expect(() =>
+      validateCreativePlan({
+        schemaVersion: CREATIVE_PLAN_SCHEMA_VERSION,
+        concept: "Harbor afternoon",
+        costUnits: 99,
+      }),
+    ).toThrow(/engine-cost/i);
+    expect(() =>
+      validateCreativePlan({
+        schemaVersion: CREATIVE_PLAN_SCHEMA_VERSION,
+        decisions: [{ kind: "tone", summary: "warm", usageEvent: "MOVIE_GENERATION" }],
+      }),
+    ).toThrow(/engine-cost/i);
+  });
+
   it("rejects an invalid decision object", () => {
     expect(() =>
       validateCreativePlan({

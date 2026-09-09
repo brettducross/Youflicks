@@ -43,6 +43,9 @@ describe("AccountLifecycleService M8.1 email gate", () => {
   });
 
   afterAll(async () => {
+    await prisma.usageEvent.deleteMany({
+      where: { userId: { in: [verifiedId, unverifiedId] } },
+    });
     await prisma.project.deleteMany({ where: { id: projectId } });
     await prisma.user.deleteMany({ where: { id: { in: [verifiedId, unverifiedId] } } });
   });
@@ -86,9 +89,14 @@ describe("AccountLifecycleService M8.1 email gate", () => {
     await accounts.authorizeGeneration(verifiedId, { projectId });
     await accounts.authorizeGeneration(unverifiedId, { projectId });
     expect(await prisma.creativePlan.count({ where: { projectId } })).toBe(plansBefore);
-    expect(prisma).not.toHaveProperty("usageEvent");
+    expect(
+      await prisma.usageEvent.count({
+        where: { userId: { in: [verifiedId, unverifiedId] } },
+      }),
+    ).toBe(0);
     expect(prisma).not.toHaveProperty("subscription");
     expect(prisma).not.toHaveProperty("creditLedger");
+    expect(prisma).not.toHaveProperty("invoice");
   });
 
   it("reports session honesty on AccountGate", async () => {

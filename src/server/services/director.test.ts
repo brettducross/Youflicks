@@ -150,6 +150,12 @@ describe("DirectorService Phase 2F", () => {
     await prisma.creativePlan.deleteMany({ where: { projectId } });
     await prisma.providerAttribution.deleteMany({ where: { projectId } });
     await prisma.job.deleteMany({ where: { projectId } });
+    await prisma.engineCostEvent.deleteMany({
+      where: { usageEvent: { userId: { in: [ownerId, strangerId] } } },
+    });
+    await prisma.usageEvent.deleteMany({
+      where: { userId: { in: [ownerId, strangerId] } },
+    });
     await prisma.generationAuthorization.deleteMany({
       where: { userId: { in: [ownerId, strangerId] } },
     });
@@ -521,7 +527,84 @@ describe("DirectorService Phase 2F", () => {
     expect(await prisma.storyStructure.count({ where: { projectId } })).toBe(storiesBefore);
     expect(await prisma.timeline.count({ where: { projectId } })).toBe(timelinesBefore);
     expect(await prisma.renderJob.count({ where: { projectId } })).toBe(rendersBefore);
-    expect(json).not.toMatch(/planKind|adsEnabled|watermarkRequired|Billing|stripe/i);
+    expect(json).not.toMatch(
+      /planKind|adsEnabled|watermarkRequired|Billing|stripe|engineCost|costUnits|usageEvent/i,
+    );
+  });
+
+  it("records ops UsageEvent + EngineCostEvent on Director success without feeding cost to the plan", async () => {
+    const local = new LocalDeterministicDirector();
+    const { director, worker } = harness({
+      adapter: local,
+      productionAvailable: false,
+      localDevAvailable: true,
+    });
+    const usageBefore = await prisma.usageEvent.count({ where: { userId: ownerId } });
+    const queued = await director.requestCompose(ownerId, projectId);
+    expect(await prisma.usageEvent.count({ where: { userId: ownerId } })).toBe(usageBefore);
+    expect(await prisma.generationAuthorization.count({ where: { userId: ownerId } })).toBe(1);
+
+    await worker.processNext();
+    const events = await prisma.usageEvent.findMany({
+      where: { userId: ownerId, jobId: queued.jobId },
+      include: { engineCosts: true },
+    });
+    expect(events).toHaveLength(1);
+    expect(events[0]).toMatchObject({
+      kind: "MOVIE_GENERATION",
+      quantity: 1,
+      outcome: "SUCCEEDED",
+      projectId,
+      jobId: queued.jobId,
+    });
+    expect(events[0]!.engineCosts).toHaveLength(1);
+    expect(events[0]!.engineCosts[0]).toMatchObject({
+      providerKey: "youflicks.local.director",
+      capability: DirectorCapability.STORY_REASONING,
+      costKind: "ESTIMATED",
+      jobId: queued.jobId,
+    });
+    expect(events[0]!.engineCosts[0]!.costUnits).toBeGreaterThan(0);
+
+    const plan = await director.getLatestReady(ownerId, projectId);
+    const json = JSON.stringify(plan!.plan);
+    expect(json).not.toMatch(/engineCost|costUnits|usageEvent|Billing|stripe/i);
+    expect(plan!.plan).not.toHaveProperty("engineCost");
+    expect(plan!.plan).not.toHaveProperty("costUnits");
+  });
+
+  it("records FAILED UsageEvent when Director compose throws", async () => {
+    const { director, worker } = harness({
+      adapter: scriptedDirector(() => {
+        throw AppError.jobFailed("provider down");
+      }),
+      productionAvailable: true,
+    });
+    const queued = await director.requestCompose(ownerId, projectId);
+    await worker.processNext();
+    const events = await prisma.usageEvent.findMany({
+      where: { userId: ownerId, jobId: queued.jobId },
+      include: { engineCosts: true },
+    });
+    expect(events).toHaveLength(1);
+    expect(events[0]).toMatchObject({
+      kind: "MOVIE_GENERATION",
+      outcome: "FAILED",
+    });
+    expect(events[0]!.engineCosts[0]?.providerKey).toBe("test.director");
+  });
+
+  it("Director compose output is unchanged by ops cost tables", async () => {
+    const local = new LocalDeterministicDirector();
+    const input = await contract.assembleInput(ownerId, projectId);
+    const cheap = { MOVIE_GENERATION: 1 };
+    const expensive = { MOVIE_GENERATION: 99_999 };
+    const planA = await local.composePlan(input);
+    const planB = await local.composePlan(input);
+    expect(cheap).not.toEqual(expensive);
+    expect(planA).toEqual(planB);
+    expect(JSON.stringify(planA)).not.toMatch(/costUnits|engineCost|usageEvent/i);
+    expect(JSON.stringify(input)).not.toMatch(/costUnits|engineCost|usageEvent/i);
   });
 
   it("denies a second AI_DIRECT enqueue within the rolling hour", async () => {

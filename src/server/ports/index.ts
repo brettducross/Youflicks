@@ -51,3 +51,4 @@ export type {
 export type { EntitlementPort } from "./entitlement";
 export type { RateLimitPort, RateLimitRecordInput } from "./rate-limit";
 export type { AbuseSignalPort } from "./abuse-signal";
+export type { UsageMeterPort } from "./usage-meter";
