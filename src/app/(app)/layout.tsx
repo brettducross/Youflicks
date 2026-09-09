@@ -1,11 +1,14 @@
 import type { ReactNode } from "react";
+import { EmailVerificationBanner } from "@/components/account/email-verification-banner";
 import { AppMobileNav, AppSidebar } from "@/components/layout/app-nav";
 import { UserMenu } from "@/components/layout/user-menu";
 import { BrandLockup } from "@/components/brand";
 import { requireUser } from "@/server/auth/session";
+import { getServices } from "@/server/services/container";
 
 export default async function AppLayout({ children }: { children: ReactNode }) {
   const user = await requireUser();
+  const gate = await getServices().accountLifecycle.getAccountGate(user.id);
 
   return (
     <div className="flex min-h-full">
@@ -18,8 +21,9 @@ export default async function AppLayout({ children }: { children: ReactNode }) {
             </div>
             <AppMobileNav />
           </div>
-          <UserMenu name={user.name} email={user.email} />
+          <UserMenu name={user.name} email={user.email} emailVerified={gate.emailVerified} />
         </header>
+        <EmailVerificationBanner email={user.email} verified={gate.emailVerified} />
         <div className="flex-1">{children}</div>
       </div>
     </div>

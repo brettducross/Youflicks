@@ -22,6 +22,7 @@ import { AnalysisCapability, DirectorCapability } from "@/server/ports/capabilit
 import type { MediaAnalysisAdapter } from "@/server/ports/media-analysis-adapter";
 import type { DirectorInput } from "@/server/director/input";
 import type { CreativePlan } from "@/server/director/schema";
+import { AccountLifecycleService } from "@/server/services/account-lifecycle";
 import { AnalysisService } from "@/server/services/analysis";
 import { AttributionService } from "@/server/services/attribution";
 import { DirectorContractService } from "@/server/services/director-contract";
@@ -94,7 +95,7 @@ describe("DirectorService Phase 2F", () => {
     dir = await mkdtemp(path.join(tmpdir(), "youflicks-direct-"));
     await prisma.user.createMany({
       data: [
-        { id: ownerId, name: "Owner", email: `${ownerId}@example.com`, emailVerified: false },
+        { id: ownerId, name: "Owner", email: `${ownerId}@example.com`, emailVerified: true },
         {
           id: strangerId,
           name: "Stranger",
@@ -180,6 +181,7 @@ describe("DirectorService Phase 2F", () => {
         localDevAvailable,
         canCompose: Boolean(options.adapter) && (productionAvailable || localDevAvailable),
       }),
+      new AccountLifecycleService(),
     );
     return { director, worker: new DirectorWorker(jobs, director) };
   }
@@ -321,6 +323,32 @@ describe("DirectorService Phase 2F", () => {
           item.capability === DirectorCapability.STORY_REASONING,
       ),
     ).toBe(true);
+  });
+
+  it("denies AI_DIRECT enqueue when the owner email is unverified", async () => {
+    await prisma.user.update({
+      where: { id: ownerId },
+      data: { emailVerified: false },
+    });
+    const local = new LocalDeterministicDirector();
+    const { director } = harness({
+      adapter: local,
+      productionAvailable: false,
+      localDevAvailable: true,
+    });
+    const jobsBefore = await prisma.job.count({
+      where: { projectId, type: JobType.AI_DIRECT },
+    });
+    await expect(director.requestCompose(ownerId, projectId)).rejects.toMatchObject({
+      code: "EMAIL_UNVERIFIED",
+    });
+    expect(
+      await prisma.job.count({ where: { projectId, type: JobType.AI_DIRECT } }),
+    ).toBe(jobsBefore);
+    await prisma.user.update({
+      where: { id: ownerId },
+      data: { emailVerified: true },
+    });
   });
 
   it("missing production Director capability produces typed configuration error", async () => {

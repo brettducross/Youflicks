@@ -1,6 +1,8 @@
 import "server-only";
 
 import path from "node:path";
+import { headers } from "next/headers";
+import { auth } from "@/lib/auth";
 import { env } from "@/lib/env";
 import { AppError } from "@/lib/errors";
 import { PostgresJobQueue } from "@/server/adapters/jobs/postgres";
@@ -24,6 +26,7 @@ import { resolveAssetGeneratorAdapter, describeAssetAvailability } from "@/serve
 import { resolveRendererAdapter, describeRenderAvailability } from "@/server/render/provider-config";
 import { resolveStoryComposerAdapter } from "@/server/story/provider-config";
 import { resolveTimelineComposerAdapter } from "@/server/timeline/provider-config";
+import { AccountLifecycleService } from "@/server/services/account-lifecycle";
 import { AssetContractService } from "@/server/services/asset-contract";
 import { AssetService } from "@/server/services/asset";
 import { AssetWorker } from "@/server/services/asset-worker";
@@ -63,6 +66,7 @@ import type { PublicationPort } from "@/server/ports/publication";
 export type ServiceContainer = {
   storage: StoragePort;
   jobs: JobQueuePort;
+  accountLifecycle: AccountLifecycleService;
   projects: ProjectService;
   media: MediaService;
   analysis: AnalysisService;
@@ -141,6 +145,12 @@ function createServices(): ServiceContainer {
     new DirectorCapabilityGateway(providers, new PreferredThenFirstPolicy()),
   );
 
+  const accountLifecycle = new AccountLifecycleService(async ({ email }) => {
+    await auth.api.sendVerificationEmail({
+      body: { email, callbackURL: "/verify-email" },
+      headers: await headers(),
+    });
+  });
   const directorService = new DirectorService(
     jobs,
     director,
@@ -159,6 +169,7 @@ function createServices(): ServiceContainer {
         canCompose: Boolean(resolved),
       };
     },
+    accountLifecycle,
   );
   const directorWorker = new DirectorWorker(jobs, directorService);
   const story = new StoryContractService(projects, taste, intent, media);
@@ -270,6 +281,7 @@ function createServices(): ServiceContainer {
   return {
     storage,
     jobs,
+    accountLifecycle,
     projects,
     media,
     analysis,

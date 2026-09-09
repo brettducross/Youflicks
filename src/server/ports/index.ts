@@ -44,3 +44,7 @@ export type { ProviderSelectionPolicy, SelectionContext } from "@/server/analysi
 export type { RendererPort } from "./renderer";
 export type { PlaybackPort } from "./playback";
 export type { PublicationPort, PublishInput, PublicationResult } from "./publication";
+export type {
+  VerificationEmailPort,
+  VerificationEmailMessage,
+} from "./verification-email";

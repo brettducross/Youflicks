@@ -17,6 +17,9 @@ type DirectorAvailability = {
   productionAvailable: boolean;
   localDevAvailable: boolean;
   canCompose: boolean;
+  canGenerate?: boolean;
+  emailVerified?: boolean;
+  generationDenyCode?: string | null;
 };
 
 type CreativePlanView = {
@@ -108,6 +111,9 @@ export function CreativePlanPanel({
       productionAvailable: payload.productionAvailable,
       localDevAvailable: payload.localDevAvailable,
       canCompose: payload.canCompose,
+      canGenerate: payload.canGenerate,
+      emailVerified: payload.emailVerified,
+      generationDenyCode: payload.generationDenyCode,
     });
   }, [projectId]);
 
@@ -170,6 +176,9 @@ export function CreativePlanPanel({
   }
 
   const composing = job?.status === "PENDING" || job?.status === "RUNNING";
+  const emailVerified = availability.emailVerified !== false;
+  const canGenerate = availability.canGenerate ?? (availability.canCompose && emailVerified);
+  const canStart = canGenerate && !busy && !composing;
 
   return (
     <Card className="mt-10">
@@ -195,7 +204,12 @@ export function CreativePlanPanel({
         </div>
       </CardHeader>
       <CardContent className="space-y-6">
-        {!availability.canCompose ? (
+        {!emailVerified ? (
+          <p className="text-sm text-muted-foreground">
+            Verify your email before composing a creative plan. Generation stays locked until
+            that address is confirmed.
+          </p>
+        ) : !availability.canCompose ? (
           <p className="text-sm text-muted-foreground">
             Production Director AI is not configured. Local technical analysis does not count as
             Director availability. Configure a genuine Director adapter, or enable{" "}
@@ -217,7 +231,7 @@ export function CreativePlanPanel({
         <div className="flex flex-wrap gap-2">
           <Button
             type="button"
-            disabled={!availability.canCompose || busy || composing}
+            disabled={!canStart}
             onClick={() => void compose()}
           >
             {busy || composing ? (
