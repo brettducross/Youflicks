@@ -444,20 +444,29 @@ model FinishedMovie {
   @@map("finished_movie")
 }
 
+/// M7 — YouFlicks-owned record of an explicit share or export attempt
+/// against exactly one READY FinishedMovie. Not a second library keep.
+/// destinationKey is an open adapter string (DOWNLOAD, SHARE_LINK, future remotes)
+/// — never a Prisma vendor enum. Status PENDING | PUBLISHED | FAILED | REVOKED.
 model Publication {
   id              String        @id @default(cuid())
+  /// Required — exactly one FinishedMovie (READY at publish time).
   movieId         String
   movie           FinishedMovie @relation(fields: [movieId], references: [id], onDelete: Cascade)
-  /// Destination adapter key (youtube, download, …) — not an enum.
+  /// Destination adapter key — open string, never a vendor enum.
   destinationKey  String
-  /// PENDING | PUBLISHED | FAILED
+  /// PENDING | PUBLISHED | FAILED | REVOKED
   status          String        @default("PENDING")
   externalId      String?
+  /// YouFlicks-owned Json: expiresAt, revokedAt, tokenFingerprint, adapterMeta.
+  /// Never raw secrets, raw tokens, emails, or sponsor PII.
   payload         Json?
+  publishedAt     DateTime?
   createdAt       DateTime      @default(now())
   updatedAt       DateTime      @updatedAt
 
   @@index([movieId, createdAt])
+  @@index([movieId, status])
   @@map("publication")
 }
 

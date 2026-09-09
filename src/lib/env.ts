@@ -89,6 +89,13 @@ const envSchema = z.object({
     .enum(["true", "false", "1", "0", ""])
     .optional()
     .transform((value) => value === "true" || value === "1"),
+  /**
+   * HMAC secret for SHARE_LINK tokens. When unset, BETTER_AUTH_SECRET is used.
+   * Empty string disables share links (canShareLink = false).
+   */
+  SHARE_TOKEN_SECRET: z.string().optional(),
+  /** Soft default SHARE_LINK TTL (7 days). Expiry is always required. */
+  SHARE_LINK_TTL_MS: z.coerce.number().int().positive().default(7 * 24 * 60 * 60 * 1000),
 });
 
 export type AppEnv = z.infer<typeof envSchema>;
@@ -141,6 +148,8 @@ function readEnv(): AppEnv {
     RENDER_HTTP_MODEL: process.env.RENDER_HTTP_MODEL || undefined,
     RENDER_HTTP_TIMEOUT_MS: process.env.RENDER_HTTP_TIMEOUT_MS ?? 120_000,
     RENDER_ALLOW_LOCAL: process.env.RENDER_ALLOW_LOCAL ?? "",
+    SHARE_TOKEN_SECRET: process.env.SHARE_TOKEN_SECRET || undefined,
+    SHARE_LINK_TTL_MS: process.env.SHARE_LINK_TTL_MS ?? 7 * 24 * 60 * 60 * 1000,
   });
 
   if (!parsed.success) {

@@ -43,3 +43,4 @@ export type {
 export type { ProviderSelectionPolicy, SelectionContext } from "@/server/analysis/selection";
 export type { RendererPort } from "./renderer";
 export type { PlaybackPort } from "./playback";
+export type { PublicationPort, PublishInput, PublicationResult } from "./publication";

@@ -17,11 +17,13 @@ import type {
   PlaybackSurface,
 } from "@/server/playback/schema";
 import { PlaybackSessionStore } from "@/server/playback/sessions";
+import type { PublicationShareAccess } from "@/server/publication/schema";
 import { ProjectService } from "@/server/services/projects";
 
 export type PlaybackOpenRequest = {
   renderJobId?: string;
   finishedMovieId?: string;
+  shareToken?: string;
   startMs?: number;
   surface?: PlaybackSurface;
 };
@@ -29,6 +31,7 @@ export type PlaybackOpenRequest = {
 /**
  * M5 playback + M6 kept-film watch. Owner watches a SUCCEEDED RenderJob or a
  * READY FinishedMovie through PlaybackPort. Sessions are ephemeral.
+ * M7 adds SHARE_LINK recipient watch via share-token auth (code only).
  * Does not write FinishedMovie or Publication. Does not invent AI_PLAYBACK jobs.
  */
 export class PlaybackService {
@@ -39,6 +42,7 @@ export class PlaybackService {
     private readonly web: PlaybackPort,
     private readonly native: PlaybackPort,
     private readonly nativeAvailable: () => boolean,
+    private readonly shareAccess?: PublicationShareAccess,
   ) {}
 
   getAvailability(): PlaybackAvailability {
@@ -50,6 +54,9 @@ export class PlaybackService {
   }
 
   async open(userId: string, projectId: string, body: PlaybackOpenRequest = {}): Promise<PlaybackSession> {
+    if (body.shareToken) {
+      throw AppError.playbackInputInvalid("Share-link watching uses the share watch path.");
+    }
     await this.projects.getForUser(userId, projectId);
 
     if (body.renderJobId && body.finishedMovieId) {
@@ -95,6 +102,45 @@ export class PlaybackService {
       finishedMovieId: source.finishedMovieId,
       transport: session.transport,
       surface,
+    });
+    return session;
+  }
+
+  async openWithShareToken(shareToken: string, startMs?: number): Promise<PlaybackSession> {
+    if (!this.shareAccess) {
+      throw AppError.publicationDestinationUnavailable("Share-link watching is not available.");
+    }
+    if (startMs !== undefined && (!Number.isFinite(startMs) || startMs < 0)) {
+      throw AppError.playbackInputInvalid("startMs must be a non-negative number.");
+    }
+    const grant = await this.shareAccess.verifyShareToken(shareToken);
+    const exists = await this.storage.exists(grant.storageKey);
+    if (!exists) {
+      throw AppError.playbackSourceMissing();
+    }
+
+    const input: PlaybackOpenInput = {
+      projectId: grant.projectId,
+      renderJobId: grant.renderJobId,
+      finishedMovieId: grant.movieId,
+      publicationId: grant.publicationId,
+      startMs,
+    };
+    assertPlaybackOpenInputPrivacy(input);
+
+    const session = await this.web.open(input, {
+      viewerId: `share:${grant.publicationId}`,
+      outputKey: grant.storageKey,
+      mimeType: grant.mimeType,
+      durationMs: grant.durationMs,
+      byteSize: grant.byteSize,
+    });
+    assertPlaybackSessionPrivacy(session);
+
+    logger.info("playback.share_opened", {
+      publicationId: grant.publicationId,
+      movieId: grant.movieId,
+      transport: session.transport,
     });
     return session;
   }
@@ -160,6 +206,50 @@ export class PlaybackService {
       filename: "movie.mp4",
       stream,
     };
+  }
+
+  async openShareStream(sessionId: string, range?: StorageReadRange) {
+    if (!this.shareAccess) {
+      throw AppError.publicationDestinationUnavailable("Share-link watching is not available.");
+    }
+    const record = this.sessions.read(sessionId);
+    if (!record.shareWatch || !record.publicationId || !record.finishedMovieId) {
+      throw AppError.playbackSessionInvalid("This watch session is not a share link.");
+    }
+    if (record.transport !== "APP_STREAM") {
+      throw AppError.playbackSessionInvalid("This watch session is not a stream.");
+    }
+
+    const grant = await this.shareAccess.assertShareWatchable(record.publicationId);
+    if (grant.movieId !== record.finishedMovieId || grant.storageKey !== record.outputKey) {
+      throw AppError.playbackSessionInvalid("That watch session no longer matches the film.");
+    }
+
+    const stream = await this.storage.getStream(grant.storageKey, range);
+    if (!stream) {
+      throw AppError.playbackSourceMissing();
+    }
+
+    logger.info("playback.share_stream", {
+      publicationId: grant.publicationId,
+      movieId: grant.movieId,
+      ranged: Boolean(range),
+    });
+
+    return {
+      mimeType: record.mimeType || grant.mimeType || "video/mp4",
+      filename: "movie.mp4",
+      stream,
+    };
+  }
+
+  async closeShare(sessionId: string): Promise<PlaybackStatus> {
+    const record = this.safeRead(sessionId);
+    if (record && !record.shareWatch) {
+      throw AppError.playbackSessionInvalid("This watch session is not a share link.");
+    }
+    await this.web.close(sessionId);
+    return this.web.getStatus(sessionId);
   }
 
   private safeRead(sessionId: string) {

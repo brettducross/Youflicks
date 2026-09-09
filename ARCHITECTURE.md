@@ -54,11 +54,11 @@ YouFlicks starts as a **modular monolith**: one Next.js application with a clear
                             │
 ┌───────────────────────────▼─────────────────────────────────┐
 │                   Application services                       │
-│     Auth  Projects  Media  Story  Timeline  Render  Playback  Movie │
+│     Auth  Projects  Media  Story  Timeline  Render  Playback  Movie  Publication │
 └───────┬───────────┬───────────┬───────────┬─────────────────┘
         │           │           │           │
         ▼           ▼           ▼           ▼
-   StoragePort   JobQueuePort  AiPort   RendererPort  PlaybackPort
+   StoragePort   JobQueuePort  AiPort   RendererPort  PlaybackPort  PublicationPort
         │           │           │           │              │
         ▼           ▼           ▼           ▼              ▼
    Local / S3   Postgres jobs  adapters   adapters    Web / VLC
@@ -90,7 +90,7 @@ These tables exist in Phase 1 so later features extend rows instead of inventing
 - **Timeline / TimelineClip** — editorial structure used for rendering
 - **RenderJob** — a request to produce a movie from a timeline
 - **FinishedMovie** — an explicit library keep of one SUCCEEDED RenderJob (M6)
-- **Publication** — an attempt to publish a movie somewhere
+- **Publication** — an explicit share or export attempt against exactly one READY FinishedMovie (M7)
 - **Job** — generic background work (analysis, direction, render, publish)
 
 JSON columns hold provider-specific payloads. Enums are used only for *our* lifecycle states, not vendor names.
@@ -169,7 +169,7 @@ Raise these before changing them:
 
 | Deferred | Why |
 | --- | --- |
-| Timeline / render / playback / library | M2 persists Timeline. M3 persists GeneratedAsset. M4 persists RenderJob. M5 watches a successful render. M6 keeps a FinishedMovie. Share/export remains later. |
+| Timeline / render / playback / library / share | M2 persists Timeline. M3 persists GeneratedAsset. M4 persists RenderJob. M5 watches a successful render. M6 keeps a FinishedMovie. M7 records Publication share/export. Billing remains later. |
 | Named commercial analysis SDKs | Adapters may speak HTTP. Domain code must not import a vendor SDK or vendor enum. |
 | Cost-aware / ML provider routing | `ProviderSelectionPolicy` is replaceable. Phase 2C is deterministic. |
 | Billing / usage accounting | Routing hints exist (`estimatedCost`, `estimatedLatency`, `qualityTier`). No charges. |
@@ -660,9 +660,38 @@ Rules:
 
 Authoritative specification: [PHASE_M6_FINISHED_MOVIE_ROADMAP_DECISION.md](./PHASE_M6_FINISHED_MOVIE_ROADMAP_DECISION.md).
 
-### M7+ — Share / Export (not this milestone)
+### M7 — Share / Export / Publication
 
-Share/Export/Publication product writes remain later. Do not leak those concepts backward into CreativePlan, StoryDocument, TimelineDocument, GeneratedAssetDocument, RenderManifest, playback sessions, or FinishedMovie keep.
+**M7 = explicit Export or Share of a READY FinishedMovie → Publication.**
+
+```
+HTTP (owner) → PublicationService.exportDownload | createShareLink
+ ↓
+require READY FinishedMovie + destination available
+ ↓
+PublicationPort.publish (DOWNLOAD | SHARE_LINK)
+ ↓
+persist Publication PENDING | PUBLISHED | FAILED | REVOKED
+ ↓
+DOWNLOAD: owner-auth attachment stream
+SHARE_LINK: time-limited revocable watch-only token
+ ↓
+recipient watch → PlaybackPort.open({ shareToken })  (M7 code; M5/M6 locks unchanged)
+```
+
+Rules:
+
+- Publication is a first-class share/export record. Distinct from FinishedMovie.
+- Explicit Export / Share only. No silent Publication on Keep success or Watch open.
+- `destinationKey` is an open string. Required v1 adapters: `DOWNLOAD`, `SHARE_LINK`.
+- SHARE_LINK tokens are time-limited and revocable. Payload stores `tokenFingerprint` — never the raw token.
+- Permanent unauthenticated public CDN of library bytes is forbidden.
+- Job type is **`PUBLISH` only**. Ban `AI_PUBLISH` / `AI_SHARE`.
+- Recipients are watch-only. No project APIs, Keep, NLE, or re-export by default.
+- Playback share-token auth is M7 code only. Do not rewrite M5/M6 locks.
+- Zero billing / quota ownership of creative meaning (M8).
+
+Authoritative specification: [PHASE_M7_SHARE_EXPORT_ROADMAP_DECISION.md](./PHASE_M7_SHARE_EXPORT_ROADMAP_DECISION.md).
 
 ### Phase 5 — Publish & harden
 
@@ -767,6 +796,23 @@ M6 exit criteria:
 - [x] Watch kept film via PlaybackPort `finishedMovieId` (M5 lock untouched)
 - [x] `canKeep` honesty: owner + SUCCEEDED render + storage writable
 
+M7 exit criteria:
+
+- [x] Owner Export READY FinishedMovie → Publication `DOWNLOAD` + attachment stream
+- [x] Owner Create share link → Publication `SHARE_LINK`, signed time-limited token, payload `expiresAt` + `tokenFingerprint`
+- [x] Owner Revoke → REVOKED; subsequent token verify fails
+- [x] No silent Publication on Keep success or Watch open
+- [x] Status PENDING | PUBLISHED | FAILED | REVOKED; async progress on Job `PUBLISH`
+- [x] Multiple Publications per movie; prior rows preserved
+- [x] Cross-user blocked on create / list / revoke / export
+- [x] SHARE_LINK recipients watch-only; no project APIs / Keep / re-export
+- [x] Permanent unauth public CDN of library bytes forbidden
+- [x] Opaque StoragePort keys only; no vendor URL / Prisma vendor enum as domain truth
+- [x] Minimal Share / Export UI — no NLE; hide adapter vocabulary
+- [x] `PUBLISH` only; ban `AI_PUBLISH` / `AI_SHARE`
+- [x] Playback share-token watch is M7 code only (M5/M6 locks not rewritten)
+- [x] `canExport` / `canShareLink` honesty
+
 Phase 2D exit criteria:
 
 - [x] TasteProfile / TastePreference / TasteSignal with explicit vs inferred
@@ -838,9 +884,11 @@ src/server/timeline     TimelineDocument schema, input, validation, availability
 src/server/assets       GeneratedAssetDocument schema, input, validation, availability
 src/server/render       RenderManifest schema, input, validation, availability
 src/server/playback     Playback session, privacy, opaque-key rules
+src/server/movie        FinishedMovie library keep
+src/server/publication  Publication share/export (tokens, privacy, destination keys)
 src/server/ports        Interfaces
-src/server/adapters     Local storage, Postgres jobs, analysis + Director + story + timeline + asset + renderer + playback adapters
-src/server/services     Project, Media, Analysis, Director, Story, Timeline, Assets, Render, Playback, Taste, Intent, Credits
+src/server/adapters     Local storage, Postgres jobs, analysis + Director + story + timeline + asset + renderer + playback + publication adapters
+src/server/services     Project, Media, Analysis, Director, Story, Timeline, Assets, Render, Playback, Movie, Publication, Taste, Intent, Credits
 prisma/schema.prisma    Extensible domain schema
 docker-compose.yml      Local Postgres
 ```

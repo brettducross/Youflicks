@@ -119,6 +119,28 @@ export function finishedMovieStatusLabel(status: string): string {
   return labels[status] ?? status;
 }
 
+export const PublicationStatus = {
+  PENDING: "PENDING",
+  PUBLISHED: "PUBLISHED",
+  FAILED: "FAILED",
+  REVOKED: "REVOKED",
+} as const;
+
+export type PublicationStatusValue =
+  (typeof PublicationStatus)[keyof typeof PublicationStatus];
+
+export const PUBLICATION_STATUSES = Object.values(PublicationStatus);
+
+export function publicationStatusLabel(status: string): string {
+  const labels: Record<string, string> = {
+    PENDING: "Working",
+    PUBLISHED: "Ready",
+    FAILED: "Couldn’t share",
+    REVOKED: "Revoked",
+  };
+  return labels[status] ?? status;
+}
+
 export function analysisStatusLabel(status: string): string {
   const labels: Record<string, string> = {
     NOT_ANALYZED: "Not analyzed",
@@ -147,7 +169,7 @@ export const PIPELINE_STAGES = [
   { id: "playback", label: "Playback", available: true },
   { id: "movie", label: "Finished movie", available: true },
   { id: "credits", label: "Credits & sponsorship", available: true },
-  { id: "publish", label: "Publishing", available: false },
+  { id: "publish", label: "Publishing", available: true },
 ] as const;
 
 export function projectStatusLabel(status: string): string {

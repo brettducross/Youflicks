@@ -48,6 +48,12 @@ export const ErrorCodes = {
   MOVIE_OUTPUT_INVALID: "MOVIE_OUTPUT_INVALID",
   MOVIE_STORAGE_UNAVAILABLE: "MOVIE_STORAGE_UNAVAILABLE",
   MOVIE_NOT_READY: "MOVIE_NOT_READY",
+  PUBLICATION_INPUT_INVALID: "PUBLICATION_INPUT_INVALID",
+  PUBLICATION_MOVIE_REQUIRED: "PUBLICATION_MOVIE_REQUIRED",
+  PUBLICATION_SOURCE_MISSING: "PUBLICATION_SOURCE_MISSING",
+  PUBLICATION_DESTINATION_UNAVAILABLE: "PUBLICATION_DESTINATION_UNAVAILABLE",
+  PUBLICATION_TOKEN_INVALID: "PUBLICATION_TOKEN_INVALID",
+  PUBLICATION_REVOKED: "PUBLICATION_REVOKED",
   INTERNAL: "INTERNAL",
 } as const;
 
@@ -292,6 +298,35 @@ export class AppError extends Error {
 
   static movieNotReady(message = "That film is not ready to watch.") {
     return new AppError(ErrorCodes.MOVIE_NOT_READY, message, 422);
+  }
+
+  static publicationInputInvalid(message: string, details?: Record<string, unknown>) {
+    return new AppError(ErrorCodes.PUBLICATION_INPUT_INVALID, message, 422, details);
+  }
+
+  static publicationMovieRequired(
+    message = "Only a kept film that is ready can be shared or exported.",
+  ) {
+    return new AppError(ErrorCodes.PUBLICATION_MOVIE_REQUIRED, message, 422);
+  }
+
+  static publicationSourceMissing(message = "The library file is missing from storage.") {
+    return new AppError(ErrorCodes.PUBLICATION_SOURCE_MISSING, message, 404);
+  }
+
+  static publicationDestinationUnavailable(
+    message = "That share or export destination is not available.",
+    details?: Record<string, unknown>,
+  ) {
+    return new AppError(ErrorCodes.PUBLICATION_DESTINATION_UNAVAILABLE, message, 503, details);
+  }
+
+  static publicationTokenInvalid(message = "That share link is not valid.") {
+    return new AppError(ErrorCodes.PUBLICATION_TOKEN_INVALID, message, 403);
+  }
+
+  static publicationRevoked(message = "That share link has been revoked.") {
+    return new AppError(ErrorCodes.PUBLICATION_REVOKED, message, 403);
   }
 }
 
