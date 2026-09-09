@@ -367,25 +367,44 @@ model TimelineClip {
   @@map("timeline_clip")
 }
 
+/// M4 — YouFlicks-owned render of exactly one READY Timeline.
+/// Successful render stops at SUCCEEDED + opaque outputKey. Not FinishedMovie (M6).
 model RenderJob {
-  id           String    @id @default(cuid())
-  projectId    String
-  project      Project   @relation(fields: [projectId], references: [id], onDelete: Cascade)
-  timelineId   String?
-  timeline     Timeline? @relation(fields: [timelineId], references: [id], onDelete: SetNull)
-  /// Adapter key for the renderer implementation.
-  providerKey  String?
+  id               String   @id @default(cuid())
+  projectId        String
+  project          Project  @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  timelineId       String
+  timeline         Timeline @relation(fields: [timelineId], references: [id], onDelete: Restrict)
+  timelineVersion  Int
+  jobId            String?
+  /// SHA-256 of assembled render input. Raw composer input is not stored.
+  inputFingerprint String
+  /// YouFlicks capability string (e.g. VIDEO_RENDER).
+  capability       String
+  /// Adapter key — provenance only, never a vendor enum. Required on SUCCEEDED.
+  providerKey      String?
+  modelId          String?
+  modelVersion     String?
   /// QUEUED | RUNNING | SUCCEEDED | FAILED | CANCELLED
-  status       String    @default("QUEUED")
-  outputKey    String?
-  error        String?
-  payload      Json?
-  createdAt    DateTime  @default(now())
-  updatedAt    DateTime  @updatedAt
+  status           String   @default("QUEUED")
+  /// Opaque StoragePort key. Never a vendor URL.
+  outputKey        String?
+  mimeType         String?
+  durationMs       Int?
+  byteSize         BigInt?
+  checksum         String?
+  error            String?
+  /// Snapshotted validated RenderManifest (+ optional progress JSON).
+  payload          Json?
+  createdAt        DateTime @default(now())
+  updatedAt        DateTime @updatedAt
 
   movies FinishedMovie[]
 
   @@index([projectId, createdAt])
+  @@index([jobId])
+  @@index([timelineId, timelineVersion])
+  @@index([projectId, inputFingerprint])
   @@map("render_job")
 }
 

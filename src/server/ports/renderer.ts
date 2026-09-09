@@ -1,22 +1,13 @@
+import type { RenderComposerInput } from "@/server/render/input";
+import type { RenderResultDocument } from "@/server/render/schema";
+
 /**
- * Rendering port.
+ * Provider-neutral renderer port.
  *
- * Phase 1 ships the interface only. A later adapter (local FFmpeg,
- * a cloud renderer, etc.) will produce a FinishedMovie from a Timeline.
+ * Adapters assemble an already-decided cut into StoragePort bytes.
+ * Attribution lives outside this return type. This port does not
+ * create FinishedMovie, Publication, or playback surfaces.
  */
-export type RenderInput = {
-  projectId: string;
-  timelineId: string;
-  outputKey: string;
-};
-
-export type RenderOutput = {
-  providerKey: string;
-  storageKey: string;
-  durationMs: number;
-};
-
 export interface RendererPort {
-  readonly providerKey: string;
-  render(input: RenderInput): Promise<RenderOutput>;
+  render(input: RenderComposerInput): Promise<RenderResultDocument>;
 }

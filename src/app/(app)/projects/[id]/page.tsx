@@ -10,6 +10,7 @@ import { CreativePlanPanel } from "@/components/projects/creative-plan-panel";
 import { StoryPanel } from "@/components/projects/story-panel";
 import { MissingPiecesPanel } from "@/components/projects/missing-pieces-panel";
 import { TimelinePanel } from "@/components/projects/timeline-panel";
+import { RenderPanel } from "@/components/projects/render-panel";
 import { cn } from "@/lib/utils";
 import { requireUser } from "@/server/auth/session";
 import { projectStatusLabel } from "@/server/domain/status";
@@ -18,13 +19,6 @@ import { getServices } from "@/server/services/container";
 export const metadata = {
   title: "Project",
 };
-
-const LATER_SECTIONS = [
-  {
-    title: "Render",
-    body: "RendererPort will produce a FinishedMovie. Nothing is queued until a renderer exists.",
-  },
-] as const;
 
 export default async function ProjectDetailPage({
   params,
@@ -53,6 +47,8 @@ export default async function ProjectDetailPage({
   const generatedAssets = await services.assetService.listAssets(user.id, id);
   const assetAvailability = services.assetService.getAvailability();
   const unmetRoles = timeline?.document.unmetMediaRoles ?? [];
+  const latestRender = await services.renderService.getLatestSuccessful(user.id, id);
+  const renderAvailability = services.renderService.getAvailability();
 
   return (
     <main className="mx-auto w-full max-w-6xl px-4 py-8 sm:px-6">
@@ -122,21 +118,13 @@ export default async function ProjectDetailPage({
         timelineReady={Boolean(timeline)}
       />
 
-      <div className="mt-10 grid gap-4 md:grid-cols-2">
-        {LATER_SECTIONS.map((section) => (
-          <Card key={section.title}>
-            <CardHeader>
-              <CardTitle className="font-heading text-xl">{section.title}</CardTitle>
-              <CardDescription>{section.body}</CardDescription>
-            </CardHeader>
-            <CardContent>
-              <p className="text-xs tracking-widest text-muted-foreground uppercase">
-                Later phase
-              </p>
-            </CardContent>
-          </Card>
-        ))}
-      </div>
+      <RenderPanel
+        projectId={project.id}
+        initialRender={latestRender}
+        initialAvailability={renderAvailability}
+        timelineReady={Boolean(timeline)}
+        unmetRoleCount={unmetRoles.length}
+      />
     </main>
   );
 }

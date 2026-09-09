@@ -86,6 +86,18 @@ export type GeneratedAssetStatusValue =
 
 export const GENERATED_ASSET_STATUSES = Object.values(GeneratedAssetStatus);
 
+export const RenderJobStatus = {
+  QUEUED: "QUEUED",
+  RUNNING: "RUNNING",
+  SUCCEEDED: "SUCCEEDED",
+  FAILED: "FAILED",
+  CANCELLED: "CANCELLED",
+} as const;
+
+export type RenderJobStatusValue = (typeof RenderJobStatus)[keyof typeof RenderJobStatus];
+
+export const RENDER_JOB_STATUSES = Object.values(RenderJobStatus);
+
 export function analysisStatusLabel(status: string): string {
   const labels: Record<string, string> = {
     NOT_ANALYZED: "Not analyzed",

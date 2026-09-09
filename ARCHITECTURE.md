@@ -169,7 +169,7 @@ Raise these before changing them:
 
 | Deferred | Why |
 | --- | --- |
-| Timeline / render / playback | M2 persists Timeline. M3 persists GeneratedAsset. Render/playback remain later. |
+| Timeline / render / playback | M2 persists Timeline. M3 persists GeneratedAsset. M4 persists RenderJob + output. Playback remains later. |
 | Named commercial analysis SDKs | Adapters may speak HTTP. Domain code must not import a vendor SDK or vendor enum. |
 | Cost-aware / ML provider routing | `ProviderSelectionPolicy` is replaceable. Phase 2C is deterministic. |
 | Billing / usage accounting | Routing hints exist (`estimatedCost`, `estimatedLatency`, `qualityTier`). No charges. |
@@ -571,13 +571,46 @@ Rules:
 
 Authoritative specification: [PHASE_M3_GENERATED_ASSETS_ROADMAP_DECISION.md](./PHASE_M3_GENERATED_ASSETS_ROADMAP_DECISION.md).
 
-### M4+ — Render, playback, FinishedMovie (not this milestone)
+### M4 — Render
 
-Rendering, playback, and FinishedMovie remain later milestones. Do not leak those concepts backward into CreativePlan, StoryDocument, TimelineDocument, or GeneratedAssetDocument.
+**M4 = READY Timeline → RenderJob + snapshotted RenderManifest + opaque StoragePort output.**
 
-### Phase 4 — Render & movie
+```
+HTTP (owner) → enqueue RENDER (202 + jobId)
+ ↓
+RenderService assembles RenderManifest v1 from READY Timeline
+  (MEDIA_ASSET | GENERATED_ASSET clips resolved via StoragePort)
+ ↓
+fingerprint input (persist hash; snapshot manifest on RenderJob.payload)
+ ↓
+RenderWorker claims RENDER
+ ↓
+RendererPort.render(RenderComposerInput) → RenderResultDocument
+ ↓
+validate result (opaque storageKey; no providerKey on the port return)
+ ↓
+persist RenderJob SUCCEEDED + output bytes
+ ↓
+record ProviderAttribution (outside the port return)
+```
 
-RendererPort implementation (local FFmpeg first), render jobs, FinishedMovie records, playback of completed films.
+Rules:
+
+- Job type is **`RENDER` only**. No `AI_RENDER` / `FFMPEG_JOB` aliases.
+- RendererPort attribution lives outside the return. Do not put `providerKey` on `RenderResultDocument`.
+- Zero `FinishedMovie` / `Publication` writes. Playback/VLC is M5. Library keep is M6.
+- Local/deterministic renderer is tests/dev only and never advertises production availability.
+- A READY Timeline may render even if `unmetMediaRoles` remain (honest gaps).
+
+Authoritative specification: [PHASE_M4_RENDER_ROADMAP_DECISION.md](./PHASE_M4_RENDER_ROADMAP_DECISION.md).
+
+### M5+ — Playback, FinishedMovie (not this milestone)
+
+Playback and FinishedMovie remain later milestones. Do not leak those concepts backward into CreativePlan, StoryDocument, TimelineDocument, GeneratedAssetDocument, or RenderManifest.
+
+### Phase 4 — Playback & FinishedMovie
+
+Playback of a successful render (prefer VLC/libVLC where practical) and FinishedMovie promotion remain later milestones.
 
 ### Phase 5 — Publish & harden
 
@@ -645,6 +678,17 @@ M3 exit criteria:
 - [x] Production vs local per-capability honesty
 - [x] Review-only Missing pieces UI (no NLE / render / VLC)
 - [x] No RenderJob execution / FinishedMovie / Publication product paths
+
+M4 exit criteria:
+
+- [x] RenderJob hardened with timeline provenance, fingerprint, manifest snapshot, opaque outputKey
+- [x] RendererPort.render(RenderComposerInput) → RenderResultDocument; attribution outside return
+- [x] HTTP enqueues **RENDER** (202); worker renders off-request
+- [x] READY Timeline required; MEDIA_ASSET + GENERATED_ASSET sources resolve via StoragePort
+- [x] Production vs local render availability honesty
+- [x] Cancel / fail / retry do not corrupt prior SUCCEEDED renders
+- [x] Minimal status UI only (no NLE / VLC / Share)
+- [x] Zero FinishedMovie / Publication writes
 
 Phase 2D exit criteria:
 
@@ -715,9 +759,10 @@ src/server/director     Director input, plan schema, capability gateway, fingerp
 src/server/story        StoryDocument schema, input, validation, availability
 src/server/timeline     TimelineDocument schema, input, validation, availability
 src/server/assets       GeneratedAssetDocument schema, input, validation, availability
+src/server/render       RenderManifest schema, input, validation, availability
 src/server/ports        Interfaces
-src/server/adapters     Local storage, Postgres jobs, analysis + Director + story + timeline + asset adapters
-src/server/services     Project, Media, Analysis, Director, Story, Timeline, Assets, Taste, Intent, Credits
+src/server/adapters     Local storage, Postgres jobs, analysis + Director + story + timeline + asset + renderer adapters
+src/server/services     Project, Media, Analysis, Director, Story, Timeline, Assets, Render, Taste, Intent, Credits
 prisma/schema.prisma    Extensible domain schema
 docker-compose.yml      Local Postgres
 ```
