@@ -33,8 +33,11 @@ import {
   type AssetRoleRequest,
   type ReadyTimelineSource,
 } from "@/server/services/asset-contract";
+import type { UsageMeterPort } from "@/server/ports/usage-meter";
 import { AttributionService } from "@/server/services/attribution";
 import { ProjectService } from "@/server/services/projects";
+import { UsageMeterService } from "@/server/services/usage-meter";
+import { UsageKind, UsageOutcome } from "@/server/usage/types";
 
 export type GeneratedAssetView = {
   id: string;
@@ -108,6 +111,7 @@ export class AssetService {
     private readonly attribution: AttributionService,
     private readonly resolveGenerator: () => ResolvedAssetRuntime | null,
     private readonly availability: () => AssetAvailability,
+    private readonly usage: UsageMeterPort = new UsageMeterService(),
   ) {}
 
   getAvailability(): AssetAvailability {
@@ -317,7 +321,33 @@ export class AssetService {
       const startedAt = Date.now();
       logger.info("asset.started", { projectId, jobId: job.id, role: role.role, kind });
 
-      const rawDocument = await resolved.adapter.generate(input);
+      const attribution = resolved.attributionFor(capability);
+      let rawDocument;
+      try {
+        rawDocument = await resolved.adapter.generate(input);
+      } catch (error) {
+        await this.usage.recordJobUsage({
+          userId,
+          projectId,
+          jobId: job.id,
+          kind: UsageKind.ASSET_CALL,
+          quantity: 1,
+          outcome: UsageOutcome.FAILED,
+          providerKey: attribution.providerKey,
+          capability: attribution.capability,
+        });
+        throw error;
+      }
+      await this.usage.recordJobUsage({
+        userId,
+        projectId,
+        jobId: job.id,
+        kind: UsageKind.ASSET_CALL,
+        quantity: 1,
+        outcome: UsageOutcome.SUCCEEDED,
+        providerKey: attribution.providerKey,
+        capability: attribution.capability,
+      });
       const document = this.contract.validateDocument(input, rawDocument);
       await this.assertStoredBytes(document);
 
@@ -332,7 +362,6 @@ export class AssetService {
         orderBy: { createdAt: "desc" },
       });
 
-      const attribution = resolved.attributionFor(capability);
       const stored = await prisma.$transaction(async (tx) => {
         if (priorReady) {
           await tx.generatedAsset.update({

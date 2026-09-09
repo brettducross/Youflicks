@@ -28,6 +28,7 @@ import { resolveStoryComposerAdapter } from "@/server/story/provider-config";
 import { resolveTimelineComposerAdapter } from "@/server/timeline/provider-config";
 import { AccountLifecycleService } from "@/server/services/account-lifecycle";
 import { EntitlementService } from "@/server/services/entitlement";
+import { UsageMeterService } from "@/server/services/usage-meter";
 import { AssetContractService } from "@/server/services/asset-contract";
 import { AssetService } from "@/server/services/asset";
 import { AssetWorker } from "@/server/services/asset-worker";
@@ -69,6 +70,7 @@ export type ServiceContainer = {
   jobs: JobQueuePort;
   accountLifecycle: AccountLifecycleService;
   entitlements: EntitlementService;
+  usageMeter: UsageMeterService;
   projects: ProjectService;
   media: MediaService;
   analysis: AnalysisService;
@@ -154,6 +156,7 @@ function createServices(): ServiceContainer {
     });
   });
   const entitlements = new EntitlementService(accountLifecycle);
+  const usageMeter = new UsageMeterService();
   const directorService = new DirectorService(
     jobs,
     director,
@@ -173,6 +176,7 @@ function createServices(): ServiceContainer {
       };
     },
     entitlements,
+    usageMeter,
   );
   const directorWorker = new DirectorWorker(jobs, directorService);
   const story = new StoryContractService(projects, taste, intent, media);
@@ -234,6 +238,7 @@ function createServices(): ServiceContainer {
       };
     },
     () => describeAssetAvailability(resolveAssetGeneratorAdapter(storage)),
+    usageMeter,
   );
   const assetWorker = new AssetWorker(jobs, assetService);
   const render = new RenderContractService(projects, storage);
@@ -249,6 +254,7 @@ function createServices(): ServiceContainer {
       return { adapter: resolved.adapter, attribution: resolved.attribution };
     },
     () => describeRenderAvailability(resolveRendererAdapter(storage)),
+    usageMeter,
   );
   const renderWorker = new RenderWorker(jobs, renderService);
   const playbackSessions = new PlaybackSessionStore(env.BETTER_AUTH_SECRET);
@@ -286,6 +292,7 @@ function createServices(): ServiceContainer {
     jobs,
     accountLifecycle,
     entitlements,
+    usageMeter,
     projects,
     media,
     analysis,

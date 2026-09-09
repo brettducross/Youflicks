@@ -65,6 +65,12 @@ describe("EntitlementService M8.2 free-tier gate", () => {
   });
 
   afterAll(async () => {
+    await prisma.engineCostEvent.deleteMany({
+      where: { usageEvent: { userId: { in: [verifiedId, unverifiedId, strangerId] } } },
+    });
+    await prisma.usageEvent.deleteMany({
+      where: { userId: { in: [verifiedId, unverifiedId, strangerId] } },
+    });
     await prisma.generationAuthorization.deleteMany({
       where: { userId: { in: [verifiedId, unverifiedId, strangerId] } },
     });
@@ -279,10 +285,14 @@ describe("EntitlementService M8.2 free-tier gate", () => {
     expect(await prisma.creativePlan.count({ where: { projectId: ownerProjectId } })).toBe(
       plansBefore,
     );
-    expect(prisma).not.toHaveProperty("usageEvent");
-    expect(prisma).not.toHaveProperty("engineCostEvent");
+    expect(
+      await prisma.usageEvent.count({
+        where: { userId: { in: [verifiedId, unverifiedId] } },
+      }),
+    ).toBe(0);
     expect(prisma).not.toHaveProperty("subscription");
     expect(prisma).not.toHaveProperty("creditLedger");
+    expect(prisma).not.toHaveProperty("invoice");
     expect(prisma).not.toHaveProperty("billing");
     expect("AI_ENTITLEMENT" in JobType).toBe(false);
     expect("AI_BILL" in JobType).toBe(false);

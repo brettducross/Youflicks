@@ -14,9 +14,12 @@ import type { StoragePort } from "@/server/ports/storage";
 import { fingerprintRenderRequest } from "@/server/render/fingerprint";
 import type { RenderAvailability } from "@/server/render/provider-config";
 import type { RenderJobPayloadDocument, RenderOutputProfile } from "@/server/render/schema";
+import type { UsageMeterPort } from "@/server/ports/usage-meter";
 import { AttributionService } from "@/server/services/attribution";
 import { ProjectService } from "@/server/services/projects";
 import { RenderContractService } from "@/server/services/render-contract";
+import { UsageMeterService } from "@/server/services/usage-meter";
+import { UsageKind, UsageOutcome } from "@/server/usage/types";
 
 export type RenderView = {
   id: string;
@@ -79,6 +82,7 @@ export class RenderService {
     private readonly attribution: AttributionService,
     private readonly resolveRenderer: () => ResolvedRenderRuntime | null,
     private readonly availability: () => RenderAvailability,
+    private readonly usage: UsageMeterPort = new UsageMeterService(),
   ) {}
 
   getAvailability(): RenderAvailability {
@@ -279,7 +283,23 @@ export class RenderService {
       destinationKeyHint,
     });
 
-    const rawResult = await resolved.adapter.render(input);
+    const { attribution } = resolved;
+    let rawResult;
+    try {
+      rawResult = await resolved.adapter.render(input);
+    } catch (error) {
+      await this.usage.recordJobUsage({
+        userId,
+        projectId,
+        jobId: job.id,
+        kind: UsageKind.RENDER_SECONDS,
+        quantity: 0,
+        outcome: UsageOutcome.FAILED,
+        providerKey: attribution.providerKey,
+        capability: attribution.capability,
+      });
+      throw error;
+    }
     const result = this.contract.validateResult(rawResult);
     if ("providerKey" in (rawResult as object)) {
       throw AppError.renderResultInvalid(
@@ -293,7 +313,17 @@ export class RenderService {
       return { cancelled: true, renderJobId: renderJob.id };
     }
 
-    const { attribution } = resolved;
+    await this.usage.recordJobUsage({
+      userId,
+      projectId,
+      jobId: job.id,
+      kind: UsageKind.RENDER_SECONDS,
+      quantity: (result.durationMs ?? 0) / 1000,
+      outcome: UsageOutcome.SUCCEEDED,
+      providerKey: attribution.providerKey,
+      capability: attribution.capability,
+    });
+
     const stored = await this.storage.get(result.storageKey);
     const byteSize = result.byteSize ?? stored?.body.byteLength ?? null;
     const checksum =
