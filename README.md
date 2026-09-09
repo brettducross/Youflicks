@@ -4,7 +4,7 @@
 
 YouFlicks is an AI-powered filmmaking platform that turns a person’s photos, videos, memories, and ideas into a finished movie.
 
-This repository currently includes **Phase 1** through **M4** (Render: READY Timeline → RenderJob + StoragePort output). It does not play films, promote FinishedMovie library keeps, take payments, or serve ads.
+This repository currently includes **Phase 1** through **M5** (Playback: SUCCEEDED RenderJob → owner watch via PlaybackPort). It does not promote FinishedMovie library keeps, share/export, take payments, or serve ads.
 
 Read [ARCHITECTURE.md](./ARCHITECTURE.md) for the analysis, technology choices, deferred work, roadmap, and MVP definition.
 
@@ -22,14 +22,15 @@ Read [ARCHITECTURE.md](./ARCHITECTURE.md) for the analysis, technology choices, 
 - **M2 cut from story**: enqueue `AI_TIMELINE`, compose through `TimelineComposerPort`, validate, and persist a versioned YouFlicks-owned `Timeline` / `TimelineDocument` plus `TimelineClip` rows (review-only; not an NLE, render, or GeneratedAsset)
 - **M3 missing pieces**: enqueue `AI_ASSET`, generate through `AssetGeneratorPort`, and persist `GeneratedAsset` rows distinct from `MediaAsset`
 - **M4 render**: enqueue `RENDER`, assemble a YouFlicks-owned `RenderManifest`, render through `RendererPort`, and persist `RenderJob` + opaque StoragePort output (not FinishedMovie, not playback)
+- **M5 playback**: open an ephemeral watch session through `PlaybackPort`, stream a SUCCEEDED render’s opaque StoragePort key to the owner (not FinishedMovie, not share)
 - Extensible domain schema: User → Project → Media → Analysis → CreativePlan → Story → Timeline → Render → Movie → Publish
-- Ports for object storage, background jobs, AI Director, story composer, timeline composer, asset generator, media analysis, and rendering
+- Ports for object storage, background jobs, AI Director, story composer, timeline composer, asset generator, media analysis, rendering, and playback
 - Local filesystem storage adapter (swap later for S3/R2 behind the same port)
 - Structured JSON logging and typed `AppError`s
 
 ## What is intentionally not built
 
-- Playback / FinishedMovie / share / export (M5–M7)
+- FinishedMovie / share / export (M6–M7)
 - Treating the local/deterministic story, timeline, asset, or renderer adapters as production
 - Named vendor SDKs in the domain
 - Billing, payments, or an advertising marketplace
@@ -124,9 +125,9 @@ src/server/personalization  Taste brief and privacy rules
 src/server/director     Director contract (input, plan, capabilities)
 src/server/story        StoryDocument schema, input, validation, availability
 src/server/timeline     TimelineDocument schema, input, validation, availability
-src/server/ports        Storage, jobs, AI, story composer, timeline composer, renderer, analyzer interfaces
-src/server/adapters     Local storage, Postgres jobs, analysis / Director / story / timeline adapters
-src/server/services     Project, Media, Analysis, Taste, Intent, Credits, Director, Story, Timeline
+src/server/ports        Storage, jobs, AI, story composer, timeline composer, renderer, playback, analyzer interfaces
+src/server/adapters     Local storage, Postgres jobs, analysis / Director / story / timeline / renderer / playback adapters
+src/server/services     Project, Media, Analysis, Taste, Intent, Credits, Director, Story, Timeline, Render, Playback
 prisma/schema.prisma    Domain schema
 ```
 
@@ -176,7 +177,7 @@ Do not add vendor columns to Prisma. Do not teach domain services a vendor name.
 - Without HTTP credentials, analysis still succeeds through the local technical adapter (technical metadata only).
 - Production Director availability requires a configured Director HTTP adapter (`DIRECTOR_HTTP_*`). Local technical analysis does **not** count as Director availability.
 - `DIRECTOR_ALLOW_LOCAL=true` enables the deterministic local Director for development/tests only. It never advertises production availability.
-- Rendering is not implemented yet.
+- Rendering and watch are implemented for a SUCCEEDED RenderJob. Library keep (FinishedMovie) is not.
 - Production story availability requires a configured story HTTP adapter (`STORY_HTTP_*`). Local deterministic composition does **not** count as production story availability.
 - `STORY_ALLOW_LOCAL=true` enables the deterministic local story composer for development/tests only. It never advertises production availability.
 - Production timeline availability requires a configured timeline HTTP adapter (`TIMELINE_HTTP_*`). Local deterministic composition does **not** count as production timeline availability.
@@ -257,15 +258,30 @@ M4 turns a READY Timeline into a validated render output:
 - `RenderManifest` is YouFlicks-owned schema v1 (clips, timings, opaque storage keys, `WEB_720 | WEB_1080 | MASTER`). Not FFmpeg graphs or vendor job JSON.
 - Clip sources are `MEDIA_ASSET` and/or `GENERATED_ASSET`, resolved through StoragePort. A READY cut may render even if some story roles remain unfilled.
 - Successful render stops at `RenderJob` + output bytes. It does **not** create a FinishedMovie, Publication, or playback player.
-- Review-only UI: “Your movie”, Render, status, “Ready to watch later”.
+- Review-only UI: “Your movie”, Render, status, then Watch on success.
 - Production availability requires a genuine configured renderer. Local deterministic is test/dev only.
 
 See [PHASE_M4_RENDER_ROADMAP_DECISION.md](./PHASE_M4_RENDER_ROADMAP_DECISION.md).
 
+## Playback (M5)
+
+M5 lets the project owner watch a successful render:
+
+`API → PlaybackService.open → PlaybackPort → owner-auth StoragePort stream → close`
+
+- Owner-only `POST .../playback/open` returns an ephemeral session (not a library keep).
+- `GET .../playback/sessions/:sessionId/stream` ranges bytes from the SUCCEEDED RenderJob `outputKey`.
+- `POST .../playback/close` ends the session. Sessions are short-lived signed tokens, not Prisma rows.
+- Web uses `WebMediaPlaybackAdapter` (`APP_STREAM`). VLC/libVLC is `VlcPlaybackAdapter` only — never a Prisma column or domain type.
+- Job type is not invented: there is no `AI_PLAYBACK`.
+- Minimal UI: Watch on “Your movie”, play / pause / seek / time. No Share, Keep, or NLE.
+
+See [PHASE_M5_PLAYBACK_ROADMAP_DECISION.md](./PHASE_M5_PLAYBACK_ROADMAP_DECISION.md).
+
 ## Next phase
 
-M5+ pipeline (not implemented):
+M6+ pipeline (not implemented):
 
-`Playback → FinishedMovie → Share/Export`
+`FinishedMovie → Share/Export`
 
-Do not implement playback, library keep, or Generate Film until those milestones are requested.
+Do not implement library keep, share, or Generate Film until those milestones are requested.

@@ -36,6 +36,12 @@ export const ErrorCodes = {
   RENDER_TIMELINE_REQUIRED: "RENDER_TIMELINE_REQUIRED",
   RENDER_CAPABILITY_UNAVAILABLE: "RENDER_CAPABILITY_UNAVAILABLE",
   RENDER_SOURCE_UNRESOLVED: "RENDER_SOURCE_UNRESOLVED",
+  PLAYBACK_INPUT_INVALID: "PLAYBACK_INPUT_INVALID",
+  PLAYBACK_RENDER_REQUIRED: "PLAYBACK_RENDER_REQUIRED",
+  PLAYBACK_SOURCE_MISSING: "PLAYBACK_SOURCE_MISSING",
+  PLAYBACK_OUTPUT_INVALID: "PLAYBACK_OUTPUT_INVALID",
+  PLAYBACK_ADAPTER_UNAVAILABLE: "PLAYBACK_ADAPTER_UNAVAILABLE",
+  PLAYBACK_SESSION_INVALID: "PLAYBACK_SESSION_INVALID",
   INTERNAL: "INTERNAL",
 } as const;
 
@@ -228,6 +234,32 @@ export class AppError extends Error {
 
   static renderSourceUnresolved(message: string, details?: Record<string, unknown>) {
     return new AppError(ErrorCodes.RENDER_SOURCE_UNRESOLVED, message, 422, details);
+  }
+
+  static playbackInputInvalid(message: string, details?: Record<string, unknown>) {
+    return new AppError(ErrorCodes.PLAYBACK_INPUT_INVALID, message, 422, details);
+  }
+
+  static playbackRenderRequired(
+    message = "A successful render is required before you can watch.",
+  ) {
+    return new AppError(ErrorCodes.PLAYBACK_RENDER_REQUIRED, message, 422);
+  }
+
+  static playbackSourceMissing(message = "The render file is missing from storage.") {
+    return new AppError(ErrorCodes.PLAYBACK_SOURCE_MISSING, message, 404);
+  }
+
+  static playbackOutputInvalid(message: string, details?: Record<string, unknown>) {
+    return new AppError(ErrorCodes.PLAYBACK_OUTPUT_INVALID, message, 422, details);
+  }
+
+  static playbackAdapterUnavailable(message = "Watching is not available on this surface.") {
+    return new AppError(ErrorCodes.PLAYBACK_ADAPTER_UNAVAILABLE, message, 503);
+  }
+
+  static playbackSessionInvalid(message = "That watch session is not valid.") {
+    return new AppError(ErrorCodes.PLAYBACK_SESSION_INVALID, message, 403);
   }
 }
 

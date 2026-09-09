@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useState } from "react";
 import { Clapperboard, Loader2, RefreshCw } from "lucide-react";
+import { PlaybackPlayer } from "@/components/projects/playback-player";
 import { toast } from "sonner";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -90,6 +91,7 @@ export function RenderPanel({
   const [openGaps, setOpenGaps] = useState(unmetRoleCount);
   const [job, setJob] = useState<JobStatusView | null>(null);
   const [busy, setBusy] = useState(false);
+  const [watching, setWatching] = useState(false);
 
   const refreshRender = useCallback(async () => {
     const [latestResponse, timelineResponse] = await Promise.all([
@@ -144,7 +146,7 @@ export function RenderPanel({
         setJob(payload);
         if (payload.status === "SUCCEEDED") {
           await refreshRender();
-          toast.success("Ready to watch later.");
+          toast.success("Ready to watch.");
         }
         if (payload.status === "FAILED") {
           toast.error(payload.error || "Couldn’t render your movie.");
@@ -223,7 +225,7 @@ export function RenderPanel({
           <div>
             <CardTitle className="font-heading text-xl">Your movie</CardTitle>
             <CardDescription className="mt-1.5">
-              Render this cut into a movie file. Status only — not an editor, and not a player.
+              Render this cut into a movie file, then watch it. Not an editor, and not a library keep.
             </CardDescription>
           </div>
           <div className="flex flex-wrap items-center gap-2">
@@ -255,7 +257,7 @@ export function RenderPanel({
           </p>
         ) : (
           <p className="text-sm text-muted-foreground">
-            Render assembles the current cut. It does not keep a library film or open a player.
+            Render assembles the current cut. Watch plays that file. It does not keep a library film.
           </p>
         )}
 
@@ -306,17 +308,34 @@ export function RenderPanel({
         ) : null}
 
         {render ? (
-          <div className="space-y-2 rounded-lg border border-border/70 bg-muted/20 p-4">
-            <p className="text-sm font-medium">Ready to watch later</p>
+          <div className="space-y-3 rounded-lg border border-border/70 bg-muted/20 p-4">
+            <p className="text-sm font-medium">Ready to watch</p>
             <p className="text-xs text-muted-foreground">
               Cut version {render.timelineVersion}
               {render.outputProfile ? ` · ${render.outputProfile.replaceAll("_", " ")}` : ""}
               {render.durationMs !== null ? ` · ${formatClock(render.durationMs)}` : ""}
               {render.byteSize !== null ? ` · ${formatBytes(render.byteSize)}` : ""}
             </p>
-            <p className="text-xs text-muted-foreground">
-              This is a finished render of your cut, not a library keep and not a player.
-            </p>
+            <div className="flex flex-wrap gap-2">
+              <Button
+                type="button"
+                disabled={busy}
+                onClick={() => setWatching((open) => !open)}
+              >
+                {watching ? "Hide player" : "Watch"}
+              </Button>
+            </div>
+            {watching ? (
+              <PlaybackPlayer
+                projectId={projectId}
+                renderJobId={render.id}
+                fallbackDurationMs={render.durationMs}
+              />
+            ) : (
+              <p className="text-xs text-muted-foreground">
+                Watch plays this render. It does not keep a library film or share it.
+              </p>
+            )}
           </div>
         ) : (
           <p className="text-sm text-muted-foreground">No render yet for this project.</p>

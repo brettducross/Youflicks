@@ -54,14 +54,14 @@ YouFlicks starts as a **modular monolith**: one Next.js application with a clear
                             │
 ┌───────────────────────────▼─────────────────────────────────┐
 │                   Application services                       │
-│     Auth  Projects  Media  (later: Story, Render)            │
+│     Auth  Projects  Media  Story  Timeline  Render  Playback │
 └───────┬───────────┬───────────┬───────────┬─────────────────┘
         │           │           │           │
         ▼           ▼           ▼           ▼
-   StoragePort   JobQueuePort  AiPort   RendererPort
-        │           │           │           │
-        ▼           ▼           ▼           ▼
-   Local / S3   Postgres jobs  (none yet)  (none yet)
+   StoragePort   JobQueuePort  AiPort   RendererPort  PlaybackPort
+        │           │           │           │              │
+        ▼           ▼           ▼           ▼              ▼
+   Local / S3   Postgres jobs  adapters   adapters    Web / VLC
                             │
                     PostgreSQL + Prisma
 ```
@@ -169,7 +169,7 @@ Raise these before changing them:
 
 | Deferred | Why |
 | --- | --- |
-| Timeline / render / playback | M2 persists Timeline. M3 persists GeneratedAsset. M4 persists RenderJob + output. Playback remains later. |
+| Timeline / render / playback | M2 persists Timeline. M3 persists GeneratedAsset. M4 persists RenderJob. M5 watches a successful render. FinishedMovie remains later. |
 | Named commercial analysis SDKs | Adapters may speak HTTP. Domain code must not import a vendor SDK or vendor enum. |
 | Cost-aware / ML provider routing | `ProviderSelectionPolicy` is replaceable. Phase 2C is deterministic. |
 | Billing / usage accounting | Routing hints exist (`estimatedCost`, `estimatedLatency`, `qualityTier`). No charges. |
@@ -604,13 +604,39 @@ Rules:
 
 Authoritative specification: [PHASE_M4_RENDER_ROADMAP_DECISION.md](./PHASE_M4_RENDER_ROADMAP_DECISION.md).
 
-### M5+ — Playback, FinishedMovie (not this milestone)
+### M5 — Playback
 
-Playback and FinishedMovie remain later milestones. Do not leak those concepts backward into CreativePlan, StoryDocument, TimelineDocument, GeneratedAssetDocument, or RenderManifest.
+**M5 = SUCCEEDED RenderJob → owner watch via PlaybackPort.**
 
-### Phase 4 — Playback & FinishedMovie
+```
+HTTP (owner) → PlaybackService.open
+ ↓
+require SUCCEEDED RenderJob + opaque outputKey
+ ↓
+PlaybackPort.open → ephemeral PlaybackSession
+ ↓
+GET session-scoped stream → StoragePort ranged read
+ ↓
+PlaybackPort.close
+```
 
-Playback of a successful render (prefer VLC/libVLC where practical) and FinishedMovie promotion remain later milestones.
+Rules:
+
+- `PlaybackPort` is `open` / `getStatus` / `close`. Do **not** overload `RendererPort`.
+- Sessions are runtime (signed, short-lived). Not a FinishedMovie. No `AI_PLAYBACK` job.
+- VLC / libVLC is adapter-only (`VlcPlaybackAdapter`, `NATIVE_HANDLE`). Web uses `WebMediaPlaybackAdapter` (`APP_STREAM`).
+- Opaque StoragePort keys only. Vendor CDN URLs are not domain truth.
+- Zero `FinishedMovie` / `Publication` writes. Library keep is M6.
+
+Authoritative specification: [PHASE_M5_PLAYBACK_ROADMAP_DECISION.md](./PHASE_M5_PLAYBACK_ROADMAP_DECISION.md).
+
+### M6+ — FinishedMovie, Share (not this milestone)
+
+FinishedMovie library keep and Share/Export remain later milestones. Do not leak those concepts backward into CreativePlan, StoryDocument, TimelineDocument, GeneratedAssetDocument, RenderManifest, or playback sessions.
+
+### Phase 4 — FinishedMovie
+
+FinishedMovie promotion remains a later milestone.
 
 ### Phase 5 — Publish & harden
 
@@ -690,6 +716,16 @@ M4 exit criteria:
 - [x] Minimal status UI only (no NLE / VLC / Share)
 - [x] Zero FinishedMovie / Publication writes
 
+M5 exit criteria:
+
+- [x] Owner can play a SUCCEEDED RenderJob via PlaybackPort / authenticated stream
+- [x] VLC/libVLC (if present) is adapter-only — not domain schema
+- [x] Opaque StoragePort keys only; no vendor URL domain truth
+- [x] Cross-user access blocked
+- [x] Minimal player UI only (no NLE / Share / library keep)
+- [x] Zero FinishedMovie / Publication writes
+- [x] Upstream ports and PHASE_2F–M4 locks untouched
+
 Phase 2D exit criteria:
 
 - [x] TasteProfile / TastePreference / TasteSignal with explicit vs inferred
@@ -760,9 +796,10 @@ src/server/story        StoryDocument schema, input, validation, availability
 src/server/timeline     TimelineDocument schema, input, validation, availability
 src/server/assets       GeneratedAssetDocument schema, input, validation, availability
 src/server/render       RenderManifest schema, input, validation, availability
+src/server/playback     Playback session, privacy, opaque-key rules
 src/server/ports        Interfaces
-src/server/adapters     Local storage, Postgres jobs, analysis + Director + story + timeline + asset + renderer adapters
-src/server/services     Project, Media, Analysis, Director, Story, Timeline, Assets, Render, Taste, Intent, Credits
+src/server/adapters     Local storage, Postgres jobs, analysis + Director + story + timeline + asset + renderer + playback adapters
+src/server/services     Project, Media, Analysis, Director, Story, Timeline, Assets, Render, Playback, Taste, Intent, Credits
 prisma/schema.prisma    Extensible domain schema
 docker-compose.yml      Local Postgres
 ```

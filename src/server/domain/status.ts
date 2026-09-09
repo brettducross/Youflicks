@@ -123,6 +123,7 @@ export const PIPELINE_STAGES = [
   { id: "story", label: "Story structure", available: false },
   { id: "timeline", label: "Timeline", available: false },
   { id: "render", label: "Rendering", available: false },
+  { id: "playback", label: "Playback", available: true },
   { id: "movie", label: "Finished movie", available: false },
   { id: "credits", label: "Credits & sponsorship", available: true },
   { id: "publish", label: "Publishing", available: false },
