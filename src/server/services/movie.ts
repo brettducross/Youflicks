@@ -70,7 +70,7 @@ export class MovieService {
       : await this.requireLatestSucceeded(projectId);
 
     const title = this.resolveTitle(body.title, project.title);
-    const asyncKeep = body.async === true || this.storage.driver !== "local";
+    const asyncKeep = body.async === true || (body.async !== false && this.storage.driver !== "local");
 
     if (asyncKeep) {
       return this.enqueueKeep(userId, projectId, render.id, title);

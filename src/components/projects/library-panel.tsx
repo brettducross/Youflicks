@@ -89,10 +89,6 @@ export function LibraryPanel({
   }, [includeArchived, projectId]);
 
   useEffect(() => {
-    void refresh().catch(() => undefined);
-  }, [includeArchived, refresh]);
-
-  useEffect(() => {
     const onChanged = () => {
       void refresh().catch(() => undefined);
     };
@@ -214,7 +210,20 @@ export function LibraryPanel({
             variant="ghost"
             disabled={busy}
             onClick={() => {
-              setIncludeArchived((open) => !open);
+              const next = !includeArchived;
+              setIncludeArchived(next);
+              void (async () => {
+                const response = await fetch(
+                  `/api/projects/${projectId}/movies${next ? "?includeArchived=1" : ""}`,
+                );
+                const payload = (await response.json()) as LibraryPayload;
+                if (!response.ok) {
+                  toast.error(payload.error?.message || "Could not load your library.");
+                  return;
+                }
+                setMovies(payload.movies ?? []);
+                setCanKeep(Boolean(payload.canKeep));
+              })();
             }}
           >
             {includeArchived ? "Hide archived" : "Show archived"}

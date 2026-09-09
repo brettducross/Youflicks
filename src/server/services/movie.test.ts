@@ -54,7 +54,7 @@ describe("MovieService M6", () => {
     dir = await mkdtemp(path.join(tmpdir(), "youflicks-movie-"));
     storage = new LocalStorageAdapter(dir);
     readOnlyStorage = {
-      driver: "readonly",
+      driver: "local",
       put: async () => {
         throw new Error("storage is not writable");
       },
@@ -342,7 +342,7 @@ describe("MovieService M6", () => {
       where: { projectId, status: FinishedMovieStatus.READY },
     });
     await expect(
-      failing.keep(ownerId, projectId, { renderJobId: succeededId, title: "Broken copy" }),
+      failing.keep(ownerId, projectId, { renderJobId: succeededId, title: "Broken copy", async: false }),
     ).rejects.toMatchObject({ code: "MOVIE_STORAGE_UNAVAILABLE" });
     const failed = await prisma.finishedMovie.findFirst({
       where: { projectId, title: "Broken copy" },
