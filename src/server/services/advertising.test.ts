@@ -51,7 +51,7 @@ describe("AdvertisingService M8.4 stub", () => {
       ].sort(),
     );
     expect(surfaces.every((surface) => surface.kind === "STUB")).toBe(true);
-    expect(surfaces.some((surface) => surface.key === IN_MOVIE_SURFACE)).toBe(false);
+    expect(surfaces.some((surface) => (surface.key as string) === IN_MOVIE_SURFACE)).toBe(false);
     const honesty = await freeAds.adsHonesty(freeId);
     expect(honesty).toMatchObject({
       adsEnabled: true,

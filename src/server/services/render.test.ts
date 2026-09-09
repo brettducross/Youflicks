@@ -682,7 +682,7 @@ describe("RenderService M4", () => {
       productionAvailable: false,
       localDevAvailable: true,
     });
-    const queued = await render.requestRender(ownerId, projectId);
+    await render.requestRender(ownerId, projectId);
     await worker.processNext();
     const latest = await render.getLatestSuccessful(ownerId, projectId);
     expect(latest).not.toBeNull();
