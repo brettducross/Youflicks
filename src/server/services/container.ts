@@ -20,6 +20,7 @@ import type { StoryComposerPort } from "@/server/ports/story-composer";
 import type { TimelineComposerPort } from "@/server/ports/timeline-composer";
 import type { AssetGeneratorPort } from "@/server/ports/asset-generator";
 import { resolveAssetGeneratorAdapter, describeAssetAvailability } from "@/server/assets/provider-config";
+import { resolveRendererAdapter, describeRenderAvailability } from "@/server/render/provider-config";
 import { resolveStoryComposerAdapter } from "@/server/story/provider-config";
 import { resolveTimelineComposerAdapter } from "@/server/timeline/provider-config";
 import { AssetContractService } from "@/server/services/asset-contract";
@@ -43,6 +44,9 @@ import { TasteService } from "@/server/services/taste";
 import { TimelineContractService } from "@/server/services/timeline-contract";
 import { TimelineService } from "@/server/services/timeline";
 import { TimelineWorker } from "@/server/services/timeline-worker";
+import { RenderContractService } from "@/server/services/render-contract";
+import { RenderService } from "@/server/services/render";
+import { RenderWorker } from "@/server/services/render-worker";
 
 export type ServiceContainer = {
   storage: StoragePort;
@@ -68,6 +72,9 @@ export type ServiceContainer = {
   assets: AssetContractService;
   assetService: AssetService;
   assetWorker: AssetWorker;
+  render: RenderContractService;
+  renderService: RenderService;
+  renderWorker: RenderWorker;
   providers: ProviderRegistry;
   mediaAnalyzer(): MediaAnalyzerPort;
   aiDirector(): AiDirectorPort;
@@ -196,6 +203,21 @@ function createServices(): ServiceContainer {
     () => describeAssetAvailability(resolveAssetGeneratorAdapter(storage)),
   );
   const assetWorker = new AssetWorker(jobs, assetService);
+  const render = new RenderContractService(projects, storage);
+  const renderService = new RenderService(
+    jobs,
+    storage,
+    render,
+    projects,
+    attribution,
+    () => {
+      const resolved = resolveRendererAdapter(storage);
+      if (!resolved) return null;
+      return { adapter: resolved.adapter, attribution: resolved.attribution };
+    },
+    () => describeRenderAvailability(resolveRendererAdapter(storage)),
+  );
+  const renderWorker = new RenderWorker(jobs, renderService);
 
   return {
     storage,
@@ -221,6 +243,9 @@ function createServices(): ServiceContainer {
     assets,
     assetService,
     assetWorker,
+    render,
+    renderService,
+    renderWorker,
     providers,
     mediaAnalyzer() {
       return analyzer;
@@ -254,7 +279,11 @@ function createServices(): ServiceContainer {
       return resolved.adapter;
     },
     renderer() {
-      throw AppError.providerNotConfigured("RendererPort");
+      const resolved = resolveRendererAdapter(storage);
+      if (!resolved) {
+        throw AppError.providerNotConfigured("RendererPort");
+      }
+      return resolved.adapter;
     },
   };
 }

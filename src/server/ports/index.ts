@@ -15,6 +15,7 @@ export type {
   AssetCapabilityValue,
   CapabilityValue,
   DirectorCapabilityValue,
+  RenderCapabilityValue,
   StoryCapabilityValue,
   TimelineCapabilityValue,
 } from "./capabilities";
@@ -23,6 +24,7 @@ export {
   AssetCapability,
   Capability,
   DirectorCapability,
+  RenderCapability,
   StoryCapability,
   TimelineCapability,
 } from "./capabilities";
@@ -39,4 +41,4 @@ export type {
   AdapterHealth,
 } from "./media-analysis-adapter";
 export type { ProviderSelectionPolicy, SelectionContext } from "@/server/analysis/selection";
-export type { RendererPort, RenderInput, RenderOutput } from "./renderer";
+export type { RendererPort } from "./renderer";

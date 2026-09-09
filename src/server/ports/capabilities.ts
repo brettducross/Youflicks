@@ -59,12 +59,20 @@ export type AssetCapabilityValue = (typeof AssetCapability)[keyof typeof AssetCa
 
 export const ALL_ASSET_CAPABILITIES = Object.values(AssetCapability);
 
+/** Capabilities render may use. Separate from Director/Story/Timeline/Asset ports. */
+export const RenderCapability = {
+  VIDEO_RENDER: "VIDEO_RENDER",
+} as const;
+
+export type RenderCapabilityValue = (typeof RenderCapability)[keyof typeof RenderCapability];
+
 export const Capability = {
   ...AnalysisCapability,
   ...DirectorCapability,
   ...StoryCapability,
   ...TimelineCapability,
   ...AssetCapability,
+  ...RenderCapability,
 } as const;
 
 export type CapabilityValue = (typeof Capability)[keyof typeof Capability];

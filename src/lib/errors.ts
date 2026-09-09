@@ -30,6 +30,12 @@ export const ErrorCodes = {
   ASSET_PROVIDER_UNAVAILABLE: "ASSET_PROVIDER_UNAVAILABLE",
   ASSET_TIMELINE_REQUIRED: "ASSET_TIMELINE_REQUIRED",
   ASSET_CAPABILITY_UNAVAILABLE: "ASSET_CAPABILITY_UNAVAILABLE",
+  RENDER_INPUT_INVALID: "RENDER_INPUT_INVALID",
+  RENDER_RESULT_INVALID: "RENDER_RESULT_INVALID",
+  RENDER_PROVIDER_UNAVAILABLE: "RENDER_PROVIDER_UNAVAILABLE",
+  RENDER_TIMELINE_REQUIRED: "RENDER_TIMELINE_REQUIRED",
+  RENDER_CAPABILITY_UNAVAILABLE: "RENDER_CAPABILITY_UNAVAILABLE",
+  RENDER_SOURCE_UNRESOLVED: "RENDER_SOURCE_UNRESOLVED",
   INTERNAL: "INTERNAL",
 } as const;
 
@@ -196,6 +202,32 @@ export class AppError extends Error {
       503,
       { capability },
     );
+  }
+
+  static renderInputInvalid(message: string, details?: Record<string, unknown>) {
+    return new AppError(ErrorCodes.RENDER_INPUT_INVALID, message, 422, details);
+  }
+
+  static renderResultInvalid(message: string, details?: Record<string, unknown>) {
+    return new AppError(ErrorCodes.RENDER_RESULT_INVALID, message, 422, details);
+  }
+
+  static renderProviderUnavailable(message = "A required renderer adapter is unavailable.") {
+    return new AppError(ErrorCodes.RENDER_PROVIDER_UNAVAILABLE, message, 503);
+  }
+
+  static renderTimelineRequired(
+    message = "A READY cut is required before rendering.",
+  ) {
+    return new AppError(ErrorCodes.RENDER_TIMELINE_REQUIRED, message, 422);
+  }
+
+  static renderCapabilityUnavailable(message = "Rendering is not available.") {
+    return new AppError(ErrorCodes.RENDER_CAPABILITY_UNAVAILABLE, message, 503);
+  }
+
+  static renderSourceUnresolved(message: string, details?: Record<string, unknown>) {
+    return new AppError(ErrorCodes.RENDER_SOURCE_UNRESOLVED, message, 422, details);
   }
 }
 

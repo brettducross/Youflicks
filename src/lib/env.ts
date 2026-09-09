@@ -76,6 +76,19 @@ const envSchema = z.object({
     .enum(["true", "false", "1", "0", ""])
     .optional()
     .transform((value) => value === "true" || value === "1"),
+  RENDER_HTTP_PROVIDER_KEY: z.string().default("http.renderer"),
+  RENDER_HTTP_BASE_URL: z.string().optional(),
+  RENDER_HTTP_API_KEY: z.string().optional(),
+  RENDER_HTTP_MODEL: z.string().optional(),
+  RENDER_HTTP_TIMEOUT_MS: z.coerce.number().int().positive().default(120_000),
+  /**
+   * Explicit opt-in for local/deterministic rendering in development/test.
+   * Forced false in production regardless of the env var value.
+   */
+  RENDER_ALLOW_LOCAL: z
+    .enum(["true", "false", "1", "0", ""])
+    .optional()
+    .transform((value) => value === "true" || value === "1"),
 });
 
 export type AppEnv = z.infer<typeof envSchema>;
@@ -122,6 +135,12 @@ function readEnv(): AppEnv {
     ASSET_HTTP_TIMEOUT_MS: process.env.ASSET_HTTP_TIMEOUT_MS ?? 90_000,
     ASSET_HTTP_CAPABILITIES: process.env.ASSET_HTTP_CAPABILITIES || undefined,
     ASSET_ALLOW_LOCAL: process.env.ASSET_ALLOW_LOCAL ?? "",
+    RENDER_HTTP_PROVIDER_KEY: process.env.RENDER_HTTP_PROVIDER_KEY ?? "http.renderer",
+    RENDER_HTTP_BASE_URL: process.env.RENDER_HTTP_BASE_URL || undefined,
+    RENDER_HTTP_API_KEY: process.env.RENDER_HTTP_API_KEY || undefined,
+    RENDER_HTTP_MODEL: process.env.RENDER_HTTP_MODEL || undefined,
+    RENDER_HTTP_TIMEOUT_MS: process.env.RENDER_HTTP_TIMEOUT_MS ?? 120_000,
+    RENDER_ALLOW_LOCAL: process.env.RENDER_ALLOW_LOCAL ?? "",
   });
 
   if (!parsed.success) {
@@ -143,6 +162,9 @@ function readEnv(): AppEnv {
   }
   if (data.NODE_ENV === "production" && data.ASSET_ALLOW_LOCAL) {
     data.ASSET_ALLOW_LOCAL = false;
+  }
+  if (data.NODE_ENV === "production" && data.RENDER_ALLOW_LOCAL) {
+    data.RENDER_ALLOW_LOCAL = false;
   }
   return data;
 }

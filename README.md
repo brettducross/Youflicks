@@ -4,7 +4,7 @@
 
 YouFlicks is an AI-powered filmmaking platform that turns a person’s photos, videos, memories, and ideas into a finished movie.
 
-This repository currently includes **Phase 1** through **M2** (Cut from story: StoryStructure → versioned Timeline). It does not generate missing assets, rendered films, take payments, or serve ads.
+This repository currently includes **Phase 1** through **M4** (Render: READY Timeline → RenderJob + StoragePort output). It does not play films, promote FinishedMovie library keeps, take payments, or serve ads.
 
 Read [ARCHITECTURE.md](./ARCHITECTURE.md) for the analysis, technology choices, deferred work, roadmap, and MVP definition.
 
@@ -20,15 +20,17 @@ Read [ARCHITECTURE.md](./ARCHITECTURE.md) for the analysis, technology choices, 
 - AI Director **execution (Phase 2F)**: enqueue `AI_DIRECT`, compose through `AiDirectorPort`, validate, and persist a versioned YouFlicks-owned `CreativePlan`
 - **M1 story from plan**: enqueue `AI_STORY`, compose through `StoryComposerPort`, validate, and persist a versioned YouFlicks-owned `StoryStructure` / `StoryDocument` (not a timeline or render)
 - **M2 cut from story**: enqueue `AI_TIMELINE`, compose through `TimelineComposerPort`, validate, and persist a versioned YouFlicks-owned `Timeline` / `TimelineDocument` plus `TimelineClip` rows (review-only; not an NLE, render, or GeneratedAsset)
+- **M3 missing pieces**: enqueue `AI_ASSET`, generate through `AssetGeneratorPort`, and persist `GeneratedAsset` rows distinct from `MediaAsset`
+- **M4 render**: enqueue `RENDER`, assemble a YouFlicks-owned `RenderManifest`, render through `RendererPort`, and persist `RenderJob` + opaque StoragePort output (not FinishedMovie, not playback)
 - Extensible domain schema: User → Project → Media → Analysis → CreativePlan → Story → Timeline → Render → Movie → Publish
-- Ports for object storage, background jobs, AI Director, story composer, timeline composer, media analysis, and rendering
+- Ports for object storage, background jobs, AI Director, story composer, timeline composer, asset generator, media analysis, and rendering
 - Local filesystem storage adapter (swap later for S3/R2 behind the same port)
 - Structured JSON logging and typed `AppError`s
 
 ## What is intentionally not built
 
-- Rendering / GeneratedAsset / playback (M3+)
-- Treating the local/deterministic story or timeline composer as production AI
+- Playback / FinishedMovie / share / export (M5–M7)
+- Treating the local/deterministic story, timeline, asset, or renderer adapters as production
 - Named vendor SDKs in the domain
 - Billing, payments, or an advertising marketplace
 - Publishing / UFlix Global
@@ -237,10 +239,33 @@ M2 turns a READY StoryStructure into a versioned executable Timeline:
 
 See [PHASE_M2_TIMELINE_ROADMAP_DECISION.md](./PHASE_M2_TIMELINE_ROADMAP_DECISION.md).
 
+## Missing pieces (M3)
+
+M3 turns READY Timeline `unmetMediaRoles` into generated/processed assets:
+
+`API → enqueue AI_ASSET → worker → AssetGeneratorPort.generate → validate → persist GeneratedAsset`
+
+See [PHASE_M3_GENERATED_ASSETS_ROADMAP_DECISION.md](./PHASE_M3_GENERATED_ASSETS_ROADMAP_DECISION.md).
+
+## Render (M4)
+
+M4 turns a READY Timeline into a validated render output:
+
+`API → enqueue RENDER → worker → assemble RenderManifest → RendererPort.render → persist RenderJob SUCCEEDED + StoragePort bytes`
+
+- Owner-only render returns **202** with `jobId` (no inline render).
+- `RenderManifest` is YouFlicks-owned schema v1 (clips, timings, opaque storage keys, `WEB_720 | WEB_1080 | MASTER`). Not FFmpeg graphs or vendor job JSON.
+- Clip sources are `MEDIA_ASSET` and/or `GENERATED_ASSET`, resolved through StoragePort. A READY cut may render even if some story roles remain unfilled.
+- Successful render stops at `RenderJob` + output bytes. It does **not** create a FinishedMovie, Publication, or playback player.
+- Review-only UI: “Your movie”, Render, status, “Ready to watch later”.
+- Production availability requires a genuine configured renderer. Local deterministic is test/dev only.
+
+See [PHASE_M4_RENDER_ROADMAP_DECISION.md](./PHASE_M4_RENDER_ROADMAP_DECISION.md).
+
 ## Next phase
 
-M3+ pipeline (not implemented):
+M5+ pipeline (not implemented):
 
-`Timeline → Generated/processed assets → Render → Playback → FinishedMovie`
+`Playback → FinishedMovie → Share/Export`
 
-Do not implement asset generation, rendering, playback, or Generate Film until those milestones are requested.
+Do not implement playback, library keep, or Generate Film until those milestones are requested.
