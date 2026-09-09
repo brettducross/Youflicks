@@ -124,7 +124,7 @@ export class RenderService {
       projectId,
       outputProfile,
     );
-    await this.entitlements.assertOutputDuration(userId, manifest.totalDurationMs);
+    await this.entitlements.assertOutputDuration(userId, manifest.totalDurationMs, projectId);
     const inputFingerprint = fingerprintRenderRequest({
       projectId,
       timelineId: timeline.id,
@@ -314,7 +314,7 @@ export class RenderService {
     await this.assertStoredBytes(result);
 
     try {
-      await this.entitlements.assertOutputDuration(userId, result.durationMs);
+      await this.entitlements.assertOutputDuration(userId, result.durationMs, projectId);
     } catch (error) {
       await this.usage.recordJobUsage({
         userId,
@@ -329,7 +329,7 @@ export class RenderService {
       throw error;
     }
 
-    const watermarked = await this.applyWatermarkPolicy(userId, result);
+    const watermarked = await this.applyWatermarkPolicy(userId, projectId, result);
 
     if (await this.isCancelled(job.id)) {
       await this.mirrorRenderJobStatus(job.id, RenderJobStatus.CANCELLED);
@@ -458,10 +458,11 @@ export class RenderService {
 
   private async applyWatermarkPolicy(
     userId: string,
+    projectId: string,
     result: { storageKey: string; mimeType: string; durationMs: number; byteSize?: number; checksum?: string },
   ) {
-    const snapshot = await this.entitlements.resolve(userId);
-    const decision = this.watermark.decide(snapshot);
+    const constraints = await this.entitlements.policyConstraints(userId, projectId);
+    const decision = this.watermark.decide(constraints);
     if (!decision.required) {
       return result;
     }

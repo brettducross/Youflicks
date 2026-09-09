@@ -23,6 +23,7 @@ import {
   type AuthorizeGenerationResult,
   type EntitlementSnapshot,
   type EntitlementSummary,
+  type GenerationConstraintReceipt,
   type GenerationConstraints,
   type PlatformGate,
   type PrepaidGrant,
@@ -144,12 +145,73 @@ export class EntitlementService implements EntitlementPort {
     };
   }
 
-  async assertOutputDuration(userId: string, durationMs: number | null | undefined) {
+  async policyConstraints(userId: string, projectId?: string): Promise<GenerationConstraints> {
+    const receipt = await this.latestConstraintReceipt(userId, projectId);
+    if (receipt) {
+      return {
+        maxOutputDurationMs: receipt.maxOutputDurationMs,
+        watermarkRequired: receipt.watermarkRequired,
+        adsEnabled: receipt.adsEnabled,
+      };
+    }
+    return constraintsFrom(await this.resolve(userId));
+  }
+
+  async latestConstraintReceipt(
+    userId: string,
+    projectId?: string,
+  ): Promise<GenerationConstraintReceipt | null> {
+    const row = projectId
+      ? ((await prisma.generationAuthorization.findFirst({
+          where: {
+            userId,
+            projectId,
+            maxOutputDurationMs: { not: null },
+          },
+          orderBy: { recordedAt: "desc" },
+        })) ??
+        (await prisma.generationAuthorization.findFirst({
+          where: {
+            userId,
+            maxOutputDurationMs: { not: null },
+          },
+          orderBy: { recordedAt: "desc" },
+        })))
+      : await prisma.generationAuthorization.findFirst({
+          where: {
+            userId,
+            maxOutputDurationMs: { not: null },
+          },
+          orderBy: { recordedAt: "desc" },
+        });
+    if (
+      !row ||
+      row.maxOutputDurationMs == null ||
+      row.watermarkRequired == null ||
+      row.adsEnabled == null
+    ) {
+      return null;
+    }
+    return {
+      userId: row.userId,
+      projectId: row.projectId,
+      maxOutputDurationMs: row.maxOutputDurationMs,
+      watermarkRequired: row.watermarkRequired,
+      adsEnabled: row.adsEnabled,
+      recordedAt: row.recordedAt.toISOString(),
+    };
+  }
+
+  async assertOutputDuration(
+    userId: string,
+    durationMs: number | null | undefined,
+    projectId?: string,
+  ) {
     if (durationMs == null) {
       return;
     }
-    const snapshot = await this.resolve(userId);
-    if (durationMs > snapshot.maxOutputDurationMs) {
+    const constraints = await this.policyConstraints(userId, projectId);
+    if (durationMs > constraints.maxOutputDurationMs) {
       throw AppError.durationExceedsPlan();
     }
   }
@@ -221,6 +283,9 @@ export class EntitlementService implements EntitlementPort {
           kind: MeterKind.MOVIE_GENERATION,
           projectId: projectId ?? null,
           recordedAt,
+          maxOutputDurationMs: snapshot.maxOutputDurationMs,
+          watermarkRequired: snapshot.watermarkRequired,
+          adsEnabled: snapshot.adsEnabled,
         },
       });
       return { kind: "allow" as const, used: used + 1 };
@@ -305,6 +370,7 @@ function constraintsFrom(snapshot: EntitlementSnapshot): GenerationConstraints {
   return {
     maxOutputDurationMs: snapshot.maxOutputDurationMs,
     watermarkRequired: snapshot.watermarkRequired,
+    adsEnabled: snapshot.adsEnabled,
   };
 }
 

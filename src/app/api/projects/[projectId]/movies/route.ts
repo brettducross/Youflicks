@@ -19,7 +19,7 @@ export async function GET(request: Request, context: RouteContext) {
     const [movies, availability, presentation] = await Promise.all([
       services.movieService.list(user.id, projectId, { includeArchived }),
       services.movieService.getAvailability(user.id, projectId),
-      services.presentation.forUser(user.id),
+      services.presentation.forUser(user.id, projectId),
     ]);
     return NextResponse.json({
       movies,

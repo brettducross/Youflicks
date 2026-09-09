@@ -136,6 +136,7 @@ describe("EntitlementService M8.2 free-tier gate", () => {
     expect(first.constraints).toEqual({
       maxOutputDurationMs: FREE_MAX_OUTPUT_DURATION_MS,
       watermarkRequired: true,
+      adsEnabled: true,
     });
     expect(
       await prisma.generationAuthorization.count({
@@ -308,6 +309,64 @@ describe("EntitlementService M8.2 free-tier gate", () => {
     expect(blob).not.toMatch(/CreativePlan|StoryDocument|Timeline|stripe|BillingPort/i);
     expect(decision.snapshot).not.toHaveProperty("price");
     await expect(entitlements.resolve(missingId)).rejects.toMatchObject({ code: "NOT_FOUND" });
+  });
+
+  it("persists a non-creative constraint receipt on ALLOW even when duration is omitted", async () => {
+    await prisma.generationAuthorization.deleteMany({ where: { userId: verifiedId } });
+    const decision = await entitlements.authorizeGeneration(verifiedId, {
+      projectId: ownerProjectId,
+    });
+    expect(decision.allowed).toBe(true);
+    if (!decision.allowed) return;
+    expect(decision.constraints).toEqual({
+      maxOutputDurationMs: FREE_MAX_OUTPUT_DURATION_MS,
+      watermarkRequired: true,
+      adsEnabled: true,
+    });
+    const receipt = await entitlements.latestConstraintReceipt(verifiedId, ownerProjectId);
+    expect(receipt).toMatchObject({
+      userId: verifiedId,
+      projectId: ownerProjectId,
+      maxOutputDurationMs: FREE_MAX_OUTPUT_DURATION_MS,
+      watermarkRequired: true,
+      adsEnabled: true,
+    });
+    const row = await prisma.generationAuthorization.findFirst({
+      where: { userId: verifiedId, projectId: ownerProjectId },
+    });
+    expect(row).toMatchObject({
+      maxOutputDurationMs: FREE_MAX_OUTPUT_DURATION_MS,
+      watermarkRequired: true,
+      adsEnabled: true,
+    });
+    await expect(
+      entitlements.assertOutputDuration(
+        verifiedId,
+        FREE_MAX_OUTPUT_DURATION_MS + 1,
+        ownerProjectId,
+      ),
+    ).rejects.toMatchObject({ code: "DURATION_EXCEEDS_PLAN" });
+    const policy = await entitlements.policyConstraints(verifiedId, ownerProjectId);
+    expect(policy.watermarkRequired).toBe(true);
+    expect(policy.adsEnabled).toBe(true);
+  });
+
+  it("does not let a later longer intent override the ALLOW receipt cap", async () => {
+    await prisma.generationAuthorization.deleteMany({ where: { userId: verifiedId } });
+    await entitlements.authorizeGeneration(verifiedId, {
+      projectId: ownerProjectId,
+      requestedMaxDurationMs: 90_000,
+    });
+    await intent.upsert(verifiedId, ownerProjectId, { desiredDurationMs: 720_000 });
+    try {
+      await expect(
+        entitlements.assertOutputDuration(verifiedId, 720_000, ownerProjectId),
+      ).rejects.toMatchObject({ code: "DURATION_EXCEEDS_PLAN" });
+      const receipt = await entitlements.latestConstraintReceipt(verifiedId, ownerProjectId);
+      expect(receipt?.maxOutputDurationMs).toBe(FREE_MAX_OUTPUT_DURATION_MS);
+    } finally {
+      await intent.upsert(verifiedId, ownerProjectId, { desiredDurationMs: 90_000 });
+    }
   });
 
   it("reports free-tier entitlement honesty and enforces produced duration", async () => {

@@ -54,7 +54,7 @@ export default async function ProjectDetailPage({
   const renderAvailability = services.renderService.getAvailability();
   const movies = await services.movieService.list(user.id, id);
   const movieAvailability = await services.movieService.getAvailability(user.id, id);
-  const presentation = await services.presentation.forUser(user.id);
+  const presentation = await services.presentation.forUser(user.id, id);
 
   return (
     <main className="mx-auto w-full max-w-6xl px-4 py-8 sm:px-6">

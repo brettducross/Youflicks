@@ -110,7 +110,7 @@ export class PublicationService implements PublicationShareAccess {
     await this.projects.getForUser(userId, projectId);
     assertPublicationInputPrivacy(body);
     const movie = await this.requireReadyMovie(projectId, movieId);
-    await this.entitlements.assertOutputDuration(userId, movie.durationMs);
+    await this.entitlements.assertOutputDuration(userId, movie.durationMs, projectId);
     if (!this.storageReadable() || !this.adapters.has(PublicationDestination.DOWNLOAD)) {
       throw AppError.publicationDestinationUnavailable("Export is not available.");
     }
@@ -152,7 +152,7 @@ export class PublicationService implements PublicationShareAccess {
     await this.projects.getForUser(userId, projectId);
     assertPublicationInputPrivacy(body);
     const movie = await this.requireReadyMovie(projectId, movieId);
-    await this.entitlements.assertOutputDuration(userId, movie.durationMs);
+    await this.entitlements.assertOutputDuration(userId, movie.durationMs, projectId);
     if (!this.shareConfigured() || !this.adapters.has(PublicationDestination.SHARE_LINK)) {
       throw AppError.publicationDestinationUnavailable("Share links are not available.");
     }
@@ -472,7 +472,7 @@ export class PublicationService implements PublicationShareAccess {
       select: { ownerId: true },
     });
     if (owner) {
-      await this.entitlements.assertOutputDuration(owner.ownerId, movie.durationMs);
+      await this.entitlements.assertOutputDuration(owner.ownerId, movie.durationMs, movie.projectId);
     }
     const storageKey = assertLibraryStorageKey(movie.storageKey ?? "");
     const exists = await this.storage.exists(storageKey);

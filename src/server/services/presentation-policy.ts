@@ -29,19 +29,21 @@ export class PresentationPolicyService {
     private readonly advertising: AdvertisingService,
   ) {}
 
-  async forUser(userId: string): Promise<PresentationPolicyView> {
-    const snapshot = await this.entitlements.resolve(userId);
-    const decision = this.watermark.decide(snapshot);
-    const [ads, entitlementSummary] = await Promise.all([
-      this.advertising.eligibleSurfaces(userId),
+  async forUser(userId: string, projectId?: string): Promise<PresentationPolicyView> {
+    const [constraints, entitlementSummary] = await Promise.all([
+      this.entitlements.policyConstraints(userId, projectId),
       this.entitlements.getEntitlementSummary(userId),
     ]);
+    const decision = this.watermark.decide(constraints);
+    const ads = constraints.adsEnabled
+      ? await this.advertising.eligibleSurfaces(userId)
+      : [];
     return {
       watermarkRequired: decision.required,
       watermark: this.watermark.chrome(decision),
-      adsEnabled: snapshot.adsEnabled,
+      adsEnabled: constraints.adsEnabled,
       ads,
-      adsHonesty: this.advertising.honestyFrom(snapshot),
+      adsHonesty: this.advertising.honestyFrom(constraints),
       entitlementSummary,
     };
   }
@@ -54,6 +56,6 @@ export class PresentationPolicyService {
     if (!project) {
       throw AppError.notFound("That project was not found.");
     }
-    return this.forUser(project.ownerId);
+    return this.forUser(project.ownerId, projectId);
   }
 }

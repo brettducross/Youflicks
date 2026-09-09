@@ -48,6 +48,14 @@ export type EntitlementSnapshot = {
 export type GenerationConstraints = {
   maxOutputDurationMs: number;
   watermarkRequired: boolean;
+  adsEnabled: boolean;
+};
+
+/** Platform receipt from ALLOW. Not a CreativePlan / Story / Timeline field. */
+export type GenerationConstraintReceipt = GenerationConstraints & {
+  userId: string;
+  projectId: string | null;
+  recordedAt: string;
 };
 
 export type RemainingQuota = {

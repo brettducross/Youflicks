@@ -70,7 +70,7 @@ export class MovieService {
     const render = body.renderJobId
       ? await this.requireSucceededRender(projectId, body.renderJobId)
       : await this.requireLatestSucceeded(projectId);
-    await this.entitlements.assertOutputDuration(userId, render.durationMs);
+    await this.entitlements.assertOutputDuration(userId, render.durationMs, projectId);
 
     const title = this.resolveTitle(body.title, project.title);
     const asyncKeep = body.async === true || (body.async !== false && this.storage.driver !== "local");
@@ -269,7 +269,7 @@ export class MovieService {
       select: { ownerId: true },
     });
     if (owner) {
-      await this.entitlements.assertOutputDuration(owner.ownerId, render.durationMs);
+      await this.entitlements.assertOutputDuration(owner.ownerId, render.durationMs, projectId);
     }
     const sourceKey = assertRenderOutputKey(render.outputKey ?? "");
     const source = await this.storage.get(sourceKey);

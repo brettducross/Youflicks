@@ -28,7 +28,7 @@ export async function POST(request: Request, context: RouteContext) {
       startMs: body.startMs,
       surface: body.surface,
     });
-    const presentation = await services.presentation.forUser(user.id);
+    const presentation = await services.presentation.forUser(user.id, projectId);
     return NextResponse.json({
       session,
       presentation: {

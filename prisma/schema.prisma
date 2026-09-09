@@ -744,8 +744,13 @@ model GenerationAuthorization {
   projectId  String?
   recordedAt DateTime @default(now())
   createdAt  DateTime @default(now())
+  /// M8.4 non-creative constraint receipt from ALLOW. Not CreativePlan meaning.
+  maxOutputDurationMs Int?
+  watermarkRequired   Boolean?
+  adsEnabled          Boolean?
 
   @@index([userId, kind, recordedAt])
+  @@index([projectId, recordedAt])
   @@map("generation_authorization")
 }
 

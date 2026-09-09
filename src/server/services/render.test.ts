@@ -207,6 +207,9 @@ describe("RenderService M4", () => {
     });
     await prisma.providerAttribution.deleteMany({ where: { projectId } });
     await prisma.job.deleteMany({ where: { projectId } });
+    await prisma.generationAuthorization.deleteMany({
+      where: { userId: { in: [ownerId, strangerId] } },
+    });
     await prisma.project.deleteMany({ where: { id: projectId } });
     await prisma.user.deleteMany({ where: { id: { in: [ownerId, strangerId] } } });
     if (dir) await rm(dir, { recursive: true, force: true });
@@ -691,6 +694,32 @@ describe("RenderService M4", () => {
     expect(stored).not.toBeNull();
     expect(Buffer.from(stored!.body).toString("utf8")).toContain("watermark=YouFlicks");
     expect(JSON.stringify(row.payload)).not.toMatch(/adsEnabled|planKind|IN_MOVIE|AdvertisingPort/i);
+  });
+
+  it("fails produced over-max duration using the persisted ALLOW receipt", async () => {
+    await prisma.generationAuthorization.create({
+      data: {
+        userId: ownerId,
+        kind: "MOVIE_GENERATION",
+        projectId,
+        maxOutputDurationMs: FREE_MAX_OUTPUT_DURATION_MS,
+        watermarkRequired: true,
+        adsEnabled: true,
+      },
+    });
+    const { render, worker } = harness({
+      adapter: scriptedRenderer(async (input) => {
+        const local = new LocalDeterministicRenderer(storage);
+        const result = await local.render(input);
+        return { ...result, durationMs: FREE_MAX_OUTPUT_DURATION_MS + 1 };
+      }),
+      productionAvailable: true,
+    });
+    const queued = await render.requestRender(ownerId, projectId);
+    await worker.processNext();
+    const status = await render.getJobStatus(ownerId, projectId, queued.jobId);
+    expect(status.status).toBe(JobStatus.FAILED);
+    expect(status.error).toMatch(/5 minutes/i);
   });
 
   it("fails typed when produced duration exceeds the free max", async () => {

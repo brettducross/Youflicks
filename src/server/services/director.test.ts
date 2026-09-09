@@ -654,6 +654,30 @@ describe("DirectorService Phase 2F", () => {
     }
   });
 
+  it("persists ALLOW constraint receipt on requestCompose without writing it into the plan", async () => {
+    const local = new LocalDeterministicDirector();
+    const { director, worker } = harness({
+      adapter: local,
+      productionAvailable: false,
+      localDevAvailable: true,
+    });
+    await director.requestCompose(ownerId, projectId);
+    const receipt = await prisma.generationAuthorization.findFirst({
+      where: { userId: ownerId, projectId },
+    });
+    expect(receipt).toMatchObject({
+      maxOutputDurationMs: 300_000,
+      watermarkRequired: true,
+      adsEnabled: true,
+    });
+    await worker.processNext();
+    const plan = await director.getLatestReady(ownerId, projectId);
+    const json = JSON.stringify(plan!.plan);
+    expect(json).not.toMatch(
+      /maxOutputDurationMs|watermarkRequired|adsEnabled|constraintReceipt|planKind/i,
+    );
+  });
+
   it("does not let a stranger enqueue or burn the owner movie-generation quota", async () => {
     const local = new LocalDeterministicDirector();
     const { director } = harness({

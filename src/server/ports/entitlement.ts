@@ -3,6 +3,8 @@ import type {
   AuthorizeGenerationResult,
   EntitlementSnapshot,
   EntitlementSummary,
+  GenerationConstraintReceipt,
+  GenerationConstraints,
   PlatformGate,
 } from "@/server/entitlement/types";
 
@@ -18,5 +20,14 @@ export type EntitlementPort = {
     userId: string,
     intent?: AuthorizeGenerationIntent,
   ): Promise<AuthorizeGenerationResult>;
-  assertOutputDuration(userId: string, durationMs: number | null | undefined): Promise<void>;
+  policyConstraints(userId: string, projectId?: string): Promise<GenerationConstraints>;
+  latestConstraintReceipt(
+    userId: string,
+    projectId?: string,
+  ): Promise<GenerationConstraintReceipt | null>;
+  assertOutputDuration(
+    userId: string,
+    durationMs: number | null | undefined,
+    projectId?: string,
+  ): Promise<void>;
 };
