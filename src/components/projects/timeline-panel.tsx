@@ -110,6 +110,7 @@ export function TimelinePanel({
   const [availability, setAvailability] = useState(initialAvailability);
   const [timeline, setTimeline] = useState<TimelineView | null>(initialTimeline);
   const [history, setHistory] = useState<TimelineView[]>(initialTimelines);
+  const [storyIsReady, setStoryIsReady] = useState(storyReady);
   const [job, setJob] = useState<JobStatusView | null>(null);
   const [busy, setBusy] = useState(false);
 
@@ -137,11 +138,20 @@ export function TimelinePanel({
   }, [projectId]);
 
   const refreshAvailability = useCallback(async () => {
-    const response = await fetch(`/api/projects/${projectId}/timeline/compose`);
-    const payload = (await response.json()) as TimelineAvailability & {
+    const [composeResponse, storyResponse] = await Promise.all([
+      fetch(`/api/projects/${projectId}/timeline/compose`),
+      fetch(`/api/projects/${projectId}/story`),
+    ]);
+    const payload = (await composeResponse.json()) as TimelineAvailability & {
       error?: { message?: string };
     };
-    if (!response.ok) {
+    const storyPayload = (await storyResponse.json()) as {
+      story?: { id?: string } | null;
+    };
+    if (storyResponse.ok) {
+      setStoryIsReady(Boolean(storyPayload.story));
+    }
+    if (!composeResponse.ok) {
       return;
     }
     setAvailability({
@@ -208,7 +218,7 @@ export function TimelinePanel({
   }
 
   const building = job?.status === "PENDING" || job?.status === "RUNNING";
-  const canBuild = availability.canCompose && storyReady && !busy && !building;
+  const canBuild = availability.canCompose && storyIsReady && !busy && !building;
   const older = history.filter((item) => item.id !== timeline?.id);
 
   return (
@@ -245,7 +255,7 @@ export function TimelinePanel({
           <p className="text-sm text-muted-foreground">
             Using a local development cut builder. This is not a production cut.
           </p>
-        ) : !storyReady ? (
+        ) : !storyIsReady ? (
           <p className="text-sm text-muted-foreground">
             Build your cut after this project’s story is ready.
           </p>
@@ -271,7 +281,7 @@ export function TimelinePanel({
             variant="outline"
             disabled={busy}
             onClick={() => {
-              void refreshTimeline().catch((error: unknown) => {
+              void Promise.all([refreshTimeline(), refreshAvailability()]).catch((error: unknown) => {
                 toast.error(error instanceof Error ? error.message : "Refresh failed.");
               });
             }}
