@@ -98,7 +98,9 @@ describe("LocalDeterministicTimelineComposer", () => {
     const attribution = composer.executionAttribution();
     expect(attribution.providerKey).toBe("youflicks.local.timeline");
     expect(attribution.capability).toBe(TimelineCapability.TIMELINE_COMPOSITION);
-    expect(JSON.stringify(document)).not.toMatch(/generatedAsset|ffmpeg|vlc|libvlc/i);
+    expect(JSON.stringify(document)).not.toMatch(/ffmpeg|vlc|libvlc/i);
+    expect(document.clips.every((clip) => !clip.generatedAssetId)).toBe(true);
+    expect(document).not.toHaveProperty("generatedAsset");
   });
 
   it("uses priorTimeline for rebuild continuity of clip choices", async () => {
@@ -143,9 +145,9 @@ describe("LocalDeterministicTimelineComposer", () => {
     expect(
       document.clips.some((clip) => clip.generatedAssetId === "gen_portrait"),
     ).toBe(true);
-    expect(document.unmetMediaRoles?.some((item) => item.role === "intimate_portrait")).toBe(
-      false,
-    );
+    expect(
+      document.unmetMediaRoles?.some((item) => item.role === "intimate_portrait") ?? false,
+    ).toBe(false);
     expect(() => validateTimelineDocument(document)).not.toThrow();
   });
 

@@ -494,7 +494,9 @@ describe("AssetService M3", () => {
       productionAvailable: false,
       localDevAvailable: true,
     });
-    await assets.requestGenerate(ownerId, projectId);
+    await assets.requestGenerate(ownerId, projectId, {
+      roles: [{ role: "intimate_portrait", storySceneId: "scene-arrive", kind: "IMAGE" }],
+    });
     await worker.processNext();
     const readyBefore = await prisma.generatedAsset.findMany({
       where: { projectId, status: GeneratedAssetStatus.READY },

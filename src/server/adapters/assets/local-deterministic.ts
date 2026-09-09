@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import type { AssetExecutionAttribution } from "@/server/adapters/assets/attribution";
 import type { AssetGeneratorInput } from "@/server/assets/input";
-import { capabilityForKind, originForKind } from "@/server/assets/kinds";
+import { originForKind } from "@/server/assets/kinds";
 import {
   GENERATED_ASSET_DOCUMENT_SCHEMA_VERSION,
   type GeneratedAssetDocument,
