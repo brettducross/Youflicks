@@ -3,6 +3,7 @@ import { NextResponse } from "next/server";
 import { isAppError, toErrorResponse } from "@/lib/errors";
 import { logger } from "@/lib/logger";
 import { requireApiUser } from "@/server/auth/api";
+import { withGenerationHonesty } from "@/server/services/account-lifecycle";
 import { getServices } from "@/server/services/container";
 
 export const runtime = "nodejs";
@@ -40,7 +41,10 @@ export async function GET(_request: Request, context: RouteContext) {
     const { projectId } = await context.params;
     const services = getServices();
     await services.projects.getForUser(user.id, projectId);
-    return NextResponse.json(services.directorService.getAvailability());
+    const gate = await services.accountLifecycle.getAccountGate(user.id);
+    return NextResponse.json(
+      withGenerationHonesty(services.directorService.getAvailability(), gate),
+    );
   } catch (error) {
     const { status, body } = toErrorResponse(error);
     return NextResponse.json(body, { status });

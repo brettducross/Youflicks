@@ -21,4 +21,11 @@ describe("isAppError", () => {
     expect(isAppError(new Error("boom"))).toBe(false);
     expect(toErrorResponse(new Error("boom")).status).toBe(500);
   });
+
+  it("maps emailUnverified to EMAIL_UNVERIFIED 403", () => {
+    const error = AppError.emailUnverified();
+    expect(isAppError(error)).toBe(true);
+    expect(toErrorResponse(error).status).toBe(403);
+    expect(toErrorResponse(error).body.error.code).toBe("EMAIL_UNVERIFIED");
+  });
 });

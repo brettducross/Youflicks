@@ -25,7 +25,7 @@ export function SignUpForm() {
       name,
       email,
       password,
-      callbackURL: "/dashboard",
+      callbackURL: "/verify-email",
     });
 
     setPending(false);
@@ -35,7 +35,7 @@ export function SignUpForm() {
       return;
     }
 
-    router.push("/dashboard");
+    router.push("/verify-email");
     router.refresh();
   }
 

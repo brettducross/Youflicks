@@ -15,6 +15,7 @@ import { LibraryPanel } from "@/components/projects/library-panel";
 import { cn } from "@/lib/utils";
 import { requireUser } from "@/server/auth/session";
 import { projectStatusLabel } from "@/server/domain/status";
+import { withGenerationHonesty } from "@/server/services/account-lifecycle";
 import { getServices } from "@/server/services/container";
 
 export const metadata = {
@@ -38,7 +39,8 @@ export default async function ProjectDetailPage({
   const assets = await services.media.listForProject(user.id, id);
   const brief = await services.intent.resolveBrief(user.id, id);
   const plan = await services.directorService.getLatestReady(user.id, id);
-  const availability = services.directorService.getAvailability();
+  const gate = await services.accountLifecycle.getAccountGate(user.id);
+  const availability = withGenerationHonesty(services.directorService.getAvailability(), gate);
   const story = await services.storyService.getLatestReady(user.id, id);
   const stories = await services.storyService.listStories(user.id, id);
   const storyAvailability = services.storyService.getAvailability();

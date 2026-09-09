@@ -54,6 +54,7 @@ export const ErrorCodes = {
   PUBLICATION_DESTINATION_UNAVAILABLE: "PUBLICATION_DESTINATION_UNAVAILABLE",
   PUBLICATION_TOKEN_INVALID: "PUBLICATION_TOKEN_INVALID",
   PUBLICATION_REVOKED: "PUBLICATION_REVOKED",
+  EMAIL_UNVERIFIED: "EMAIL_UNVERIFIED",
   INTERNAL: "INTERNAL",
 } as const;
 
@@ -327,6 +328,10 @@ export class AppError extends Error {
 
   static publicationRevoked(message = "That share link has been revoked.") {
     return new AppError(ErrorCodes.PUBLICATION_REVOKED, message, 403);
+  }
+
+  static emailUnverified(message = "Verify your email before starting a movie.") {
+    return new AppError(ErrorCodes.EMAIL_UNVERIFIED, message, 403);
   }
 }
 

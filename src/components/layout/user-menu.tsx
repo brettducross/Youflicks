@@ -22,7 +22,15 @@ function initials(name: string) {
     .join("");
 }
 
-export function UserMenu({ name, email }: { name: string; email: string }) {
+export function UserMenu({
+  name,
+  email,
+  emailVerified = true,
+}: {
+  name: string;
+  email: string;
+  emailVerified?: boolean;
+}) {
   const router = useRouter();
 
   async function signOut() {
@@ -48,9 +56,17 @@ export function UserMenu({ name, email }: { name: string; email: string }) {
           <div className="flex flex-col">
             <span className="text-foreground">{name}</span>
             <span className="font-normal">{email}</span>
+            {!emailVerified ? (
+              <span className="mt-1 font-normal text-destructive">Email not verified</span>
+            ) : null}
           </div>
         </DropdownMenuLabel>
         <DropdownMenuSeparator />
+        {!emailVerified ? (
+          <DropdownMenuItem onClick={() => router.push("/verify-email")}>
+            Verify email
+          </DropdownMenuItem>
+        ) : null}
         <DropdownMenuItem onClick={() => router.push("/taste")}>Taste</DropdownMenuItem>
         <DropdownMenuItem variant="destructive" onClick={signOut}>
           Sign out
