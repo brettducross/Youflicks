@@ -20,6 +20,11 @@ export const ErrorCodes = {
   STORY_PROVIDER_UNAVAILABLE: "STORY_PROVIDER_UNAVAILABLE",
   STORY_PLAN_REQUIRED: "STORY_PLAN_REQUIRED",
   STORY_CAPABILITY_UNAVAILABLE: "STORY_CAPABILITY_UNAVAILABLE",
+  TIMELINE_INPUT_INVALID: "TIMELINE_INPUT_INVALID",
+  TIMELINE_DOCUMENT_INVALID: "TIMELINE_DOCUMENT_INVALID",
+  TIMELINE_PROVIDER_UNAVAILABLE: "TIMELINE_PROVIDER_UNAVAILABLE",
+  TIMELINE_STORY_REQUIRED: "TIMELINE_STORY_REQUIRED",
+  TIMELINE_CAPABILITY_UNAVAILABLE: "TIMELINE_CAPABILITY_UNAVAILABLE",
   INTERNAL: "INTERNAL",
 } as const;
 
@@ -135,6 +140,30 @@ export class AppError extends Error {
 
   static storyCapabilityUnavailable(message = "Story composition is not available.") {
     return new AppError(ErrorCodes.STORY_CAPABILITY_UNAVAILABLE, message, 503);
+  }
+
+  static timelineInputInvalid(message: string, details?: Record<string, unknown>) {
+    return new AppError(ErrorCodes.TIMELINE_INPUT_INVALID, message, 422, details);
+  }
+
+  static timelineDocumentInvalid(message: string, details?: Record<string, unknown>) {
+    return new AppError(ErrorCodes.TIMELINE_DOCUMENT_INVALID, message, 422, details);
+  }
+
+  static timelineProviderUnavailable(
+    message = "A required timeline composer adapter is unavailable.",
+  ) {
+    return new AppError(ErrorCodes.TIMELINE_PROVIDER_UNAVAILABLE, message, 503);
+  }
+
+  static timelineStoryRequired(
+    message = "A READY story is required before building a cut.",
+  ) {
+    return new AppError(ErrorCodes.TIMELINE_STORY_REQUIRED, message, 422);
+  }
+
+  static timelineCapabilityUnavailable(message = "Cut composition is not available.") {
+    return new AppError(ErrorCodes.TIMELINE_CAPABILITY_UNAVAILABLE, message, 503);
   }
 }
 

@@ -45,6 +45,19 @@ const envSchema = z.object({
     .enum(["true", "false", "1", "0", ""])
     .optional()
     .transform((value) => value === "true" || value === "1"),
+  TIMELINE_HTTP_PROVIDER_KEY: z.string().default("http.timeline"),
+  TIMELINE_HTTP_BASE_URL: z.string().optional(),
+  TIMELINE_HTTP_API_KEY: z.string().optional(),
+  TIMELINE_HTTP_MODEL: z.string().optional(),
+  TIMELINE_HTTP_TIMEOUT_MS: z.coerce.number().int().positive().default(60_000),
+  /**
+   * Explicit opt-in for local/deterministic timeline composition in development/test.
+   * Forced false in production regardless of the env var value.
+   */
+  TIMELINE_ALLOW_LOCAL: z
+    .enum(["true", "false", "1", "0", ""])
+    .optional()
+    .transform((value) => value === "true" || value === "1"),
 });
 
 export type AppEnv = z.infer<typeof envSchema>;
@@ -78,6 +91,12 @@ function readEnv(): AppEnv {
     STORY_HTTP_MODEL: process.env.STORY_HTTP_MODEL || undefined,
     STORY_HTTP_TIMEOUT_MS: process.env.STORY_HTTP_TIMEOUT_MS ?? 60_000,
     STORY_ALLOW_LOCAL: process.env.STORY_ALLOW_LOCAL ?? "",
+    TIMELINE_HTTP_PROVIDER_KEY: process.env.TIMELINE_HTTP_PROVIDER_KEY ?? "http.timeline",
+    TIMELINE_HTTP_BASE_URL: process.env.TIMELINE_HTTP_BASE_URL || undefined,
+    TIMELINE_HTTP_API_KEY: process.env.TIMELINE_HTTP_API_KEY || undefined,
+    TIMELINE_HTTP_MODEL: process.env.TIMELINE_HTTP_MODEL || undefined,
+    TIMELINE_HTTP_TIMEOUT_MS: process.env.TIMELINE_HTTP_TIMEOUT_MS ?? 60_000,
+    TIMELINE_ALLOW_LOCAL: process.env.TIMELINE_ALLOW_LOCAL ?? "",
   });
 
   if (!parsed.success) {
@@ -93,6 +112,9 @@ function readEnv(): AppEnv {
   }
   if (data.NODE_ENV === "production" && data.STORY_ALLOW_LOCAL) {
     data.STORY_ALLOW_LOCAL = false;
+  }
+  if (data.NODE_ENV === "production" && data.TIMELINE_ALLOW_LOCAL) {
+    data.TIMELINE_ALLOW_LOCAL = false;
   }
   return data;
 }

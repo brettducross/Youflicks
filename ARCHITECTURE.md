@@ -169,12 +169,12 @@ Raise these before changing them:
 
 | Deferred | Why |
 | --- | --- |
-| Timeline / render / playback | M1 persists StoryStructure only. M2+ starts Timeline → Render. |
+| Timeline / render / playback | M2 persists Timeline only. M3+ starts GeneratedAsset → Render. |
 | Named commercial analysis SDKs | Adapters may speak HTTP. Domain code must not import a vendor SDK or vendor enum. |
 | Cost-aware / ML provider routing | `ProviderSelectionPolicy` is replaceable. Phase 2C is deterministic. |
 | Billing / usage accounting | Routing hints exist (`estimatedCost`, `estimatedLatency`, `qualityTier`). No charges. |
 | Media transcoding / proxies | Ingest stores originals; analysis and render may transcode later. |
-| Timeline editor | Complex UI; depends on story structure. |
+| Timeline editor | Complex NLE UI; M2 is review-only. |
 | Rendering / FFmpeg / cloud render | Needs RendererPort implementation and workers. |
 | Publishing destinations | Spec-dependent (YouTube, etc.). |
 | Social platform | Explicitly out of scope. |
@@ -499,11 +499,48 @@ Rules:
 
 Authoritative specification: [PHASE_M1_STORY_ROADMAP_DECISION.md](./PHASE_M1_STORY_ROADMAP_DECISION.md).
 
-### M2+ — Cut from story (not this milestone)
+### M2 — Cut from story
 
-**`StoryStructure → Timeline → assets → Render → Playback → FinishedMovie`**
+**M2 = StoryStructure → versioned executable Timeline.**
 
-M2 (future lock) derives an executable Timeline from StoryStructure. Timeline review UI, rendering, playback, and FinishedMovie remain later milestones. Do not leak those concepts backward into CreativePlan or StoryDocument.
+It executes a new provider-neutral port and stops at a validated, versioned TimelineDocument:
+
+```
+HTTP (owner) → enqueue AI_TIMELINE (202 + jobId)
+ ↓
+TimelineWorker claims AI_TIMELINE
+ ↓
+assemble TimelineComposerInput from READY StoryStructure
+  (+ privacy-minimized media inventory, intent/brief, optional prior READY timeline)
+ ↓
+fingerprint input (persist hash only)
+ ↓
+TimelineComposerPort.composeTimeline
+ ↓
+validate TimelineDocument (schema v1; MediaAsset-only clips; unmetMediaRoles for gaps)
+ ↓
+persist new Timeline version + TimelineClip rows (prior READY → SUPERSEDED)
+ ↓
+record ProviderAttribution (outside the port return)
+```
+
+Rules:
+
+- Do **not** extend or overload `AiDirectorPort` or `StoryComposerPort`. Cut composition is `TimelineComposerPort` only.
+- Timeline is **not** a renamed StoryStructure. It owns editorial execution (clips, tracks, absolute timings).
+- Timing (`timelineStartMs` / `timelineEndMs`, source in/out) is legal only on Timeline / TimelineClip.
+- Place only existing `MediaAsset` rows. Unmet story `mediaRoles` are `unmetMediaRoles` for M3 — no GeneratedAsset IDs, no null-asset clips.
+- In-progress belongs on Job (`PENDING` | `RUNNING` | …). Timeline status is only `DRAFT` | `READY` | `SUPERSEDED` | `FAILED`.
+- Production timeline availability requires a genuine configured adapter (`TIMELINE_HTTP_*`). Local deterministic (`TIMELINE_ALLOW_LOCAL` / tests) never advertises production availability.
+- Minimal UI: “Your cut”, Build / Rebuild, status, read-only ordered shot list with simple times. No NLE, Director chat, or Generate Film.
+
+Authoritative specification: [PHASE_M2_TIMELINE_ROADMAP_DECISION.md](./PHASE_M2_TIMELINE_ROADMAP_DECISION.md).
+
+### M3+ — Generated assets, render, playback (not this milestone)
+
+**`Timeline → assets → Render → Playback → FinishedMovie`**
+
+M3 (future lock) fills unmet media roles. Rendering, playback, and FinishedMovie remain later milestones. Do not leak those concepts backward into CreativePlan, StoryDocument, or TimelineDocument.
 
 ### Phase 4 — Render & movie
 
@@ -554,6 +591,16 @@ M1 exit criteria:
 - [x] Recompose from previous READY StoryDocument
 - [x] Production vs local story availability honesty
 - [x] No Timeline / Render / FinishedMovie / Publication writes
+
+M2 exit criteria:
+
+- [x] First-class versioned `Timeline` persistence with provenance to one READY StoryStructure
+- [x] `TimelineService` + `AI_TIMELINE` enqueue/worker path
+- [x] HTTP returns 202; composition runs off-request
+- [x] Rebuild from previous READY TimelineDocument
+- [x] Production vs local timeline availability honesty
+- [x] Review-only UI only (no NLE)
+- [x] No RenderJob / FinishedMovie / Publication / GeneratedAsset writes
 
 Phase 2D exit criteria:
 
@@ -622,9 +669,10 @@ src/server/analysis     Owned schemas, normalizer, registry, selection
 src/server/personalization  Taste brief, privacy boundary
 src/server/director     Director input, plan schema, capability gateway, fingerprint
 src/server/story        StoryDocument schema, input, validation, availability
+src/server/timeline     TimelineDocument schema, input, validation, availability
 src/server/ports        Interfaces
-src/server/adapters     Local storage, Postgres jobs, analysis + Director + story adapters
-src/server/services     Project, Media, Analysis, Director, Story, Taste, Intent, Credits
+src/server/adapters     Local storage, Postgres jobs, analysis + Director + story + timeline adapters
+src/server/services     Project, Media, Analysis, Director, Story, Timeline, Taste, Intent, Credits
 prisma/schema.prisma    Extensible domain schema
 docker-compose.yml      Local Postgres
 ```

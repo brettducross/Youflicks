@@ -8,6 +8,7 @@ import { MediaLibrary } from "@/components/media/media-library";
 import { CreativeIntentForm } from "@/components/projects/creative-intent-form";
 import { CreativePlanPanel } from "@/components/projects/creative-plan-panel";
 import { StoryPanel } from "@/components/projects/story-panel";
+import { TimelinePanel } from "@/components/projects/timeline-panel";
 import { cn } from "@/lib/utils";
 import { requireUser } from "@/server/auth/session";
 import { projectStatusLabel } from "@/server/domain/status";
@@ -18,10 +19,6 @@ export const metadata = {
 };
 
 const LATER_SECTIONS = [
-  {
-    title: "Timeline",
-    body: "Editorial order for the render comes after the story. Schema exists; the editor does not.",
-  },
   {
     title: "Render",
     body: "RendererPort will produce a FinishedMovie. Nothing is queued until a renderer exists.",
@@ -49,6 +46,9 @@ export default async function ProjectDetailPage({
   const story = await services.storyService.getLatestReady(user.id, id);
   const stories = await services.storyService.listStories(user.id, id);
   const storyAvailability = services.storyService.getAvailability();
+  const timeline = await services.timelineService.getLatestReady(user.id, id);
+  const timelines = await services.timelineService.listTimelines(user.id, id);
+  const timelineAvailability = services.timelineService.getAvailability();
 
   return (
     <main className="mx-auto w-full max-w-6xl px-4 py-8 sm:px-6">
@@ -100,6 +100,14 @@ export default async function ProjectDetailPage({
         initialStories={stories}
         initialAvailability={storyAvailability}
         directionReady={Boolean(plan)}
+      />
+
+      <TimelinePanel
+        projectId={project.id}
+        initialTimeline={timeline}
+        initialTimelines={timelines}
+        initialAvailability={timelineAvailability}
+        storyReady={Boolean(story)}
       />
 
       <div className="mt-10 grid gap-4 md:grid-cols-2">
