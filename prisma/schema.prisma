@@ -35,6 +35,11 @@ model User {
   platformState            AccountPlatformState?
   generationAuthorizations GenerationAuthorization[]
   usageEvents              UsageEvent[]
+  subscriptions            Subscription[]
+  creditLedgerEntries      CreditLedger[]
+  creditBalance            CreditBalance?
+  paymentEvents            PaymentEvent[]
+  advertisingEvents        AdvertisingEvent[]
 
   @@map("user")
 }
@@ -806,4 +811,135 @@ model EngineCostEvent {
   @@index([jobId])
   @@index([providerKey, capability])
   @@map("engine_cost_event")
+}
+
+// ---------------------------------------------------------------------------
+// M8.5a — Billing / subscription / prepaid credits (not creative, not live checkout)
+// Subscription + CreditLedger/CreditBalance + PaymentEvent + OfferCatalog.
+// Open string planKeys / statuses / providerKey. Never Prisma vendor enums.
+// Prices and numeric PLUS/FAMILY caps stay null until PO supplies them.
+// CreditLedger is append-only. EXPIRE is reserved; default expiry policy is NEVER.
+// Not CreativePlan / Story / Timeline / GeneratedAsset / Render.
+// ---------------------------------------------------------------------------
+
+/// Commercial subscription state. planKey is an open string (FREE | PLUS | FAMILY | …).
+model Subscription {
+  id          String    @id @default(cuid())
+  userId      String
+  user        User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  /// FREE | PLUS | FAMILY | open string
+  planKey     String
+  /// ACTIVE | PAST_DUE | CANCELED | …
+  status      String
+  periodStart DateTime?
+  periodEnd   DateTime?
+  externalRef String?
+  /// Adapter key — provenance only, never a vendor enum.
+  providerKey String
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+
+  @@index([userId, status])
+  @@index([providerKey, externalRef])
+  @@map("subscription")
+}
+
+/// Append-only prepaid / subsidy ledger. Never silently drop unused credits.
+/// entryType GRANT | SPEND | REFUND | ADJUST | EXPIRE (reserved; default policy NEVER).
+model CreditLedger {
+  id                    String    @id @default(cuid())
+  userId                String
+  user                  User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  /// GRANT | SPEND | REFUND | ADJUST | EXPIRE
+  entryType             String
+  quantity              Float
+  reason                String?
+  /// PREPAID | AD_SUBSIDY | PROMO | SUPPORT | …
+  source                String?
+  relatedPaymentEventId String?
+  /// Null means never expires (initial policy NEVER).
+  expiresAt             DateTime?
+  recordedAt            DateTime  @default(now())
+  createdAt             DateTime  @default(now())
+
+  @@index([userId, recordedAt])
+  @@index([userId, entryType])
+  @@index([source, recordedAt])
+  @@map("credit_ledger")
+}
+
+/// Optional projection of CreditLedger. Never an independent source of truth.
+model CreditBalance {
+  userId    String   @id
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  available Float    @default(0)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@map("credit_balance")
+}
+
+/// Thin webhook / payment audit. Idempotent on (providerKey, externalId).
+model PaymentEvent {
+  id          String    @id @default(cuid())
+  userId      String?
+  user        User?     @relation(fields: [userId], references: [id], onDelete: SetNull)
+  providerKey String
+  externalId  String
+  kind        String
+  /// Thin audit JSON. Never raw secrets or CreativePlan payloads.
+  payload     Json?
+  processedAt DateTime?
+  createdAt   DateTime  @default(now())
+
+  @@unique([providerKey, externalId])
+  @@index([userId, createdAt])
+  @@map("payment_event")
+}
+
+/// planKey / packKey → grant shape. priceAmount is null until PO supplies it.
+model OfferCatalog {
+  id            String   @id @default(cuid())
+  offerKey      String   @unique
+  /// PLAN | PACK
+  offerKind     String
+  planKey       String?
+  packKey       String?
+  /// Flags + TBD/null numeric benefit fields. Not a CreativePlan.
+  grantShape    Json
+  /// Null until PO supplies a price. Do not invent.
+  priceAmount   Float?
+  priceCurrency String?
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  @@index([planKey])
+  @@index([offerKind])
+  @@map("offer_catalog")
+}
+
+// ---------------------------------------------------------------------------
+// M8.6a — Advertising impression / click persistence (not creative, not IN_MOVIE)
+// Ops measurement only. First-party providerKey by default. No ad-network SDK.
+// ---------------------------------------------------------------------------
+
+model AdvertisingEvent {
+  id          String   @id @default(cuid())
+  userId      String
+  user        User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  /// UI_SHELL | POST_FILM | LIBRARY_BANNER | FILM_CREDITS — never IN_MOVIE
+  surface     String
+  /// impression | click
+  kind        String
+  /// youflicks.first_party | later adapter key. Never a vendor enum.
+  providerKey String   @default("youflicks.first_party")
+  campaignId  String?
+  offerId     String?
+  recordedAt  DateTime @default(now())
+  createdAt   DateTime @default(now())
+
+  @@index([userId, surface, recordedAt])
+  @@index([kind, recordedAt])
+  @@index([surface, recordedAt])
+  @@map("advertising_event")
 }

@@ -35,6 +35,9 @@ describe("AdvertisingService M8.4 stub", () => {
   });
 
   afterAll(async () => {
+    await prisma.advertisingEvent.deleteMany({
+      where: { userId: { in: [freeId, paidId] } },
+    });
     await prisma.userSponsorshipPreference.deleteMany({
       where: { userId: { in: [freeId, paidId] } },
     });
@@ -85,8 +88,9 @@ describe("AdvertisingService M8.4 stub", () => {
     await freeAds.recordImpression(freeId, IN_MOVIE_SURFACE);
     await freeAds.recordClick(freeId, CommercialSurface.UI_SHELL);
     await freeAds.recordImpression(freeId, CommercialSurface.UI_SHELL);
-    expect(freeAds.listEvents().every((event) => event.surface !== IN_MOVIE_SURFACE)).toBe(true);
-    expect(freeAds.listEvents().some((event) => event.kind === "click")).toBe(true);
+    const events = await freeAds.listEvents({ userId: freeId });
+    expect(events.every((event) => event.surface !== IN_MOVIE_SURFACE)).toBe(true);
+    expect(events.some((event) => event.kind === "click")).toBe(true);
     expect(await prisma.creativePlan.count()).toBe(before);
     expect("AI_ADS" in JobType).toBe(false);
     expect(prisma).not.toHaveProperty("billing");

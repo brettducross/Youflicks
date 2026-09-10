@@ -28,6 +28,7 @@ import { resolveStoryComposerAdapter } from "@/server/story/provider-config";
 import { resolveTimelineComposerAdapter } from "@/server/timeline/provider-config";
 import { AccountLifecycleService } from "@/server/services/account-lifecycle";
 import { AdvertisingService } from "@/server/services/advertising";
+import { BillingService } from "@/server/services/billing";
 import { EntitlementService } from "@/server/services/entitlement";
 import { PresentationPolicyService } from "@/server/services/presentation-policy";
 import { UsageMeterService } from "@/server/services/usage-meter";
@@ -73,6 +74,7 @@ export type ServiceContainer = {
   jobs: JobQueuePort;
   accountLifecycle: AccountLifecycleService;
   entitlements: EntitlementService;
+  billing: BillingService;
   usageMeter: UsageMeterService;
   watermarkPolicy: WatermarkPolicyService;
   advertising: AdvertisingService;
@@ -162,6 +164,7 @@ function createServices(): ServiceContainer {
     });
   });
   const entitlements = new EntitlementService(accountLifecycle);
+  const billing = new BillingService();
   const usageMeter = new UsageMeterService();
   const watermarkPolicy = new WatermarkPolicyService();
   const advertising = new AdvertisingService(entitlements, taste);
@@ -304,6 +307,7 @@ function createServices(): ServiceContainer {
     jobs,
     accountLifecycle,
     entitlements,
+    billing,
     usageMeter,
     watermarkPolicy,
     advertising,

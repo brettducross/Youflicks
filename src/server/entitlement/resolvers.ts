@@ -1,8 +1,9 @@
 import type { PrepaidGrant, SubscriptionGrant } from "@/server/entitlement/types";
 
 /**
- * M8.2 stubs. Subscription / prepaid grants arrive in M8.5 via BillingPort.
- * These resolvers must stay empty and must not import Stripe or any vendor SDK.
+ * Resolver contracts for EntitlementService.mergeSnapshot.
+ * Empty stubs remain for isolated tests. Production defaults are the M8.5a
+ * BillingSubscriptionResolver / BillingPrepaidResolver (no vendor SDK).
  */
 export type SubscriptionResolver = {
   resolve(userId: string): Promise<SubscriptionGrant[]>;

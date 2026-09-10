@@ -6,11 +6,10 @@ import { prisma } from "@/server/db";
 import { PrismaAbuseSignalAdapter } from "@/server/adapters/platform/prisma-abuse";
 import { PrismaRateLimitAdapter } from "@/server/adapters/platform/prisma-rate-limit";
 import {
-  EmptyPrepaidResolver,
-  EmptySubscriptionResolver,
-  type PrepaidResolver,
-  type SubscriptionResolver,
-} from "@/server/entitlement/resolvers";
+  BillingPrepaidResolver,
+  BillingSubscriptionResolver,
+} from "@/server/billing/resolvers";
+import type { PrepaidResolver, SubscriptionResolver } from "@/server/entitlement/resolvers";
 import {
   ENTITLEMENT_SNAPSHOT_SCHEMA_VERSION,
   EntitlementDenyCode,
@@ -47,8 +46,8 @@ const DENY_MESSAGES: Record<(typeof EntitlementDenyCode)[keyof typeof Entitlemen
 export class EntitlementService implements EntitlementPort {
   constructor(
     private readonly accounts: AccountLifecycleService = new AccountLifecycleService(),
-    private readonly subscriptions: SubscriptionResolver = new EmptySubscriptionResolver(),
-    private readonly prepaid: PrepaidResolver = new EmptyPrepaidResolver(),
+    private readonly subscriptions: SubscriptionResolver = new BillingSubscriptionResolver(),
+    private readonly prepaid: PrepaidResolver = new BillingPrepaidResolver(),
     private readonly rateLimit: RateLimitPort = new PrismaRateLimitAdapter(),
     private readonly abuse: AbuseSignalPort = new PrismaAbuseSignalAdapter(),
     private readonly now: () => Date = () => new Date(),

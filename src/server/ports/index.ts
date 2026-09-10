@@ -54,3 +54,4 @@ export type { AbuseSignalPort } from "./abuse-signal";
 export type { UsageMeterPort } from "./usage-meter";
 export type { WatermarkPolicy } from "./watermark";
 export type { AdvertisingPort } from "./advertising";
+export type { BillingPort } from "./billing";

@@ -1,5 +1,7 @@
 import type {
   AdvertisingContext,
+  AdvertisingEvent,
+  AdvertisingOpsQuery,
   AdvertisingSurfaceView,
   AdsHonesty,
 } from "@/server/advertising/types";
@@ -17,4 +19,5 @@ export type AdvertisingPort = {
   recordImpression(userId: string, surfaceKey: string): Promise<void>;
   recordClick(userId: string, surfaceKey: string): Promise<void>;
   adsHonesty(userId: string): Promise<AdsHonesty>;
+  listEvents(query?: AdvertisingOpsQuery): Promise<AdvertisingEvent[]>;
 };
