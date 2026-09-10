@@ -108,8 +108,36 @@ See `.env.example`. Required:
 - `ANALYSIS_HTTP_PROVIDER_KEY` — provenance key for the HTTP vision adapter (default `http.vision`)
 - `ANALYSIS_HTTP_BASE_URL` / `ANALYSIS_HTTP_API_KEY` / `ANALYSIS_HTTP_MODEL` — HTTP vision host. The adapter stays disabled until all three are set.
 - `ANALYSIS_HTTP_TIMEOUT_MS` — outbound analysis timeout (default `45000`)
+- `ASSET_HTTP_PROVIDER_KEY` — open provenance string for the HTTP asset adapter (default `http.asset`)
+- `ASSET_HTTP_BASE_URL` / `ASSET_HTTP_API_KEY` / `ASSET_HTTP_MODEL` — YouFlicks `/v1/generate` gateway. Disabled until all three are set. The app does **not** take a fal key.
+- `ASSET_HTTP_CAPABILITIES` — honest YouFlicks capability list. R1: `VIDEO_GENERATION`. Empty also means video only.
+- `ASSET_HTTP_TIMEOUT_MS` — outbound generate timeout (use `300000` for video)
 
 Provider secrets belong in environment variables only. Do not put them in Prisma, source, or the browser.
+
+### R1 video HTTP gateway
+
+First real `VIDEO_GENERATION` path is adapter-only: the app calls existing `HttpAssetGeneratorAdapter` → a separate YouFlicks-shaped gateway (`npm run gateway:asset`) → a config-backed video queue (fal queue+webhooks is the default **example**, not domain truth).
+
+```bash
+# Terminal 1 — gateway (vendor key stays here)
+YF_GATEWAY_API_KEY="shared-gateway-key" \
+YF_GATEWAY_BACKEND="fal" \
+YF_GATEWAY_BACKEND_API_KEY="your-fal-key" \
+YF_GATEWAY_MODEL="fal-ai/ltx-video" \
+YF_GATEWAY_MAX_JOBS="10" \
+YF_GATEWAY_MAX_SPEND_USD="5" \
+npm run gateway:asset
+
+# App .env — no vendor SDK, open providerKey + model strings
+ASSET_HTTP_BASE_URL="http://127.0.0.1:43148"
+ASSET_HTTP_API_KEY="shared-gateway-key"
+ASSET_HTTP_MODEL="fal-ai/ltx-video"
+ASSET_HTTP_CAPABILITIES="VIDEO_GENERATION"
+ASSET_HTTP_TIMEOUT_MS="300000"
+```
+
+Swap the model or point the gateway at another HTTP queue with env only. See [docs/R1_VIDEO_HTTP_GATEWAY.md](./docs/R1_VIDEO_HTTP_GATEWAY.md). This does not claim an E2E movie without keys. R2 local FFmpeg (ingest posters / duration, optional local renderer) is unchanged.
 
 ## Project layout
 
@@ -131,6 +159,7 @@ src/server/movie        FinishedMovie library keep (privacy, fingerprint, opaque
 src/server/publication  Publication share/export (tokens, privacy, destination keys)
 src/server/ports        Storage, jobs, AI, story composer, timeline composer, renderer, playback, publication, analyzer interfaces
 src/server/adapters     Local storage, Postgres jobs, analysis / Director / story / timeline / renderer / playback / publication adapters
+src/server/gateways     Separate YouFlicks-shaped HTTP workers (R1 video /v1/generate)
 src/server/services     Project, Media, Analysis, Taste, Intent, Credits, Director, Story, Timeline, Render, Playback, Movie, Publication
 prisma/schema.prisma    Domain schema
 ```
@@ -186,6 +215,7 @@ Do not add vendor columns to Prisma. Do not teach domain services a vendor name.
 - `STORY_ALLOW_LOCAL=true` enables the deterministic local story composer for development/tests only. It never advertises production availability.
 - Production timeline availability requires a configured timeline HTTP adapter (`TIMELINE_HTTP_*`). Local deterministic composition does **not** count as production timeline availability.
 - `TIMELINE_ALLOW_LOCAL=true` enables the deterministic local timeline composer for development/tests only. It never advertises production availability.
+- Production `VIDEO_GENERATION` requires `ASSET_HTTP_*` pointed at the YouFlicks asset gateway plus a backend key on that gateway process. Without those, missing pieces stay local-only (`ASSET_ALLOW_LOCAL`) or unavailable. Voice / music / SFX are not production HTTP capabilities in R1.
 
 ## Taste and project intent (Phase 2D)
 
@@ -249,6 +279,8 @@ See [PHASE_M2_TIMELINE_ROADMAP_DECISION.md](./PHASE_M2_TIMELINE_ROADMAP_DECISION
 M3 turns READY Timeline `unmetMediaRoles` into generated/processed assets:
 
 `API → enqueue AI_ASSET → worker → AssetGeneratorPort.generate → validate → persist GeneratedAsset`
+
+R1 production video uses the HTTP adapter + a separate YouFlicks `/v1/generate` gateway. See [docs/R1_VIDEO_HTTP_GATEWAY.md](./docs/R1_VIDEO_HTTP_GATEWAY.md).
 
 See [PHASE_M3_GENERATED_ASSETS_ROADMAP_DECISION.md](./PHASE_M3_GENERATED_ASSETS_ROADMAP_DECISION.md).
 

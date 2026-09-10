@@ -65,7 +65,9 @@ const envSchema = z.object({
   ASSET_HTTP_TIMEOUT_MS: z.coerce.number().int().positive().default(90_000),
   /**
    * Optional comma-separated YouFlicks capability strings the HTTP adapter covers.
-   * Empty means all locked asset capabilities when the HTTP adapter is configured.
+   * Empty means VIDEO_GENERATION only (honest R1). Add IMAGE_GENERATION
+   * explicitly if the gateway covers stills. Do not list VOICE/MUSIC/SFX
+   * unless a real adapter covers them.
    */
   ASSET_HTTP_CAPABILITIES: z.string().optional(),
   /**
