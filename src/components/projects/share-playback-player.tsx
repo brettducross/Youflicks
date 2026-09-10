@@ -179,6 +179,7 @@ export function SharePlaybackPlayer({
       {ended ? <PostFilmAd surface={postFilmAd} /> : null}
       <p className="text-xs text-muted-foreground">
         Watch only. This link can expire or be revoked. You cannot keep, export, or edit this film.
+        {watermarkRequired ? " Free-plan watermark is on the player, not burned into the file." : ""}
       </p>
     </div>
   );

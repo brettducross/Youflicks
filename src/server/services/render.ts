@@ -329,7 +329,22 @@ export class RenderService {
       throw error;
     }
 
-    const watermarked = await this.applyWatermarkPolicy(userId, projectId, result);
+    let watermarked;
+    try {
+      watermarked = await this.applyWatermarkPolicy(userId, projectId, result);
+    } catch (error) {
+      await this.usage.recordJobUsage({
+        userId,
+        projectId,
+        jobId: job.id,
+        kind: UsageKind.RENDER_SECONDS,
+        quantity: (result.durationMs ?? 0) / 1000,
+        outcome: UsageOutcome.FAILED,
+        providerKey: attribution.providerKey,
+        capability: attribution.capability,
+      });
+      throw error;
+    }
 
     if (await this.isCancelled(job.id)) {
       await this.mirrorRenderJobStatus(job.id, RenderJobStatus.CANCELLED);
@@ -467,10 +482,19 @@ export class RenderService {
       return result;
     }
     const stored = await this.storage.get(result.storageKey);
-    if (!stored) {
-      return result;
+    if (!stored || stored.body.byteLength === 0) {
+      throw AppError.watermarkApplyFailed(
+        "Watermark policy could not read stored output bytes.",
+      );
     }
     const applied = this.watermark.applyToOutput(stored.body, decision);
+    logger.info("render.watermark_applied", {
+      projectId,
+      required: decision.required,
+      surface: applied.surface,
+      reason: applied.reason,
+      mutated: applied.mutated,
+    });
     if (!applied.mutated) {
       return result;
     }

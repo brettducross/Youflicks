@@ -379,7 +379,14 @@ describe("EntitlementService M8.2 free-tier gate", () => {
       remainingMovieGenerations: 1,
     });
     await expect(entitlements.assertOutputDuration(verifiedId, 299_999)).resolves.toBeUndefined();
-    await expect(entitlements.assertOutputDuration(verifiedId, null)).resolves.toBeUndefined();
+    await expect(entitlements.assertOutputDuration(verifiedId, null)).rejects.toMatchObject({
+      code: "OUTPUT_DURATION_UNKNOWN",
+      status: 403,
+    });
+    await expect(entitlements.assertOutputDuration(verifiedId, undefined)).rejects.toMatchObject({
+      code: "OUTPUT_DURATION_UNKNOWN",
+      status: 403,
+    });
     await expect(
       entitlements.assertOutputDuration(verifiedId, FREE_MAX_OUTPUT_DURATION_MS + 1),
     ).rejects.toMatchObject({

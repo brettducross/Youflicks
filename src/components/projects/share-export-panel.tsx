@@ -175,7 +175,9 @@ export function ShareExportPanel({
         <p className="text-xs text-muted-foreground">
           Export downloads the film. A share link lets someone watch only — it expires and you can
           revoke it. This is not automatic when you keep or watch.
-          {watermarkRequired ? " Free-plan exports keep the presentation watermark policy." : ""}
+          {watermarkRequired
+            ? " Free-plan films show a YouFlicks watermark on the player. Download files are not visually branded yet."
+            : ""}
         </p>
       </div>
       <div className="flex flex-wrap gap-2">

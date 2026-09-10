@@ -22,6 +22,10 @@ export type HttpRendererConfig = {
  * a YouFlicks-owned render JSON body and returns bytes or a result document.
  * Configured only when URL, key, and model are set.
  * Attribution is adapter metadata — not part of RendererPort.render.
+ *
+ * Watermark honesty (YF-040): this adapter writes binary movie essence.
+ * WatermarkPolicy must not mutate those bytes (CHROME_ONLY / player chrome)
+ * until Brett §H4 visual branding. A trailer stamp can break playback.
  */
 export class HttpRendererAdapter implements RendererPort {
   readonly production = true as const;

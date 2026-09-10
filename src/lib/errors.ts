@@ -57,6 +57,8 @@ export const ErrorCodes = {
   EMAIL_UNVERIFIED: "EMAIL_UNVERIFIED",
   RATE_LIMITED: "RATE_LIMITED",
   DURATION_EXCEEDS_PLAN: "DURATION_EXCEEDS_PLAN",
+  OUTPUT_DURATION_UNKNOWN: "OUTPUT_DURATION_UNKNOWN",
+  WATERMARK_APPLY_FAILED: "WATERMARK_APPLY_FAILED",
   SUSPENDED: "SUSPENDED",
   INSUFFICIENT_CREDITS: "INSUFFICIENT_CREDITS",
   INTERNAL: "INTERNAL",
@@ -346,6 +348,18 @@ export class AppError extends Error {
 
   static durationExceedsPlan(message = "Free movies can be at most 5 minutes long.") {
     return new AppError(ErrorCodes.DURATION_EXCEEDS_PLAN, message, 403);
+  }
+
+  static outputDurationUnknown(
+    message = "This output has no duration, so the plan length cap cannot be verified.",
+  ) {
+    return new AppError(ErrorCodes.OUTPUT_DURATION_UNKNOWN, message, 403);
+  }
+
+  static watermarkApplyFailed(
+    message = "The free-plan watermark could not be applied to this output.",
+  ) {
+    return new AppError(ErrorCodes.WATERMARK_APPLY_FAILED, message, 422);
   }
 
   static suspended(message = "This account cannot start a movie right now.") {

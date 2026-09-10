@@ -207,10 +207,10 @@ export class EntitlementService implements EntitlementPort {
     durationMs: number | null | undefined,
     projectId?: string,
   ) {
-    if (durationMs == null) {
-      return;
-    }
     const constraints = await this.policyConstraints(userId, projectId);
+    if (durationMs == null) {
+      throw AppError.outputDurationUnknown();
+    }
     if (durationMs > constraints.maxOutputDurationMs) {
       throw AppError.durationExceedsPlan();
     }

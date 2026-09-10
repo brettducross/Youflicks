@@ -19,6 +19,7 @@ import {
 import type { RenderExecutionAttribution } from "@/server/adapters/renderer/attribution";
 import { RenderCapability } from "@/server/ports/capabilities";
 import type { RendererPort } from "@/server/ports/renderer";
+import type { StoragePort } from "@/server/ports/storage";
 import type { AiDirectorPort } from "@/server/ports/ai-director";
 import type { AssetGeneratorPort } from "@/server/ports/asset-generator";
 import type { StoryComposerPort } from "@/server/ports/story-composer";
@@ -220,13 +221,14 @@ describe("RenderService M4", () => {
     attribution?: RenderExecutionAttribution;
     productionAvailable?: boolean;
     localDevAvailable?: boolean;
+    store?: StoragePort;
   }) {
     const productionAvailable = options.productionAvailable ?? Boolean(options.adapter);
     const localDevAvailable = options.localDevAvailable ?? false;
     const executionAttribution = options.attribution ?? defaultAttribution();
     const render = new RenderService(
       jobs,
-      storage,
+      options.store ?? storage,
       contract,
       projects,
       attribution,
@@ -736,6 +738,76 @@ describe("RenderService M4", () => {
     const status = await render.getJobStatus(ownerId, projectId, queued.jobId);
     expect(status.status).toBe(JobStatus.FAILED);
     expect(status.error).toMatch(/5 minutes/i);
+    const usage = await prisma.usageEvent.findMany({ where: { jobId: queued.jobId } });
+    expect(usage[0]).toMatchObject({ kind: "RENDER_SECONDS", outcome: "FAILED" });
+  });
+
+  it("keeps HTTP/binary essence unmarked and still succeeds (chrome-only watermark)", async () => {
+    const { render, worker } = harness({
+      adapter: scriptedRenderer(async (input) => {
+        const bytes = new Uint8Array([0, 0, 0, 32, 0x66, 0x74, 0x79, 0x70]);
+        await storage.put({
+          key: input.destinationKeyHint,
+          body: bytes,
+          contentType: "video/mp4",
+        });
+        return {
+          storageKey: input.destinationKeyHint,
+          mimeType: "video/mp4",
+          durationMs: 3000,
+          byteSize: bytes.byteLength,
+        };
+      }),
+      productionAvailable: true,
+    });
+    const queued = await render.requestRender(ownerId, projectId);
+    await worker.processNext();
+    const status = await render.getJobStatus(ownerId, projectId, queued.jobId);
+    expect(status.status).toBe(JobStatus.SUCCEEDED);
+    const latest = await render.getLatestSuccessful(ownerId, projectId);
+    const stored = await storage.get(latest ? (await prisma.renderJob.findFirstOrThrow({ where: { id: latest.id } })).outputKey! : "");
+    expect(stored).not.toBeNull();
+    expect(Buffer.from(stored!.body).includes(Buffer.from("watermark=YouFlicks"))).toBe(false);
+    expect(stored!.body).toEqual(new Uint8Array([0, 0, 0, 32, 0x66, 0x74, 0x79, 0x70]));
+  });
+
+  it("fails typed when watermark apply cannot read stored bytes", async () => {
+    const outputGets = new Map<string, number>();
+    const store: StoragePort = {
+      driver: storage.driver,
+      put: (input) => storage.put(input),
+      async get(key) {
+        const obj = await storage.get(key);
+        if (!obj || !key.includes("/renders/")) {
+          return obj;
+        }
+        const n = (outputGets.get(key) ?? 0) + 1;
+        outputGets.set(key, n);
+        if (n >= 2) {
+          return null;
+        }
+        return obj;
+      },
+      getStream: (key, range) => storage.getStream(key, range),
+      delete: (key) => storage.delete(key),
+      exists: (key) => storage.exists(key),
+    };
+    const local = new LocalDeterministicRenderer(storage);
+    const { render, worker } = harness({
+      adapter: local,
+      productionAvailable: false,
+      localDevAvailable: true,
+      store,
+    });
+    const queued = await render.requestRender(ownerId, projectId);
+    await worker.processNext();
+    const status = await render.getJobStatus(ownerId, projectId, queued.jobId);
+    expect(status.status).toBe(JobStatus.FAILED);
+    expect(status.error).toMatch(/watermark/i);
+    const latest = await prisma.renderJob.findFirst({
+      where: { projectId, jobId: queued.jobId },
+    });
+    expect(latest?.status).not.toBe(RenderJobStatus.SUCCEEDED);
     const usage = await prisma.usageEvent.findMany({ where: { jobId: queued.jobId } });
     expect(usage[0]).toMatchObject({ kind: "RENDER_SECONDS", outcome: "FAILED" });
   });

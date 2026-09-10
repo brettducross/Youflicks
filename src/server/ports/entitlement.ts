@@ -25,6 +25,11 @@ export type EntitlementPort = {
     userId: string,
     projectId?: string,
   ): Promise<GenerationConstraintReceipt | null>;
+  /**
+   * Enforce maxOutputDurationMs against a known produced or requested duration.
+   * Null/undefined is fail-closed (OUTPUT_DURATION_UNKNOWN) — do not no-op
+   * past the entitlement cap when SUCCEEDED/READY output omitted durationMs.
+   */
   assertOutputDuration(
     userId: string,
     durationMs: number | null | undefined,
