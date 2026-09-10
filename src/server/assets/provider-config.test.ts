@@ -28,5 +28,6 @@ describe("parseAssetHttpCapabilities", () => {
       AssetCapability.VOICE_SYNTHESIS,
     ]);
     expect(parseAssetHttpCapabilities("openai,stable-diffusion")).toBeUndefined();
+    expect(parseAssetHttpCapabilities("")).toBeUndefined();
   });
 });

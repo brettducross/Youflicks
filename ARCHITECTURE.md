@@ -531,7 +531,7 @@ Rules:
 - Timing (`timelineStartMs` / `timelineEndMs`, source in/out) is legal only on Timeline / TimelineClip.
 - M2 placed only existing `MediaAsset` rows. M3 extends clip identity with `sourceKind: MEDIA_ASSET | GENERATED_ASSET` on explicit Rebuild cut. Unmet roles stay in `unmetMediaRoles`.
 - In-progress belongs on Job (`PENDING` | `RUNNING` | …). Timeline status is only `DRAFT` | `READY` | `SUPERSEDED` | `FAILED`.
-- Production timeline availability requires a genuine configured adapter (`TIMELINE_HTTP_*`). Local deterministic (`TIMELINE_ALLOW_LOCAL` / tests) never advertises production availability.
+- Production asset availability requires a genuine configured HTTP adapter (`ASSET_HTTP_*`) pointed at a YouFlicks-shaped `/v1/generate` gateway. The gateway may map to fal or another queue **behind env**. Domain services and Prisma never import a vendor SDK and never store vendor JSON as CreativePlan / Story / Timeline truth. `providerKey` remains an open string. Local deterministic (`ASSET_ALLOW_LOCAL` / tests) never advertises production availability. See [docs/R1_VIDEO_HTTP_GATEWAY.md](./docs/R1_VIDEO_HTTP_GATEWAY.md).
 - Minimal UI: “Your cut”, Build / Rebuild, status, read-only ordered shot list with simple times. No NLE, Director chat, or Generate Film.
 
 Authoritative specification: [PHASE_M2_TIMELINE_ROADMAP_DECISION.md](./PHASE_M2_TIMELINE_ROADMAP_DECISION.md).
@@ -564,6 +564,7 @@ explicit Rebuild cut (D9) may place GENERATED_ASSET clips on Timeline vN+1
 Rules:
 
 - Do **not** overload Director/Story/Timeline compose ports. Generation is `AssetGeneratorPort` only.
+- Production `VIDEO_GENERATION` uses `ASSET_HTTP_*` against a YouFlicks-shaped `/v1/generate` gateway. The gateway may map to fal or another queue behind env. Domain and Prisma never import a vendor SDK. `providerKey` stays an open string. See [docs/R1_VIDEO_HTTP_GATEWAY.md](./docs/R1_VIDEO_HTTP_GATEWAY.md).
 - `GeneratedAsset` ≠ `MediaAsset`. User footage stays on MediaAsset.
 - Job type is **`AI_ASSET` only**. In-progress lives on Job. GeneratedAsset status is `DRAFT | READY | SUPERSEDED | FAILED`.
 - No silent Timeline rewrite on generation success. Rebuild cut is an explicit user action.

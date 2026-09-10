@@ -26,6 +26,9 @@ export type HttpAssetGeneratorConfig = {
  * Replaceable HTTP asset generator. Provider-neutral: any host that accepts
  * a YouFlicks-owned generate JSON body and returns bytes or a document.
  * Configured only when URL, key, and model are set.
+ * Default advertised capability is VIDEO_GENERATION (honest R1). Add IMAGE
+ * via ASSET_HTTP_CAPABILITIES. Do not list VOICE/MUSIC/SFX unless a real
+ * adapter covers them.
  * Attribution is adapter metadata — not part of AssetGeneratorPort.generate.
  */
 export class HttpAssetGeneratorAdapter implements AssetGeneratorPort {
@@ -34,6 +37,7 @@ export class HttpAssetGeneratorAdapter implements AssetGeneratorPort {
   constructor(
     private readonly storage: StoragePort,
     private readonly config: HttpAssetGeneratorConfig,
+    private readonly fetchImpl: typeof fetch = fetch,
   ) {}
 
   get providerKey() {
@@ -48,14 +52,7 @@ export class HttpAssetGeneratorAdapter implements AssetGeneratorPort {
     if (this.config.capabilities && this.config.capabilities.length > 0) {
       return this.config.capabilities;
     }
-    return [
-      AssetCapability.IMAGE_GENERATION,
-      AssetCapability.VOICE_SYNTHESIS,
-      AssetCapability.MUSIC_GENERATION,
-      AssetCapability.SFX_GENERATION,
-      AssetCapability.VIDEO_GENERATION,
-      AssetCapability.MEDIA_ENHANCEMENT,
-    ];
+    return [AssetCapability.VIDEO_GENERATION];
   }
 
   supports(capability: AssetCapabilityValue) {
@@ -87,7 +84,7 @@ export class HttpAssetGeneratorAdapter implements AssetGeneratorPort {
     const timeout = setTimeout(() => controller.abort(), this.config.timeoutMs ?? 90_000);
 
     try {
-      const response = await fetch(`${baseUrl}/v1/generate`, {
+      const response = await this.fetchImpl(`${baseUrl}/v1/generate`, {
         method: "POST",
         headers: {
           "content-type": "application/json",
@@ -119,7 +116,17 @@ export class HttpAssetGeneratorAdapter implements AssetGeneratorPort {
         width?: number;
         height?: number;
         document?: unknown;
+        jobId?: string;
       };
+
+      if (typeof payload.jobId === "string" && payload.jobId.length > 0) {
+        logger.info("asset.http_gateway_job", {
+          providerKey: this.providerKey,
+          gatewayJobId: payload.jobId,
+          kind: input.kind,
+          role: input.role,
+        });
+      }
 
       if (payload.document) {
         const parsed = generatedAssetDocumentSchema.safeParse(payload.document);

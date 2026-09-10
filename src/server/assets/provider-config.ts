@@ -60,6 +60,9 @@ export function parseAssetHttpCapabilities(
  * Resolve the asset generator adapter for this process.
  * Local deterministic is never treated as production availability
  * and cannot be enabled when NODE_ENV is production.
+ * HTTP production path talks to a YouFlicks-shaped /v1/generate gateway
+ * (ASSET_HTTP_*). The gateway may map to fal or another backend — the
+ * domain never imports a vendor SDK.
  */
 export function resolveAssetGeneratorAdapter(
   storage: StoragePort,
