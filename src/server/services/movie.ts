@@ -18,6 +18,7 @@ import {
 } from "@/server/movie/schema";
 import type { JobQueuePort, JobRecord } from "@/server/ports/jobs";
 import type { StoragePort } from "@/server/ports/storage";
+import { EntitlementService } from "@/server/services/entitlement";
 import { ProjectService } from "@/server/services/projects";
 
 export type LibraryKeepQueuePayload = {
@@ -40,6 +41,7 @@ export class MovieService {
     private readonly storage: StoragePort,
     private readonly projects: ProjectService,
     private readonly storageWritable: () => boolean = () => true,
+    private readonly entitlements: EntitlementService = new EntitlementService(),
   ) {}
 
   async getAvailability(userId: string, projectId: string): Promise<MovieAvailability> {
@@ -68,6 +70,7 @@ export class MovieService {
     const render = body.renderJobId
       ? await this.requireSucceededRender(projectId, body.renderJobId)
       : await this.requireLatestSucceeded(projectId);
+    await this.entitlements.assertOutputDuration(userId, render.durationMs, projectId);
 
     const title = this.resolveTitle(body.title, project.title);
     const asyncKeep = body.async === true || (body.async !== false && this.storage.driver !== "local");
@@ -261,6 +264,13 @@ export class MovieService {
     }
 
     const render = await this.requireSucceededRender(projectId, renderJobId);
+    const owner = await prisma.project.findUnique({
+      where: { id: projectId },
+      select: { ownerId: true },
+    });
+    if (owner) {
+      await this.entitlements.assertOutputDuration(owner.ownerId, render.durationMs, projectId);
+    }
     const sourceKey = assertRenderOutputKey(render.outputKey ?? "");
     const source = await this.storage.get(sourceKey);
     if (!source) {

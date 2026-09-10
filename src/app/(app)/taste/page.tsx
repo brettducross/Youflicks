@@ -9,9 +9,10 @@ export const metadata = {
 export default async function TastePage() {
   const user = await requireUser();
   const services = getServices();
-  const [profile, sponsorship] = await Promise.all([
+  const [profile, sponsorship, adsHonesty] = await Promise.all([
     services.taste.getForUser(user.id, user.id),
     services.taste.getSponsorshipPreferences(user.id, user.id),
+    services.advertising.adsHonesty(user.id),
   ]);
 
   return (
@@ -24,7 +25,11 @@ export default async function TastePage() {
         it when that film needs a different mood.
       </p>
       <div className="mt-8">
-        <TasteForm initialProfile={profile} initialSponsorship={sponsorship} />
+        <TasteForm
+          initialProfile={profile}
+          initialSponsorship={sponsorship}
+          adsHonesty={adsHonesty}
+        />
       </div>
     </main>
   );

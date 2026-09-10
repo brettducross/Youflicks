@@ -54,6 +54,7 @@ export default async function ProjectDetailPage({
   const renderAvailability = services.renderService.getAvailability();
   const movies = await services.movieService.list(user.id, id);
   const movieAvailability = await services.movieService.getAvailability(user.id, id);
+  const presentation = await services.presentation.forUser(user.id, id);
 
   return (
     <main className="mx-auto w-full max-w-6xl px-4 py-8 sm:px-6">
@@ -135,6 +136,8 @@ export default async function ProjectDetailPage({
         projectId={project.id}
         initialMovies={movies}
         initialCanKeep={movieAvailability.canKeep}
+        initialWatermarkRequired={presentation.watermarkRequired}
+        initialAds={presentation.ads.filter((surface) => surface.key === "LIBRARY_BANNER")}
       />
     </main>
   );

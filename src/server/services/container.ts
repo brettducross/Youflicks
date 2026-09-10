@@ -27,8 +27,11 @@ import { resolveRendererAdapter, describeRenderAvailability } from "@/server/ren
 import { resolveStoryComposerAdapter } from "@/server/story/provider-config";
 import { resolveTimelineComposerAdapter } from "@/server/timeline/provider-config";
 import { AccountLifecycleService } from "@/server/services/account-lifecycle";
+import { AdvertisingService } from "@/server/services/advertising";
 import { EntitlementService } from "@/server/services/entitlement";
+import { PresentationPolicyService } from "@/server/services/presentation-policy";
 import { UsageMeterService } from "@/server/services/usage-meter";
+import { WatermarkPolicyService } from "@/server/services/watermark-policy";
 import { AssetContractService } from "@/server/services/asset-contract";
 import { AssetService } from "@/server/services/asset";
 import { AssetWorker } from "@/server/services/asset-worker";
@@ -71,6 +74,9 @@ export type ServiceContainer = {
   accountLifecycle: AccountLifecycleService;
   entitlements: EntitlementService;
   usageMeter: UsageMeterService;
+  watermarkPolicy: WatermarkPolicyService;
+  advertising: AdvertisingService;
+  presentation: PresentationPolicyService;
   projects: ProjectService;
   media: MediaService;
   analysis: AnalysisService;
@@ -157,6 +163,9 @@ function createServices(): ServiceContainer {
   });
   const entitlements = new EntitlementService(accountLifecycle);
   const usageMeter = new UsageMeterService();
+  const watermarkPolicy = new WatermarkPolicyService();
+  const advertising = new AdvertisingService(entitlements, taste);
+  const presentation = new PresentationPolicyService(entitlements, watermarkPolicy, advertising);
   const directorService = new DirectorService(
     jobs,
     director,
@@ -255,6 +264,8 @@ function createServices(): ServiceContainer {
     },
     () => describeRenderAvailability(resolveRendererAdapter(storage)),
     usageMeter,
+    entitlements,
+    watermarkPolicy,
   );
   const renderWorker = new RenderWorker(jobs, renderService);
   const playbackSessions = new PlaybackSessionStore(env.BETTER_AUTH_SECRET);
@@ -273,6 +284,7 @@ function createServices(): ServiceContainer {
       publicOrigin: env.BETTER_AUTH_URL,
       shareTokenConfigured: () => shareTokens.configured,
     },
+    entitlements,
   );
   const publicationWorker = new PublicationWorker(jobs, publicationService);
   const playbackService = new PlaybackService(
@@ -284,7 +296,7 @@ function createServices(): ServiceContainer {
     () => vlcPlayback.available(),
     publicationService,
   );
-  const movieService = new MovieService(jobs, storage, projects, () => true);
+  const movieService = new MovieService(jobs, storage, projects, () => true, entitlements);
   const movieWorker = new MovieWorker(jobs, movieService);
 
   return {
@@ -293,6 +305,9 @@ function createServices(): ServiceContainer {
     accountLifecycle,
     entitlements,
     usageMeter,
+    watermarkPolicy,
+    advertising,
+    presentation,
     projects,
     media,
     analysis,

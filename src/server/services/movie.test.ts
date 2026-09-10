@@ -406,6 +406,25 @@ describe("MovieService M6", () => {
     expect(denied.storageWritable).toBe(false);
   });
 
+  it("denies keep when produced duration exceeds the free max", async () => {
+    const longId = await seedRender({
+      status: RenderJobStatus.SUCCEEDED,
+      outputKey: `projects/${projectId}/renders/long/output.mp4`,
+    });
+    await prisma.renderJob.update({
+      where: { id: longId },
+      data: { durationMs: 301_000 },
+    });
+    await storage.put({
+      key: `projects/${projectId}/renders/long/output.mp4`,
+      body: OUTPUT_BYTES,
+      contentType: "video/mp4",
+    });
+    await expect(service.keep(ownerId, projectId, { renderJobId: longId })).rejects.toMatchObject({
+      code: "DURATION_EXCEEDS_PLAN",
+    });
+  });
+
   it("does not treat PROCESSING as a listed kept film and writes zero Publication rows", async () => {
     const listed = await service.list(ownerId, projectId, { includeArchived: true });
     expect(listed.every((movie) => movie.status !== "PROCESSING")).toBe(true);

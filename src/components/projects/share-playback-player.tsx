@@ -3,6 +3,8 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Loader2, Pause, Play } from "lucide-react";
 import { toast } from "sonner";
+import { PostFilmAd, type AdSurfaceView } from "@/components/commercial/ad-surface";
+import { WatermarkChrome } from "@/components/commercial/watermark-chrome";
 import { Button } from "@/components/ui/button";
 
 type PlaybackSession = {
@@ -37,6 +39,9 @@ export function SharePlaybackPlayer({
   const [currentMs, setCurrentMs] = useState(0);
   const [durationMs, setDurationMs] = useState(fallbackDurationMs ?? 0);
   const [error, setError] = useState<string | null>(null);
+  const [watermarkRequired, setWatermarkRequired] = useState(false);
+  const [postFilmAd, setPostFilmAd] = useState<AdSurfaceView | null>(null);
+  const [ended, setEnded] = useState(false);
 
   const closeSession = useCallback(async (sessionId: string) => {
     await fetch("/api/share/close", {
@@ -57,6 +62,10 @@ export function SharePlaybackPlayer({
       });
       const payload = (await response.json()) as {
         session?: PlaybackSession;
+        presentation?: {
+          watermarkRequired?: boolean;
+          ads?: AdSurfaceView[];
+        };
         error?: { message?: string };
       };
       if (!response.ok || !payload.session?.streamPath) {
@@ -64,6 +73,9 @@ export function SharePlaybackPlayer({
       }
       setSession(payload.session);
       setDurationMs(payload.session.durationMs || fallbackDurationMs || 0);
+      setWatermarkRequired(Boolean(payload.presentation?.watermarkRequired));
+      setPostFilmAd(payload.presentation?.ads?.[0] ?? null);
+      setEnded(false);
       return payload.session;
     } catch (openError) {
       const message = openError instanceof Error ? openError.message : "Could not start watching.";
@@ -134,6 +146,7 @@ export function SharePlaybackPlayer({
                 setDurationMs(next * 1000);
               }
             }}
+            onEnded={() => setEnded(true)}
             onError={() => setError("This film couldn’t be played.")}
           />
         ) : (
@@ -141,6 +154,7 @@ export function SharePlaybackPlayer({
             {busy ? <Loader2 className="size-5 animate-spin" /> : "Press Play to watch."}
           </div>
         )}
+        <WatermarkChrome required={watermarkRequired} />
       </div>
       <div className="flex items-center gap-3">
         <Button type="button" size="sm" disabled={busy} onClick={() => void togglePlay()}>
@@ -162,6 +176,7 @@ export function SharePlaybackPlayer({
         </p>
       </div>
       {error ? <p className="text-xs text-destructive">{error}</p> : null}
+      {ended ? <PostFilmAd surface={postFilmAd} /> : null}
       <p className="text-xs text-muted-foreground">
         Watch only. This link can expire or be revoked. You cannot keep, export, or edit this film.
       </p>

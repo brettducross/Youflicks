@@ -23,11 +23,17 @@ export async function POST(request: Request) {
     const services = getServices();
     const grant = await services.publicationService.verifyShareToken(token);
     const session = await services.playbackService.openWithShareToken(token, body.startMs);
+    const presentation = await services.presentation.forProjectOwner(grant.projectId);
     return NextResponse.json({
       session,
       title: grant.title,
       expiresAt: grant.expiresAt,
       watchOnly: true,
+      presentation: {
+        watermarkRequired: presentation.watermarkRequired,
+        watermark: presentation.watermark,
+        ads: presentation.ads.filter((surface) => surface.key === "POST_FILM"),
+      },
     });
   } catch (error) {
     if (!isAppError(error)) {

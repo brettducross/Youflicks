@@ -112,7 +112,14 @@ export class DirectorService {
   async requestCompose(userId: string, projectId: string) {
     await this.projects.getForUser(userId, projectId);
     this.requireComposeCapability();
-    await this.entitlements.requireGeneration(userId, { projectId });
+    const authorized = await this.entitlements.requireGeneration(userId, { projectId });
+    logger.info("director.generation_constraints_received", {
+      userId,
+      projectId,
+      maxOutputDurationMs: authorized.constraints.maxOutputDurationMs,
+      watermarkRequired: authorized.constraints.watermarkRequired,
+      adsEnabled: authorized.constraints.adsEnabled,
+    });
 
     const job = await this.jobs.enqueue({
       type: JobType.AI_DIRECT,

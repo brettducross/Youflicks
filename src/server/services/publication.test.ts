@@ -410,6 +410,23 @@ describe("PublicationService M7", () => {
     ).rejects.toMatchObject({ code: "PLAYBACK_INPUT_INVALID" });
   });
 
+  it("denies export when produced duration exceeds the free max", async () => {
+    await prisma.finishedMovie.update({
+      where: { id: readyMovieId },
+      data: { durationMs: 301_000 },
+    });
+    try {
+      await expect(service.exportDownload(ownerId, projectId, readyMovieId)).rejects.toMatchObject({
+        code: "DURATION_EXCEEDS_PLAN",
+      });
+    } finally {
+      await prisma.finishedMovie.update({
+        where: { id: readyMovieId },
+        data: { durationMs: 4000 },
+      });
+    }
+  });
+
   it("hardens Publication status and leaves PHASE locks untouched", async () => {
     const schema = readFileSync(path.join(process.cwd(), "prisma/schema.prisma"), "utf8");
     expect(schema).toMatch(/PENDING \| PUBLISHED \| FAILED \| REVOKED/);

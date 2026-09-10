@@ -6,15 +6,20 @@ import { getServices } from "@/server/services/container";
 
 export const runtime = "nodejs";
 
-/** Session honesty: emailVerified + canGenerate. No planKind or billing. */
+/** Session honesty: emailVerified + canGenerate + free-tier presentation flags. No prices. */
 export async function GET() {
   try {
     const user = await requireApiUser();
-    const gate = await getServices().entitlements.getPlatformGate(user.id);
+    const services = getServices();
+    const [gate, entitlementSummary] = await Promise.all([
+      services.entitlements.getPlatformGate(user.id),
+      services.entitlements.getEntitlementSummary(user.id),
+    ]);
     return NextResponse.json({
       emailVerified: gate.emailVerified,
       canGenerate: gate.canGenerate,
       denyCode: gate.denyCode,
+      entitlementSummary,
     });
   } catch (error) {
     if (!isAppError(error)) {

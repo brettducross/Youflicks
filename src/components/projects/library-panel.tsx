@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useState } from "react";
 import { Archive, Loader2, RefreshCw } from "lucide-react";
+import { AdSurface, type AdSurfaceView } from "@/components/commercial/ad-surface";
 import { PlaybackPlayer } from "@/components/projects/playback-player";
 import { ShareExportPanel } from "@/components/projects/share-export-panel";
 import { toast } from "sonner";
@@ -27,6 +28,9 @@ type MovieView = {
 type LibraryPayload = {
   movies?: MovieView[];
   canKeep?: boolean;
+  watermarkRequired?: boolean;
+  adsEnabled?: boolean;
+  ads?: AdSurfaceView[];
   error?: { message?: string };
 };
 
@@ -66,13 +70,19 @@ export function LibraryPanel({
   projectId,
   initialMovies,
   initialCanKeep,
+  initialWatermarkRequired = false,
+  initialAds = [],
 }: {
   projectId: string;
   initialMovies: MovieView[];
   initialCanKeep: boolean;
+  initialWatermarkRequired?: boolean;
+  initialAds?: AdSurfaceView[];
 }) {
   const [movies, setMovies] = useState(initialMovies);
   const [canKeep, setCanKeep] = useState(initialCanKeep);
+  const [watermarkRequired, setWatermarkRequired] = useState(initialWatermarkRequired);
+  const [ads, setAds] = useState(initialAds);
   const [busy, setBusy] = useState(false);
   const [watchingId, setWatchingId] = useState<string | null>(null);
   const [includeArchived, setIncludeArchived] = useState(false);
@@ -87,6 +97,8 @@ export function LibraryPanel({
     }
     setMovies(payload.movies ?? []);
     setCanKeep(Boolean(payload.canKeep));
+    setWatermarkRequired(Boolean(payload.watermarkRequired));
+    setAds(payload.ads ?? []);
   }, [includeArchived, projectId]);
 
   useEffect(() => {
@@ -191,7 +203,9 @@ export function LibraryPanel({
       <CardContent className="space-y-6">
         <p className="text-sm text-muted-foreground">
           Keep this film copies a finished render into your library. It does not publish or export.
+          {watermarkRequired ? " Free-plan films show a YouFlicks watermark on the player." : ""}
         </p>
+        {ads[0] ? <AdSurface surface={ads[0]} compact /> : null}
         <div className="flex flex-wrap gap-2">
           <Button
             type="button"
@@ -224,6 +238,8 @@ export function LibraryPanel({
                 }
                 setMovies(payload.movies ?? []);
                 setCanKeep(Boolean(payload.canKeep));
+                setWatermarkRequired(Boolean(payload.watermarkRequired));
+                setAds(payload.ads ?? []);
               })();
             }}
           >

@@ -26,10 +26,14 @@ export function UserMenu({
   name,
   email,
   emailVerified = true,
+  adsEnabled = false,
+  watermarkRequired = false,
 }: {
   name: string;
   email: string;
   emailVerified?: boolean;
+  adsEnabled?: boolean;
+  watermarkRequired?: boolean;
 }) {
   const router = useRouter();
 
@@ -58,6 +62,13 @@ export function UserMenu({
             <span className="font-normal">{email}</span>
             {!emailVerified ? (
               <span className="mt-1 font-normal text-destructive">Email not verified</span>
+            ) : null}
+            {emailVerified && (adsEnabled || watermarkRequired) ? (
+              <span className="mt-1 font-normal text-muted-foreground">
+                {[watermarkRequired ? "Watermarked" : null, adsEnabled ? "Ads on" : null]
+                  .filter(Boolean)
+                  .join(" · ")}
+              </span>
             ) : null}
           </div>
         </DropdownMenuLabel>

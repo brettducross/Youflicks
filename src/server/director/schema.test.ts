@@ -43,6 +43,29 @@ describe("CreativePlan schema", () => {
     ).toThrow(/commercial entitlement/i);
   });
 
+  it("rejects adsEnabled and watermarkRequired on CreativePlan validation", () => {
+    expect(() =>
+      validateCreativePlan({
+        schemaVersion: CREATIVE_PLAN_SCHEMA_VERSION,
+        concept: "Harbor afternoon",
+        adsEnabled: true,
+      }),
+    ).toThrow(/commercial entitlement/i);
+    expect(() =>
+      validateCreativePlan({
+        schemaVersion: CREATIVE_PLAN_SCHEMA_VERSION,
+        concept: "Harbor afternoon",
+        watermarkRequired: true,
+      }),
+    ).toThrow(/commercial entitlement/i);
+    expect(() =>
+      validateCreativePlan({
+        schemaVersion: CREATIVE_PLAN_SCHEMA_VERSION,
+        decisions: [{ kind: "tone", summary: "warm", advertising: { surface: "IN_MOVIE" } }],
+      }),
+    ).toThrow(/commercial entitlement/i);
+  });
+
   it("rejects engine cost and usage fields on CreativePlan validation", () => {
     expect(() =>
       validateCreativePlan({

@@ -9,8 +9,12 @@ export const runtime = "nodejs";
 export async function GET() {
   try {
     const user = await requireApiUser();
-    const preferences = await getServices().taste.getSponsorshipPreferences(user.id, user.id);
-    return NextResponse.json({ preferences });
+    const services = getServices();
+    const [preferences, adsHonesty] = await Promise.all([
+      services.taste.getSponsorshipPreferences(user.id, user.id),
+      services.advertising.adsHonesty(user.id),
+    ]);
+    return NextResponse.json({ preferences, adsHonesty });
   } catch (error) {
     if (!isAppError(error)) {
       logger.error("sponsorship.prefs_read_failed", {
@@ -26,13 +30,15 @@ export async function PATCH(request: Request) {
   try {
     const user = await requireApiUser();
     const payload = (await request.json()) as Record<string, boolean>;
-    const preferences = await getServices().taste.updateSponsorshipPreferences(user.id, user.id, {
+    const services = getServices();
+    const preferences = await services.taste.updateSponsorshipPreferences(user.id, user.id, {
       allowSponsorCredits: payload.allowSponsorCredits,
       allowSponsoredEndCard: payload.allowSponsoredEndCard,
       allowVideoAds: payload.allowVideoAds,
       allowPersonalizedSponsoring: payload.allowPersonalizedSponsoring,
     });
-    return NextResponse.json({ preferences });
+    const adsHonesty = await services.advertising.adsHonesty(user.id);
+    return NextResponse.json({ preferences, adsHonesty });
   } catch (error) {
     if (!isAppError(error)) {
       logger.error("sponsorship.prefs_update_failed", {

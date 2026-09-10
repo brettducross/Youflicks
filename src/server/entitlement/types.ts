@@ -48,6 +48,14 @@ export type EntitlementSnapshot = {
 export type GenerationConstraints = {
   maxOutputDurationMs: number;
   watermarkRequired: boolean;
+  adsEnabled: boolean;
+};
+
+/** Platform receipt from ALLOW. Not a CreativePlan / Story / Timeline field. */
+export type GenerationConstraintReceipt = GenerationConstraints & {
+  userId: string;
+  projectId: string | null;
+  recordedAt: string;
 };
 
 export type RemainingQuota = {
@@ -83,6 +91,14 @@ export type PlatformGate = {
   emailVerified: boolean;
   canGenerate: boolean;
   denyCode: EntitlementDenyCodeValue | null;
+};
+
+/** Account / chrome honesty. Not a CreativePlan and not a billing catalog. */
+export type EntitlementSummary = {
+  watermarkRequired: boolean;
+  adsEnabled: boolean;
+  maxOutputDurationMs: number;
+  remainingMovieGenerations: number;
 };
 
 export type SubscriptionGrant = {
