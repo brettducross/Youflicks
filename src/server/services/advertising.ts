@@ -2,6 +2,7 @@ import "server-only";
 
 import { logger } from "@/lib/logger";
 import { FirstPartySponsorAdapter } from "@/server/adapters/advertising/first-party-sponsor";
+import { allowlistedHttpsLinkUrl } from "@/server/advertising/link-url";
 import {
   ALLOWED_AD_SURFACES,
   CommercialPlacement,
@@ -92,7 +93,10 @@ export class AdvertisingService implements AdvertisingPort {
     await this.record(userId, surfaceKey, "impression");
   }
 
-  async recordClick(userId: string, surfaceKey: string) {
+  async recordClick(userId: string, surfaceKey: string, destinationUrl?: string | null) {
+    if (destinationUrl != null && !allowlistedHttpsLinkUrl(destinationUrl)) {
+      return;
+    }
     await this.record(userId, surfaceKey, "click");
   }
 

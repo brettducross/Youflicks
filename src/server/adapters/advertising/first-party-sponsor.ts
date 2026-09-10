@@ -1,3 +1,4 @@
+import { allowlistedHttpsLinkUrl } from "@/server/advertising/link-url";
 import {
   ALLOWED_AD_SURFACES,
   CommercialPlacement,
@@ -78,7 +79,7 @@ export class FirstPartySponsorAdapter {
       kind: "FIRST_PARTY",
       copy: SURFACE_COPY[surface] ?? SURFACE_COPY[CommercialSurface.UI_SHELL],
       displayName: offer.displayName,
-      linkUrl: offer.linkUrl,
+      linkUrl: allowlistedHttpsLinkUrl(offer.linkUrl),
       providerKey: FIRST_PARTY_AD_PROVIDER_KEY,
       campaignId: offer.campaignId,
       offerId: offer.id,
@@ -111,7 +112,7 @@ export class FirstPartySponsorAdapter {
       kind: "FIRST_PARTY",
       copy: SURFACE_COPY[CommercialSurface.FILM_CREDITS],
       displayName: placement.offer.displayName,
-      linkUrl: placement.offer.linkUrl,
+      linkUrl: allowlistedHttpsLinkUrl(placement.offer.linkUrl),
       providerKey: FIRST_PARTY_AD_PROVIDER_KEY,
       campaignId: placement.offer.campaignId,
       offerId: placement.offer.id,

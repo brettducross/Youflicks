@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect } from "react";
+import { allowlistedHttpsLinkUrl } from "@/server/advertising/link-url";
 
 export type AdSurfaceView = {
   key: string;
@@ -11,11 +12,15 @@ export type AdSurfaceView = {
   linkUrl?: string | null;
 };
 
-function record(surface: string, kind: "impression" | "click") {
+function record(surface: string, kind: "impression" | "click", destinationUrl?: string) {
   void fetch("/api/me/advertising", {
     method: "POST",
     headers: { "content-type": "application/json" },
-    body: JSON.stringify({ surface, kind }),
+    body: JSON.stringify({
+      surface,
+      kind,
+      ...(destinationUrl ? { destinationUrl } : {}),
+    }),
   }).catch(() => undefined);
 }
 
@@ -26,6 +31,12 @@ export function AdSurface({
   surface: AdSurfaceView;
   compact?: boolean;
 }) {
+  const href = allowlistedHttpsLinkUrl(surface.linkUrl);
+  const title =
+    surface.kind === "FIRST_PARTY" && surface.displayName
+      ? surface.displayName
+      : "Ad-supported free plan";
+
   useEffect(() => {
     record(surface.key, "impression");
   }, [surface.key]);
@@ -40,9 +51,20 @@ export function AdSurface({
       }
     >
       <p className="font-medium text-foreground">
-        {surface.kind === "FIRST_PARTY" && surface.displayName
-          ? surface.displayName
-          : "Ad-supported free plan"}
+        {href ? (
+          <a
+            href={href}
+            target="_blank"
+            rel="noopener noreferrer"
+            data-testid={`ad-surface-link-${surface.key}`}
+            className="underline-offset-2 hover:underline"
+            onClick={() => record(surface.key, "click", href)}
+          >
+            {title}
+          </a>
+        ) : (
+          title
+        )}
       </p>
       <p className="mt-0.5">{surface.copy}</p>
     </aside>

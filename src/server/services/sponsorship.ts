@@ -2,6 +2,7 @@ import "server-only";
 
 import { AppError } from "@/lib/errors";
 import { logger } from "@/lib/logger";
+import { persistableSponsorLinkUrl } from "@/server/advertising/link-url";
 import { PlacementStatus, SponsorPlacementKind } from "@/server/domain/personalization";
 import { prisma } from "@/server/db";
 
@@ -60,7 +61,7 @@ export class SponsorshipService {
         campaignId,
         placementKind: input.placementKind,
         displayName: input.displayName.trim(),
-        linkUrl: input.linkUrl ?? null,
+        linkUrl: persistableSponsorLinkUrl(input.linkUrl),
       },
     });
   }

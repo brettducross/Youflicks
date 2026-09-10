@@ -17,7 +17,11 @@ export type AdvertisingPort = {
     context?: AdvertisingContext,
   ): Promise<AdvertisingSurfaceView[]>;
   recordImpression(userId: string, surfaceKey: string): Promise<void>;
-  recordClick(userId: string, surfaceKey: string): Promise<void>;
+  recordClick(
+    userId: string,
+    surfaceKey: string,
+    destinationUrl?: string | null,
+  ): Promise<void>;
   adsHonesty(userId: string): Promise<AdsHonesty>;
   listEvents(query?: AdvertisingOpsQuery): Promise<AdvertisingEvent[]>;
 };

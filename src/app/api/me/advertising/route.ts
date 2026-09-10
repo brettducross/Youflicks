@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { isAppError, toErrorResponse } from "@/lib/errors";
 import { logger } from "@/lib/logger";
 import { requireApiUser } from "@/server/auth/api";
+import { allowlistedHttpsLinkUrl } from "@/server/advertising/link-url";
 import { IN_MOVIE_SURFACE } from "@/server/advertising/types";
 import { getServices } from "@/server/services/container";
 
@@ -46,6 +47,7 @@ export async function POST(request: Request) {
     const payload = (await request.json().catch(() => ({}))) as {
       surface?: string;
       kind?: "impression" | "click";
+      destinationUrl?: string | null;
     };
     const surface = payload.surface;
     if (!surface || surface === IN_MOVIE_SURFACE) {
@@ -53,7 +55,13 @@ export async function POST(request: Request) {
     }
     const advertising = getServices().advertising;
     if (payload.kind === "click") {
-      await advertising.recordClick(user.id, surface);
+      if (
+        payload.destinationUrl != null &&
+        !allowlistedHttpsLinkUrl(payload.destinationUrl)
+      ) {
+        return NextResponse.json({ recorded: false });
+      }
+      await advertising.recordClick(user.id, surface, payload.destinationUrl);
     } else {
       await advertising.recordImpression(user.id, surface);
     }
