@@ -94,8 +94,16 @@ describe("AccountLifecycleService M8.1 email gate", () => {
         where: { userId: { in: [verifiedId, unverifiedId] } },
       }),
     ).toBe(0);
-    expect(prisma).not.toHaveProperty("subscription");
-    expect(prisma).not.toHaveProperty("creditLedger");
+    expect(
+      await prisma.subscription.count({
+        where: { userId: { in: [verifiedId, unverifiedId] } },
+      }),
+    ).toBe(0);
+    expect(
+      await prisma.creditLedger.count({
+        where: { userId: { in: [verifiedId, unverifiedId] } },
+      }),
+    ).toBe(0);
     expect(prisma).not.toHaveProperty("invoice");
   });
 

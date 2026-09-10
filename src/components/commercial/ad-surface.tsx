@@ -5,8 +5,10 @@ import { useEffect } from "react";
 export type AdSurfaceView = {
   key: string;
   placement: string;
-  kind: "STUB";
+  kind: "STUB" | "FIRST_PARTY";
   copy: string;
+  displayName?: string;
+  linkUrl?: string | null;
 };
 
 function record(surface: string, kind: "impression" | "click") {
@@ -37,7 +39,11 @@ export function AdSurface({
           : "border-b border-border/70 bg-muted/25 px-4 py-2.5 text-xs text-muted-foreground sm:px-6"
       }
     >
-      <p className="font-medium text-foreground">Ad-supported free plan</p>
+      <p className="font-medium text-foreground">
+        {surface.kind === "FIRST_PARTY" && surface.displayName
+          ? surface.displayName
+          : "Ad-supported free plan"}
+      </p>
       <p className="mt-0.5">{surface.copy}</p>
     </aside>
   );

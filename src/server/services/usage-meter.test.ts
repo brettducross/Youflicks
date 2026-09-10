@@ -128,8 +128,8 @@ describe("UsageMeterService M8.3 ops metering", () => {
     expect(await prisma.creativePlan.count({ where: { projectId } })).toBe(plansBefore);
     expect(await prisma.storyStructure.count({ where: { projectId } })).toBe(storiesBefore);
     expect(await prisma.timeline.count({ where: { projectId } })).toBe(timelinesBefore);
-    expect(prisma).not.toHaveProperty("subscription");
-    expect(prisma).not.toHaveProperty("creditLedger");
+    expect(await prisma.subscription.count({ where: { userId } })).toBe(0);
+    expect(await prisma.creditLedger.count({ where: { userId } })).toBe(0);
     expect(prisma).not.toHaveProperty("invoice");
     expect(prisma).not.toHaveProperty("billing");
     expect("AI_BILL" in JobType).toBe(false);

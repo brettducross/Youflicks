@@ -43,6 +43,29 @@ describe("CreativePlan schema", () => {
     ).toThrow(/commercial entitlement/i);
   });
 
+  it("rejects planKey and credits on CreativePlan validation", () => {
+    expect(() =>
+      validateCreativePlan({
+        schemaVersion: CREATIVE_PLAN_SCHEMA_VERSION,
+        concept: "Harbor afternoon",
+        planKey: "PLUS",
+      }),
+    ).toThrow(/commercial entitlement/i);
+    expect(() =>
+      validateCreativePlan({
+        schemaVersion: CREATIVE_PLAN_SCHEMA_VERSION,
+        concept: "Harbor afternoon",
+        credits: 12,
+      }),
+    ).toThrow(/commercial entitlement/i);
+    expect(() =>
+      validateCreativePlan({
+        schemaVersion: CREATIVE_PLAN_SCHEMA_VERSION,
+        decisions: [{ kind: "tone", summary: "warm", remainingCredits: 3 }],
+      }),
+    ).toThrow(/commercial entitlement/i);
+  });
+
   it("rejects adsEnabled and watermarkRequired on CreativePlan validation", () => {
     expect(() =>
       validateCreativePlan({

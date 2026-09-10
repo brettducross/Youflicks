@@ -291,8 +291,16 @@ describe("EntitlementService M8.2 free-tier gate", () => {
         where: { userId: { in: [verifiedId, unverifiedId] } },
       }),
     ).toBe(0);
-    expect(prisma).not.toHaveProperty("subscription");
-    expect(prisma).not.toHaveProperty("creditLedger");
+    expect(
+      await prisma.subscription.count({
+        where: { userId: { in: [verifiedId, unverifiedId] } },
+      }),
+    ).toBe(0);
+    expect(
+      await prisma.creditLedger.count({
+        where: { userId: { in: [verifiedId, unverifiedId] } },
+      }),
+    ).toBe(0);
     expect(prisma).not.toHaveProperty("invoice");
     expect(prisma).not.toHaveProperty("billing");
     expect("AI_ENTITLEMENT" in JobType).toBe(false);

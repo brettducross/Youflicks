@@ -8,6 +8,17 @@ import type { DirectorInput } from "@/server/director/input";
 
 const COMMERCIAL_PLAN_KEYS = new Set([
   "planKind",
+  "planKey",
+  "credits",
+  "remainingCredits",
+  "creditLedger",
+  "creditBalance",
+  "subscription",
+  "prepaid",
+  "billingPort",
+  "offerKey",
+  "packKey",
+  "paymentEvent",
   "engineCost",
   "costUnits",
   "usageEvent",
