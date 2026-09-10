@@ -78,9 +78,60 @@ describe("assertGatewaySecrets", () => {
 });
 
 describe("Prisma vendor neutrality", () => {
-  it("does not add vendor enums for fal, Kling, Runway, OpenAI, or ElevenLabs", () => {
+  it("does not add vendor enums for fal, Kling, Runway, OpenAI, ElevenLabs, Replicate, or Wan", () => {
     const schema = readFileSync(path.join(process.cwd(), "prisma/schema.prisma"), "utf8");
-    expect(schema).not.toMatch(/\benum\s+\w*(Fal|Kling|Runway|OpenAI|ElevenLabs|Eleven)\b/i);
-    expect(schema).not.toMatch(/providerKey\s+String\s+@default\("(fal|kling|runway|openai|eleven)/i);
+    expect(schema).not.toMatch(
+      /\benum\s+\w*(Fal|Kling|Runway|OpenAI|ElevenLabs|Eleven|Replicate|Wan)\b/i,
+    );
+    expect(schema).not.toMatch(
+      /providerKey\s+String\s+@default\("(fal|kling|runway|openai|eleven|replicate|wan)/i,
+    );
+    expect(schema).toMatch(/providerKey\s+String/);
+  });
+});
+
+describe("replicate transport config", () => {
+  it("treats replicate as an alternate backend with open providerKey + model strings", () => {
+    const config = parseYfAssetGatewayConfig({
+      YF_GATEWAY_API_KEY: "gw-key",
+      REPLICATE_API_TOKEN: "r8_token",
+      YF_GATEWAY_BACKEND: "replicate",
+    });
+    expect(config.backend).toBe("replicate");
+    expect(config.backendBaseUrl).toBe("https://api.replicate.com");
+    expect(config.backendAuthScheme).toBe("Bearer");
+    expect(config.backendApiKey).toBe("r8_token");
+    expect(config.model).toBe("wan-video/wan-2.7-i2v");
+    expect(config.providerKey).toBe("replicate:wan-video/wan-2.7-i2v");
+  });
+
+  it("lets env swap the replicate model without code change", () => {
+    const config = parseYfAssetGatewayConfig({
+      YF_GATEWAY_API_KEY: "gw-key",
+      REPLICATE_API_TOKEN: "r8_token",
+      YF_GATEWAY_BACKEND: "replicate",
+      YF_GATEWAY_MODEL: "other/open-string-i2v",
+      YF_GATEWAY_PROVIDER_KEY: "research.video",
+    });
+    expect(config.model).toBe("other/open-string-i2v");
+    expect(config.providerKey).toBe("research.video");
+  });
+
+  it("fails closed when the replicate transport has no token", () => {
+    const config = parseYfAssetGatewayConfig({
+      YF_GATEWAY_API_KEY: "gw-key",
+      YF_GATEWAY_BACKEND: "replicate",
+    });
+    expect(gatewayReady(config)).toBe(false);
+    expect(() => assertGatewaySecrets(config)).toThrow(/REPLICATE_API_TOKEN/);
+  });
+
+  it("does not make replicate the default backend", () => {
+    const config = parseYfAssetGatewayConfig({
+      YF_GATEWAY_API_KEY: "gw-key",
+      YF_GATEWAY_BACKEND_API_KEY: "backend-key",
+    });
+    expect(config.backend).toBe("fal");
+    expect(config.providerKey).toBe("http.asset");
   });
 });

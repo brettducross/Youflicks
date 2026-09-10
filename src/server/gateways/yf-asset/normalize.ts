@@ -18,6 +18,8 @@ export function normalizeBackendAsset(payload: unknown): NormalizedAssetMeta | n
     stringUrl(nestedPayload.image_url) ??
     firstUrl(nestedPayload.images) ??
     firstUrl(nestedPayload.videos) ??
+    stringUrl(nestedPayload.output) ??
+    firstUrl(nestedPayload.output) ??
     pickNested(nestedPayload.output, "video") ??
     pickNested(nestedPayload.output, "image") ??
     stringUrl(nestedPayload.url);
@@ -52,11 +54,22 @@ export function extractBackendRequestId(payload: unknown): string | undefined {
 
 export function mapQueueStatus(raw: unknown): "queued" | "running" | "succeeded" | "failed" {
   const value = typeof raw === "string" ? raw.toUpperCase() : "";
-  if (value === "COMPLETED" || value === "OK" || value === "SUCCEEDED" || value === "SUCCESS") {
+  if (
+    value === "COMPLETED" ||
+    value === "OK" ||
+    value === "SUCCEEDED" ||
+    value === "SUCCESS" ||
+    value === "SUCCESSFUL"
+  ) {
     return "succeeded";
   }
-  if (value === "IN_PROGRESS" || value === "RUNNING" || value === "PROCESSING") {
-    return "running";
+  if (
+    value === "IN_PROGRESS" ||
+    value === "RUNNING" ||
+    value === "PROCESSING" ||
+    value === "STARTING"
+  ) {
+    return value === "STARTING" ? "queued" : "running";
   }
   if (
     value === "FAILED" ||

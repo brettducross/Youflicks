@@ -10,29 +10,30 @@ This is a scaffold. It is not an end-to-end movie without real keys and spend th
 App (ASSET_HTTP_*)
   → HttpAssetGeneratorAdapter  POST {baseUrl}/v1/generate
   → YouFlicks asset gateway (separate process)
-  → config-backed queue backend (fal preset *or* generic HTTP)
+  → config-backed queue backend (fal preset *or* Replicate/Wan I2V *or* generic HTTP)
   → download bytes
   → adapter writes opaque StoragePort key
   → AssetService persists GeneratedAsset + open providerKey
   → UsageMeter / EngineCostEvent (ops only; never plot)
 ```
 
-`providerKey` stays an **open string** (`ASSET_HTTP_PROVIDER_KEY` / `YF_GATEWAY_PROVIDER_KEY`, default `http.asset`). Prisma already stores it as `String` — no vendor enums.
+`providerKey` stays an **open string** (`ASSET_HTTP_PROVIDER_KEY` / `YF_GATEWAY_PROVIDER_KEY`, default `http.asset`). Prisma already stores it as `String` — no vendor enums. A Replicate I2V run may record `replicate:wan-video/wan-2.7-i2v`; that is provenance, not a Prisma enum and not a permanent domain default.
 
 Swap the **model** without code change:
 
-- App: `ASSET_HTTP_MODEL=fal-ai/ltx-video` (or any other open string)
+- App: `ASSET_HTTP_MODEL=fal-ai/ltx-video` or `ASSET_HTTP_MODEL=wan-video/wan-2.7-i2v` (any open string)
 - Or gateway: `YF_GATEWAY_MODEL=...` when the request omits `model`
 
 Swap the **backend host** without code change:
 
-- `YF_GATEWAY_BACKEND=fal` — default queue+webhook paths on `https://queue.fal.run`, `Authorization: Key`
-- `YF_GATEWAY_BACKEND=http` — same path templates, override host / auth / paths
+- `YF_GATEWAY_BACKEND=fal` — default queue+webhook paths on `https://queue.fal.run`, `Authorization: Key`. Still valid when fal is unlocked.
+- `YF_GATEWAY_BACKEND=replicate` — **alternate** transport. Authenticated `files.create` (Buffer) + official-model predictions. Pilot example: `wan-video/wan-2.7-i2v`. Token via `REPLICATE_API_TOKEN` on the **gateway process only**. Not a permanent architectural default.
+- `YF_GATEWAY_BACKEND=http` — same path templates as fal, override host / auth / paths
 - `YF_GATEWAY_BACKEND=mock` — tests only
 
 ## App env (`ASSET_HTTP_*`)
 
-Set these on the Next.js process. The app never needs a fal key.
+Set these on the Next.js process. The app never needs a fal or Replicate key.
 
 | Variable | Role |
 | --- | --- |
@@ -59,10 +60,11 @@ npm run gateway:asset
 | `YF_GATEWAY_API_KEY` | Required. Fail-closed without it |
 | `YF_GATEWAY_PROVIDER_KEY` | Open string recorded on gateway jobs |
 | `YF_GATEWAY_CAPABILITIES` | Default `VIDEO_GENERATION` |
-| `YF_GATEWAY_BACKEND` | `fal` (default example) \| `http` \| `mock` |
-| `YF_GATEWAY_BACKEND_BASE_URL` | Default `https://queue.fal.run` |
-| `YF_GATEWAY_BACKEND_API_KEY` | Required for `fal` / `http`. Fail-closed |
+| `YF_GATEWAY_BACKEND` | `fal` (default example) \| `replicate` (alternate) \| `http` \| `mock` |
+| `YF_GATEWAY_BACKEND_BASE_URL` | Default `https://queue.fal.run` (`fal`/`http`) or `https://api.replicate.com` (`replicate`) |
+| `YF_GATEWAY_BACKEND_API_KEY` | Required for `fal` / `http` / `replicate`. Fail-closed |
 | `FAL_KEY` | Alias for the backend key on the **gateway process only** |
+| `REPLICATE_API_TOKEN` | Alias for the backend key when `YF_GATEWAY_BACKEND=replicate`. Gateway process only. Fail-closed if missing |
 | `YF_GATEWAY_BACKEND_AUTH_SCHEME` | `Key` for fal, `Bearer` for many others |
 | `YF_GATEWAY_MODEL` | Default open-string model when the request omits one |
 | `YF_GATEWAY_IMAGE_MODEL` | Optional stills model if IMAGE is advertised |
@@ -99,6 +101,58 @@ YF_GATEWAY_MAX_SPEND_USD="5"
 ```
 
 Point at another queue without code change: set `YF_GATEWAY_BACKEND=http`, `YF_GATEWAY_BACKEND_BASE_URL`, `YF_GATEWAY_BACKEND_AUTH_SCHEME`, `YF_GATEWAY_MODEL`, and optionally the path templates.
+
+### Alternate transport: Replicate / Wan I2V
+
+Replicate is a **swappable HTTP backend**, not a YouFlicks domain service. The app still only speaks `/v1/generate`. Domain, Prisma, CreativePlan, Story, Timeline, Render, Keep, and Playback never import a Replicate SDK.
+
+Start frames are uploaded with authenticated `POST /v1/files` (`files.create`, Buffer / multipart). **Do not** use public file hosts (catbox, 0x0, etc.). The gateway then calls the official-model predictions API. Default open-string model for this preset is `wan-video/wan-2.7-i2v` (`first_frame` + prompt). Override with `YF_GATEWAY_MODEL` / `ASSET_HTTP_MODEL`.
+
+Pilot spend defaults on this transport (overridable via `YF_GATEWAY_BACKEND_INPUT_JSON`): `duration=2`, `resolution=720p`. Caps remain `YF_GATEWAY_MAX_JOBS` / `YF_GATEWAY_MAX_SPEND_USD`.
+
+```bash
+# Next.js .env — still no vendor token
+ASSET_HTTP_PROVIDER_KEY="replicate:wan-video/wan-2.7-i2v"
+ASSET_HTTP_BASE_URL="http://127.0.0.1:43148"
+ASSET_HTTP_API_KEY="replace-with-shared-gateway-key"
+ASSET_HTTP_MODEL="wan-video/wan-2.7-i2v"
+ASSET_HTTP_TIMEOUT_MS="300000"
+ASSET_HTTP_CAPABILITIES="VIDEO_GENERATION"
+
+# Gateway process env — vendor token stays here
+YF_GATEWAY_API_KEY="replace-with-shared-gateway-key"
+YF_GATEWAY_BACKEND="replicate"
+REPLICATE_API_TOKEN="replace-with-replicate-token"
+YF_GATEWAY_MODEL="wan-video/wan-2.7-i2v"
+YF_GATEWAY_PROVIDER_KEY="replicate:wan-video/wan-2.7-i2v"
+YF_GATEWAY_MAX_JOBS="1"
+YF_GATEWAY_MAX_SPEND_USD="2"
+npm run gateway:asset
+```
+
+`providerKey` on `GeneratedAsset` is copied from `ASSET_HTTP_PROVIDER_KEY` (adapter attribution outside `AssetGeneratorPort.generate`). Set it to the same open string as `YF_GATEWAY_PROVIDER_KEY` so provenance matches the transport you actually ran.
+
+#### Live integration under caps (optional; not CI)
+
+CI uses recorded Replicate HTTP fixtures (no live spend). To run **one** live I2V job:
+
+```bash
+YF_GATEWAY_LIVE_REPLICATE=1 \
+REPLICATE_API_TOKEN="replace-with-replicate-token" \
+YF_GATEWAY_MAX_JOBS="1" \
+YF_GATEWAY_MAX_SPEND_USD="2" \
+npm test -- src/server/gateways/yf-asset/replicate.live.test.ts
+```
+
+Optional start-frame override (base64 PNG/JPEG in extra JSON — still uploaded via `files.create`, never a public URL):
+
+```bash
+YF_GATEWAY_BACKEND_INPUT_JSON='{"imageBytesBase64":"<base64>","duration":2,"resolution":"720p"}'
+```
+
+Without `imageBytesBase64`, the replicate transport synthesizes a local 512×512 JPEG and uploads it. Missing `REPLICATE_API_TOKEN` fails closed.
+
+fal remains the documented default example and stays valid when unlocked. Choosing Replicate here does **not** lock YouFlicks to Wan.
 
 ## Persistence honesty
 

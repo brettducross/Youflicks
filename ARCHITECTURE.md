@@ -564,7 +564,7 @@ explicit Rebuild cut (D9) may place GENERATED_ASSET clips on Timeline vN+1
 Rules:
 
 - Do **not** overload Director/Story/Timeline compose ports. Generation is `AssetGeneratorPort` only.
-- Production `VIDEO_GENERATION` uses `ASSET_HTTP_*` against a YouFlicks-shaped `/v1/generate` gateway. The gateway may map to fal or another queue behind env. Domain and Prisma never import a vendor SDK. `providerKey` stays an open string. See [docs/R1_VIDEO_HTTP_GATEWAY.md](./docs/R1_VIDEO_HTTP_GATEWAY.md).
+- Production `VIDEO_GENERATION` uses `ASSET_HTTP_*` against a YouFlicks-shaped `/v1/generate` gateway. The gateway may map to fal, Replicate/Wan I2V, or another queue behind env. That mapping is a transport choice, not a permanent domain vendor. Domain and Prisma never import a vendor SDK. `providerKey` stays an open string. See [docs/R1_VIDEO_HTTP_GATEWAY.md](./docs/R1_VIDEO_HTTP_GATEWAY.md).
 - `GeneratedAsset` ≠ `MediaAsset`. User footage stays on MediaAsset.
 - Job type is **`AI_ASSET` only**. In-progress lives on Job. GeneratedAsset status is `DRAFT | READY | SUPERSEDED | FAILED`.
 - No silent Timeline rewrite on generation success. Rebuild cut is an explicit user action.

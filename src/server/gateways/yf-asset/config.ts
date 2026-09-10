@@ -4,7 +4,7 @@ import {
   type AssetCapabilityValue,
 } from "@/server/ports/capabilities";
 
-export const YF_ASSET_GATEWAY_BACKENDS = ["fal", "http", "mock"] as const;
+export const YF_ASSET_GATEWAY_BACKENDS = ["fal", "http", "replicate", "mock"] as const;
 export type YfAssetGatewayBackend = (typeof YF_ASSET_GATEWAY_BACKENDS)[number];
 
 export class GatewayConfigError extends Error {
@@ -47,6 +47,9 @@ const DEFAULT_FAL_BASE = "https://queue.fal.run";
 const DEFAULT_FAL_MODEL = "fal-ai/ltx-video";
 const DEFAULT_FAL_AUTH = "Key";
 const DEFAULT_FAL_WEBHOOK_QUERY = "fal_webhook";
+const DEFAULT_REPLICATE_BASE = "https://api.replicate.com";
+/** Pilot example for the replicate transport — not a domain default. Swap via YF_GATEWAY_MODEL. */
+const DEFAULT_REPLICATE_MODEL = "wan-video/wan-2.7-i2v";
 const DEFAULT_SUBMIT_PATH = "/{model}";
 const DEFAULT_STATUS_PATH = "/{model}/requests/{id}/status";
 const DEFAULT_RESULT_PATH = "/{model}/requests/{id}";
@@ -62,16 +65,28 @@ export function parseYfAssetGatewayConfig(
 ): YfAssetGatewayConfig {
   const backend = parseBackend(env.YF_GATEWAY_BACKEND);
   const falPreset = backend === "fal";
+  const replicatePreset = backend === "replicate";
+  const model =
+    env.YF_GATEWAY_MODEL?.trim() ||
+    (falPreset ? DEFAULT_FAL_MODEL : replicatePreset ? DEFAULT_REPLICATE_MODEL : "");
+  const backendBaseUrl =
+    emptyToUndefined(env.YF_GATEWAY_BACKEND_BASE_URL) ??
+    (replicatePreset ? DEFAULT_REPLICATE_BASE : DEFAULT_FAL_BASE);
+  const providerKey =
+    env.YF_GATEWAY_PROVIDER_KEY?.trim() ||
+    (replicatePreset && model ? `replicate:${model}` : "http.asset");
   return {
     listenHost: env.YF_GATEWAY_LISTEN_HOST?.trim() || "127.0.0.1",
     listenPort: positiveInt(env.YF_GATEWAY_LISTEN_PORT, 43148),
     apiKey: emptyToUndefined(env.YF_GATEWAY_API_KEY),
-    providerKey: env.YF_GATEWAY_PROVIDER_KEY?.trim() || "http.asset",
+    providerKey,
     capabilities: parseCapabilities(env.YF_GATEWAY_CAPABILITIES),
     backend,
-    backendBaseUrl: emptyToUndefined(env.YF_GATEWAY_BACKEND_BASE_URL) ?? DEFAULT_FAL_BASE,
+    backendBaseUrl,
     backendApiKey:
-      emptyToUndefined(env.YF_GATEWAY_BACKEND_API_KEY) ?? emptyToUndefined(env.FAL_KEY),
+      emptyToUndefined(env.YF_GATEWAY_BACKEND_API_KEY) ??
+      emptyToUndefined(env.FAL_KEY) ??
+      emptyToUndefined(env.REPLICATE_API_TOKEN),
     backendAuthScheme:
       env.YF_GATEWAY_BACKEND_AUTH_SCHEME?.trim() || (falPreset ? DEFAULT_FAL_AUTH : "Bearer"),
     webhookQueryParam:
@@ -79,7 +94,7 @@ export function parseYfAssetGatewayConfig(
     submitPath: env.YF_GATEWAY_SUBMIT_PATH?.trim() || DEFAULT_SUBMIT_PATH,
     statusPath: env.YF_GATEWAY_STATUS_PATH?.trim() || DEFAULT_STATUS_PATH,
     resultPath: env.YF_GATEWAY_RESULT_PATH?.trim() || DEFAULT_RESULT_PATH,
-    model: env.YF_GATEWAY_MODEL?.trim() || (falPreset ? DEFAULT_FAL_MODEL : ""),
+    model,
     imageModel: emptyToUndefined(env.YF_GATEWAY_IMAGE_MODEL),
     webhookUrl: emptyToUndefined(env.YF_GATEWAY_WEBHOOK_URL),
     webhookSecret: emptyToUndefined(env.YF_GATEWAY_WEBHOOK_SECRET),
@@ -101,7 +116,9 @@ export function assertGatewaySecrets(config: YfAssetGatewayConfig): void {
   }
   if (config.backend !== "mock" && !config.backendApiKey) {
     throw new GatewayConfigError(
-      "YF_GATEWAY_BACKEND_API_KEY (or FAL_KEY for the fal preset) is required. The gateway fails closed without a backend key.",
+      config.backend === "replicate"
+        ? "REPLICATE_API_TOKEN (or YF_GATEWAY_BACKEND_API_KEY) is required. The replicate transport fails closed without a token."
+        : "YF_GATEWAY_BACKEND_API_KEY (or FAL_KEY for the fal preset) is required. The gateway fails closed without a backend key.",
     );
   }
 }

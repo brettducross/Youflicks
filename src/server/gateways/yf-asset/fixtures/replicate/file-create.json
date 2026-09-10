@@ -1,0 +1,8 @@
+{
+  "id": "file-recorded-wan-i2v",
+  "content_type": "image/png",
+  "size": 70,
+  "urls": {
+    "get": "https://api.replicate.com/v1/files/file-recorded-wan-i2v/contents"
+  }
+}

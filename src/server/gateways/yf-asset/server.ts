@@ -2,6 +2,7 @@ import { createServer, type IncomingMessage, type ServerResponse } from "node:ht
 import { pathToFileURL } from "node:url";
 import { HttpQueueVideoBackend } from "@/server/gateways/yf-asset/backends/http-queue";
 import { MockVideoBackend } from "@/server/gateways/yf-asset/backends/mock";
+import { ReplicateVideoBackend } from "@/server/gateways/yf-asset/backends/replicate";
 import type { VideoBackend } from "@/server/gateways/yf-asset/backends/types";
 import {
   assertGatewaySecrets,
@@ -34,6 +35,9 @@ export function createYfAssetGatewayRuntime(
 export function createBackend(config: YfAssetGatewayConfig): VideoBackend {
   if (config.backend === "mock") {
     return new MockVideoBackend();
+  }
+  if (config.backend === "replicate") {
+    return new ReplicateVideoBackend(config);
   }
   return new HttpQueueVideoBackend(config);
 }

@@ -1,0 +1,13 @@
+{
+  "id": "pred_recorded_wan_i2v",
+  "model": "wan-video/wan-2.7-i2v",
+  "status": "succeeded",
+  "output": "https://replicate.delivery/recorded/wan-i2v-output.mp4",
+  "error": null,
+  "metrics": {
+    "predict_time": 12.4
+  },
+  "urls": {
+    "get": "https://api.replicate.com/v1/predictions/pred_recorded_wan_i2v"
+  }
+}
