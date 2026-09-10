@@ -134,6 +134,7 @@ describe("AdvertisingService M8.6a/b", () => {
     const shell = surfaces.find((surface) => surface.key === CommercialSurface.UI_SHELL);
     expect(shell?.kind).toBe("FIRST_PARTY");
     expect(shell?.displayName).toBe("Harbor Co");
+    expect(shell?.linkUrl).toBe("https://harbor.example/");
     const credits = surfaces.find((surface) => surface.key === CommercialSurface.FILM_CREDITS);
     expect(credits?.kind).toBe("FIRST_PARTY");
     expect(credits?.displayName).toBe("Harbor Co credits");

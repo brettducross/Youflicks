@@ -1,6 +1,7 @@
 import "server-only";
 
 import { logger } from "@/lib/logger";
+import { allowlistedHttpsLinkUrl } from "@/server/advertising/link-url";
 import { CreditType, PlacementStatus, SponsorPlacementKind } from "@/server/domain/personalization";
 import { prisma } from "@/server/db";
 import type { FilmCreditLineView, FilmCreditsView } from "@/server/personalization/views";
@@ -45,7 +46,7 @@ export class CreditsService {
       logoKey: row.logoKey,
       audioKey: row.audioKey,
       videoKey: row.videoKey,
-      linkUrl: row.linkUrl,
+      linkUrl: allowlistedHttpsLinkUrl(row.linkUrl),
     };
   }
 
@@ -131,7 +132,7 @@ export class CreditsService {
           logoKey: offer.logoKey,
           audioKey: offer.audioKey,
           videoKey: offer.videoKey,
-          linkUrl: offer.linkUrl,
+          linkUrl: allowlistedHttpsLinkUrl(offer.linkUrl),
         });
         order += 10;
         await prisma.sponsorPlacement.update({

@@ -39,6 +39,7 @@ export type AdvertisingSurfaceView = {
   kind: AdvertisingCreativeKind;
   copy: string;
   displayName?: string;
+  /** Allowlisted https destination only. Invalid values are never served as href. */
   linkUrl?: string | null;
   providerKey?: string;
   campaignId?: string | null;
