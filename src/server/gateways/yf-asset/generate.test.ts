@@ -6,7 +6,7 @@ import { GatewayJobStore } from "@/server/gateways/yf-asset/jobs";
 import { SpendGuard } from "@/server/gateways/yf-asset/spend";
 import { AssetCapability } from "@/server/ports/capabilities";
 
-function service(overrides: NodeJS.ProcessEnv = {}) {
+function service(overrides: Record<string, string | undefined> = {}) {
   const config = parseYfAssetGatewayConfig({
     YF_GATEWAY_API_KEY: "gw-key",
     YF_GATEWAY_BACKEND: "mock",
@@ -53,9 +53,9 @@ describe("YfAssetGenerateService", () => {
   it("returns YouFlicks bytes + job id and persists only normalized metadata", async () => {
     const { generate, jobs, backend } = service();
     const result = await generate.generate(videoBody);
-    expect(result.status).toBe(200);
-    if (result.status !== 200) {
-      return;
+    expect(result.ok).toBe(true);
+    if (!result.ok) {
+      throw new Error("expected generate success");
     }
     expect(result.body.mimeType).toBe("video/mp4");
     expect(Buffer.from(result.body.bytesBase64, "base64").toString("utf8")).toBe("fake-mp4");
@@ -76,6 +76,10 @@ describe("YfAssetGenerateService", () => {
   it("fails closed without a gateway key", async () => {
     const { generate } = service({ YF_GATEWAY_API_KEY: "" });
     const result = await generate.generate(videoBody);
+    expect(result.ok).toBe(false);
+    if (result.ok) {
+      throw new Error("expected fail-closed");
+    }
     expect(result.status).toBe(503);
     expect(result.body.code).toBe("GATEWAY_NOT_CONFIGURED");
   });
@@ -84,6 +88,10 @@ describe("YfAssetGenerateService", () => {
     const { generate } = service();
     for (const kind of ["VOICE_OVER", "MUSIC", "SFX"] as const) {
       const result = await generate.generate({ ...videoBody, kind });
+      expect(result.ok).toBe(false);
+      if (result.ok) {
+        throw new Error("expected capability refusal");
+      }
       expect(result.status).toBe(503);
       expect(result.body.code).toBe("ASSET_CAPABILITY_UNAVAILABLE");
     }
@@ -92,10 +100,12 @@ describe("YfAssetGenerateService", () => {
   it("uses the request model so swapping ASSET_HTTP_MODEL needs no code change", async () => {
     const { generate, jobs } = service();
     const result = await generate.generate({ ...videoBody, model: "other/open-string-model" });
-    expect(result.status).toBe(200);
-    if (result.status === 200) {
-      expect(jobs.get(result.body.jobId!)?.modelId).toBe("other/open-string-model");
+    expect(result.ok).toBe(true);
+    if (!result.ok) {
+      throw new Error("expected generate success");
     }
+    expect(result.body.jobId).toBeTruthy();
+    expect(jobs.get(result.body.jobId ?? "")?.modelId).toBe("other/open-string-model");
   });
 
   it("honors spend caps without writing cost into the generate bytes", async () => {
@@ -104,13 +114,15 @@ describe("YfAssetGenerateService", () => {
       YF_GATEWAY_ESTIMATED_USD_PER_JOB: "0.4",
     });
     const first = await generate.generate(videoBody);
-    expect(first.status).toBe(200);
+    expect(first.ok).toBe(true);
     const second = await generate.generate(videoBody);
+    expect(second.ok).toBe(false);
+    if (second.ok) {
+      throw new Error("expected spend cap");
+    }
     expect(second.status).toBe(429);
     expect(second.body.code).toBe("GATEWAY_SPEND_CAP");
-    if (first.status === 200) {
-      expect(first.body).not.toHaveProperty("estimatedCostUsd");
-    }
+    expect(first.body).not.toHaveProperty("estimatedCostUsd");
   });
 
   it("maps a backend webhook to the YouFlicks job without keeping vendor JSON", async () => {

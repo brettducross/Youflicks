@@ -55,8 +55,10 @@ const DEFAULT_RESULT_PATH = "/{model}/requests/{id}";
  * Gateway-process env only. Do not add these keys to the Next.js app schema —
  * vendor backend secrets stay off the domain process.
  */
+export type GatewayEnv = Record<string, string | undefined>;
+
 export function parseYfAssetGatewayConfig(
-  env: NodeJS.ProcessEnv = process.env,
+  env: GatewayEnv = process.env,
 ): YfAssetGatewayConfig {
   const backend = parseBackend(env.YF_GATEWAY_BACKEND);
   const falPreset = backend === "fal";

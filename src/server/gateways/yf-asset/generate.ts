@@ -17,8 +17,8 @@ import type { VideoBackend } from "@/server/gateways/yf-asset/backends/types";
 import { AssetCapability } from "@/server/ports/capabilities";
 
 export type GenerateHandlerResult =
-  | { status: 200; body: YfGenerateSuccess }
-  | { status: number; body: { error: string; code: string; capability?: string } };
+  | { ok: true; status: 200; body: YfGenerateSuccess }
+  | { ok: false; status: number; body: { error: string; code: string; capability?: string } };
 
 export class YfAssetGenerateService {
   constructor(
@@ -109,6 +109,7 @@ export class YfAssetGenerateService {
         mimeType: downloaded.mimeType,
       });
       return {
+        ok: true,
         status: 200,
         body: {
           mimeType: downloaded.mimeType,

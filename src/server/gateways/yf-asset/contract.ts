@@ -57,8 +57,9 @@ export function gatewayError(
   code: string,
   error: string,
   extra?: { capability?: string },
-): { status: number; body: GatewayErrorBody } {
+): { ok: false; status: number; body: GatewayErrorBody } {
   return {
+    ok: false,
     status,
     body: {
       error,
