@@ -117,7 +117,7 @@ Provider secrets belong in environment variables only. Do not put them in Prisma
 
 ### R1 video HTTP gateway
 
-First real `VIDEO_GENERATION` path is adapter-only: the app calls existing `HttpAssetGeneratorAdapter` → a separate YouFlicks-shaped gateway (`npm run gateway:asset`) → a config-backed video queue (fal queue+webhooks is the default **example**, not domain truth).
+First real `VIDEO_GENERATION` path is adapter-only: the app calls existing `HttpAssetGeneratorAdapter` → a separate YouFlicks-shaped gateway (`npm run gateway:asset`) → a config-backed video queue. fal queue+webhooks is the default **example**. `YF_GATEWAY_BACKEND=replicate` is an **alternate** transport (authenticated `files.create` + open-string I2V such as Wan) — not a permanent domain default.
 
 ```bash
 # Terminal 1 — gateway (vendor key stays here)
@@ -137,7 +137,7 @@ ASSET_HTTP_CAPABILITIES="VIDEO_GENERATION"
 ASSET_HTTP_TIMEOUT_MS="300000"
 ```
 
-Swap the model or point the gateway at another HTTP queue with env only. See [docs/R1_VIDEO_HTTP_GATEWAY.md](./docs/R1_VIDEO_HTTP_GATEWAY.md). This does not claim an E2E movie without keys. R2 local FFmpeg (ingest posters / duration, optional local renderer) is unchanged.
+Swap the model or point the gateway at fal, Replicate, or another HTTP queue with env only. See [docs/R1_VIDEO_HTTP_GATEWAY.md](./docs/R1_VIDEO_HTTP_GATEWAY.md). This does not claim an E2E movie without keys. R2 local FFmpeg (ingest posters / duration, optional local renderer) is unchanged.
 
 ## Project layout
 

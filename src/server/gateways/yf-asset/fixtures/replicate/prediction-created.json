@@ -1,0 +1,14 @@
+{
+  "id": "pred_recorded_wan_i2v",
+  "model": "wan-video/wan-2.7-i2v",
+  "status": "starting",
+  "input": {
+    "prompt": "recorded",
+    "first_frame": "https://api.replicate.com/v1/files/file-recorded-wan-i2v/contents"
+  },
+  "output": null,
+  "error": null,
+  "urls": {
+    "get": "https://api.replicate.com/v1/predictions/pred_recorded_wan_i2v"
+  }
+}
