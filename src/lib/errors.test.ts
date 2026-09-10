@@ -36,6 +36,14 @@ describe("isAppError", () => {
     expect(toErrorResponse(AppError.durationExceedsPlan()).body.error.code).toBe(
       "DURATION_EXCEEDS_PLAN",
     );
+    expect(toErrorResponse(AppError.outputDurationUnknown()).status).toBe(403);
+    expect(toErrorResponse(AppError.outputDurationUnknown()).body.error.code).toBe(
+      "OUTPUT_DURATION_UNKNOWN",
+    );
+    expect(toErrorResponse(AppError.watermarkApplyFailed()).status).toBe(422);
+    expect(toErrorResponse(AppError.watermarkApplyFailed()).body.error.code).toBe(
+      "WATERMARK_APPLY_FAILED",
+    );
     expect(toErrorResponse(AppError.suspended()).status).toBe(403);
     expect(toErrorResponse(AppError.suspended()).body.error.code).toBe("SUSPENDED");
   });

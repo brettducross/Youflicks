@@ -11,7 +11,7 @@ export function EntitlementHonesty({ summary }: { summary: EntitlementSummary })
       ? "1 free movie left this hour"
       : `${summary.remainingMovieGenerations} free movies left this hour`,
     `max ${formatCap(summary.maxOutputDurationMs)}`,
-    summary.watermarkRequired ? "watermarked" : null,
+    summary.watermarkRequired ? "player watermark" : null,
     summary.adsEnabled ? "ads on" : null,
   ].filter(Boolean);
 

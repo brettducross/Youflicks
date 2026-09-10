@@ -427,6 +427,23 @@ describe("PublicationService M7", () => {
     }
   });
 
+  it("denies export when READY output omitted durationMs", async () => {
+    await prisma.finishedMovie.update({
+      where: { id: readyMovieId },
+      data: { durationMs: null },
+    });
+    try {
+      await expect(service.exportDownload(ownerId, projectId, readyMovieId)).rejects.toMatchObject({
+        code: "OUTPUT_DURATION_UNKNOWN",
+      });
+    } finally {
+      await prisma.finishedMovie.update({
+        where: { id: readyMovieId },
+        data: { durationMs: 4000 },
+      });
+    }
+  });
+
   it("hardens Publication status and leaves PHASE locks untouched", async () => {
     const schema = readFileSync(path.join(process.cwd(), "prisma/schema.prisma"), "utf8");
     expect(schema).toMatch(/PENDING \| PUBLISHED \| FAILED \| REVOKED/);

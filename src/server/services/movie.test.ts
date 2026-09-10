@@ -425,6 +425,25 @@ describe("MovieService M6", () => {
     });
   });
 
+  it("denies keep when SUCCEEDED output omitted durationMs", async () => {
+    const unknownId = await seedRender({
+      status: RenderJobStatus.SUCCEEDED,
+      outputKey: `projects/${projectId}/renders/unknown-duration/output.mp4`,
+    });
+    await prisma.renderJob.update({
+      where: { id: unknownId },
+      data: { durationMs: null },
+    });
+    await storage.put({
+      key: `projects/${projectId}/renders/unknown-duration/output.mp4`,
+      body: OUTPUT_BYTES,
+      contentType: "video/mp4",
+    });
+    await expect(service.keep(ownerId, projectId, { renderJobId: unknownId })).rejects.toMatchObject({
+      code: "OUTPUT_DURATION_UNKNOWN",
+    });
+  });
+
   it("does not treat PROCESSING as a listed kept film and writes zero Publication rows", async () => {
     const listed = await service.list(ownerId, projectId, { includeArchived: true });
     expect(listed.every((movie) => movie.status !== "PROCESSING")).toBe(true);

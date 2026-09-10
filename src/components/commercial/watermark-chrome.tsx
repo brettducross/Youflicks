@@ -1,3 +1,4 @@
+/** Player-chrome watermark. HTTP/binary files stay unmarked until Brett §H4. */
 export function WatermarkChrome({
   required,
   label = "YouFlicks",
