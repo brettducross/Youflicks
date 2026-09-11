@@ -3,6 +3,7 @@ import { env } from "@/lib/env";
 import { prisma } from "@/server/db";
 import { logger } from "@/lib/logger";
 import { toErrorResponse } from "@/lib/errors";
+import { isShareTokenSecretConfigured } from "@/server/publication/tokens";
 import { getServices } from "@/server/services/container";
 
 export async function GET() {
@@ -19,9 +20,7 @@ export async function GET() {
       };
     });
     const playback = getServices().playbackService.getAvailability();
-    const shareConfigured = Boolean(
-      (env.SHARE_TOKEN_SECRET?.trim() || env.BETTER_AUTH_SECRET).length >= 16,
-    );
+    const shareConfigured = isShareTokenSecretConfigured(env.SHARE_TOKEN_SECRET);
     return NextResponse.json({
       ok: true,
       service: "youflicks",

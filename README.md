@@ -100,11 +100,12 @@ See `.env.example`. Required:
 - `DATABASE_URL` — PostgreSQL connection string
 - `BETTER_AUTH_SECRET` — session signing secret (16+ characters)
 - `BETTER_AUTH_URL` — public origin of the app
-- `STORAGE_DRIVER` — `local` (dev) or `r2` / `s3` for closed-beta object storage
+- `STORAGE_DRIVER` — `local` (dev/test only; production refuses local, including unset→local) or `r2` / `s3` for closed-beta object storage
 - `STORAGE_LOCAL_PATH` — directory for the local storage adapter
 - `STORAGE_S3_*` — bucket, endpoint, and keys when `STORAGE_DRIVER` is `r2` or `s3`
 - `BETA_INVITE_ONLY` — temporary closed-beta front door; unset is fail-closed in production
 - `EMAIL_DRIVER` — `log` (dev) or `none` (Path B invite pre-verify). `log` is forbidden in production beta.
+- `SHARE_TOKEN_SECRET` — HMAC for share links (16+). Empty or unset disables share (fail-closed; no `BETTER_AUTH_SECRET` fallback).
 - `LOG_LEVEL` — `debug` \| `info` \| `warn` \| `error`
 - `MEDIA_MAX_IMAGE_BYTES` / `MEDIA_MAX_VIDEO_BYTES` — ingest caps
 - `ANALYSIS_PROVIDER` — optional preferred adapter key. Leave empty to use the first ready adapter for the requested capability.

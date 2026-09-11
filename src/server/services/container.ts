@@ -3,7 +3,7 @@ import "server-only";
 import path from "node:path";
 import { headers } from "next/headers";
 import { auth } from "@/lib/auth";
-import { env } from "@/lib/env";
+import { assertProductionStorageDriver, env } from "@/lib/env";
 import { AppError } from "@/lib/errors";
 import { PostgresJobQueue } from "@/server/adapters/jobs/postgres";
 import { LocalStorageAdapter } from "@/server/adapters/storage/local";
@@ -72,7 +72,10 @@ import { PlaybackService } from "@/server/services/playback";
 import { MovieService } from "@/server/services/movie";
 import { MovieWorker } from "@/server/services/movie-worker";
 import { PublicationAdapterRegistry } from "@/server/adapters/publication/registry";
-import { ShareTokenStore } from "@/server/publication/tokens";
+import {
+  resolveShareSigningSecret,
+  ShareTokenStore,
+} from "@/server/publication/tokens";
 import { PublicationService } from "@/server/services/publication";
 import { PublicationWorker } from "@/server/services/publication-worker";
 import type { PublicationPort } from "@/server/ports/publication";
@@ -131,6 +134,7 @@ export type ServiceContainer = {
 };
 
 function createStorage(): StoragePort {
+  assertProductionStorageDriver(env.NODE_ENV, env.STORAGE_DRIVER);
   if (env.STORAGE_DRIVER === "local") {
     return new LocalStorageAdapter(path.resolve(env.STORAGE_LOCAL_PATH));
   }
@@ -340,7 +344,7 @@ function createServices(): ServiceContainer {
   const playbackSessions = new PlaybackSessionStore(env.BETTER_AUTH_SECRET);
   const webPlayback = new WebMediaPlaybackAdapter(playbackSessions);
   const vlcPlayback = new VlcPlaybackAdapter(playbackSessions);
-  const shareSecret = env.SHARE_TOKEN_SECRET?.trim() || env.BETTER_AUTH_SECRET;
+  const shareSecret = resolveShareSigningSecret(env.SHARE_TOKEN_SECRET);
   const shareTokens = new ShareTokenStore(shareSecret, () => Date.now(), env.SHARE_LINK_TTL_MS);
   const publicationAdapters = new PublicationAdapterRegistry();
   const publicationService = new PublicationService(

@@ -1,5 +1,35 @@
 import { describe, expect, it } from "vitest";
-import { ShareTokenStore } from "@/server/publication/tokens";
+import {
+  isShareTokenSecretConfigured,
+  resolveShareSigningSecret,
+  ShareTokenStore,
+} from "@/server/publication/tokens";
+
+describe("resolveShareSigningSecret", () => {
+  it("treats empty or unset SHARE_TOKEN_SECRET as share-disabled", () => {
+    expect(resolveShareSigningSecret(undefined)).toBe("");
+    expect(resolveShareSigningSecret("")).toBe("");
+    expect(resolveShareSigningSecret("   ")).toBe("");
+    expect(isShareTokenSecretConfigured(undefined)).toBe(false);
+    expect(isShareTokenSecretConfigured("")).toBe(false);
+    expect(isShareTokenSecretConfigured("   ")).toBe(false);
+    const authSecret = "better-auth-secret-value";
+    expect(resolveShareSigningSecret(undefined)).not.toBe(authSecret);
+    const store = new ShareTokenStore(resolveShareSigningSecret(undefined));
+    expect(store.configured).toBe(false);
+    expect(() => store.issue({ publicationId: "pub_1", movieId: "m1" })).toThrow(/not configured/i);
+  });
+
+  it("enables share when SHARE_TOKEN_SECRET is set", () => {
+    const secret = "share-token-explicit-secret";
+    expect(resolveShareSigningSecret(secret)).toBe(secret);
+    expect(isShareTokenSecretConfigured(secret)).toBe(true);
+    const store = new ShareTokenStore(resolveShareSigningSecret(secret));
+    expect(store.configured).toBe(true);
+    const issued = store.issue({ publicationId: "pub_1", movieId: "m1" });
+    expect(store.verify(issued.token).publicationId).toBe("pub_1");
+  });
+});
 
 describe("ShareTokenStore", () => {
   it("issues, verifies, and expires time-limited tokens", () => {
