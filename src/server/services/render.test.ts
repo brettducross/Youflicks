@@ -33,6 +33,7 @@ import {
   type TimelineDocument,
 } from "@/server/timeline/schema";
 import { AttributionService } from "@/server/services/attribution";
+import { ConsentService } from "@/server/services/consent";
 import { MediaService } from "@/server/services/media";
 import { ProjectService } from "@/server/services/projects";
 import { RenderContractService } from "@/server/services/render-contract";
@@ -168,7 +169,7 @@ describe("RenderService M4", () => {
     storage = new LocalStorageAdapter(dir);
     await prisma.user.createMany({
       data: [
-        { id: ownerId, name: "Owner", email: `${ownerId}@example.com`, emailVerified: false },
+        { id: ownerId, name: "Owner", email: `${ownerId}@example.com`, emailVerified: true },
         {
           id: strangerId,
           name: "Stranger",
@@ -182,6 +183,7 @@ describe("RenderService M4", () => {
       logline: "M4.",
     });
     projectId = project.id;
+    await new ConsentService().accept(ownerId);
     media = new MediaService(storage, projects);
     jobs = new PostgresJobQueue();
     contract = new RenderContractService(projects, storage);

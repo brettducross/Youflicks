@@ -18,6 +18,11 @@ export function inviteOnlyEnabled(
   nodeEnv: string = env.NODE_ENV,
   flag: boolean | undefined = env.BETA_INVITE_ONLY,
 ): boolean {
+  return resolveInviteOnly(nodeEnv, flag);
+}
+
+/** `flag === undefined` means unset (fail-closed in production). */
+export function resolveInviteOnly(nodeEnv: string, flag: boolean | undefined): boolean {
   if (flag === true) return true;
   if (flag === false) return false;
   return nodeEnv === "production";

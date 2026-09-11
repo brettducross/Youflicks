@@ -1,11 +1,12 @@
 import { describe, expect, it } from "vitest";
-import { inviteOnlyEnabled, isHttpVisionConfigured } from "@/server/beta/flags";
+import { inviteOnlyEnabled, isHttpVisionConfigured, resolveInviteOnly } from "@/server/beta/flags";
 
 describe("Wave 1 flags", () => {
   it("fails closed to invite-only in production when the flag is unset", () => {
-    expect(inviteOnlyEnabled("production", undefined)).toBe(true);
-    expect(inviteOnlyEnabled("production", false)).toBe(false);
-    expect(inviteOnlyEnabled("test", undefined)).toBe(false);
+    expect(resolveInviteOnly("production", undefined)).toBe(true);
+    expect(resolveInviteOnly("production", false)).toBe(false);
+    expect(resolveInviteOnly("test", undefined)).toBe(false);
+    expect(resolveInviteOnly("development", true)).toBe(true);
     expect(inviteOnlyEnabled("development", true)).toBe(true);
   });
 
