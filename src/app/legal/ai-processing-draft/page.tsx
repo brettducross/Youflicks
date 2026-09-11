@@ -1,7 +1,6 @@
 import type { Metadata } from "next";
 import Link from "next/link";
-import { SiteHeader } from "@/components/layout/site-header";
-import { getSession } from "@/server/auth/session";
+import { BrandLockup } from "@/components/brand";
 import { env } from "@/lib/env";
 
 export const metadata: Metadata = {
@@ -14,15 +13,17 @@ export const metadata: Metadata = {
 /**
  * Public draft route the consent banner can link. Body is intentionally not
  * legal copy — Product Owner / counsel fill docs/BETA_AI_CONSENT_COPY_TEMPLATE.md
- * then bump AI_CONSENT_POLICY_VERSION.
+ * then bump AI_CONSENT_POLICY_VERSION. This page does not query Postgres so the
+ * placeholder URL stays readable even when the studio DB is down.
  */
-export default async function AiProcessingDraftPage() {
-  const session = await getSession();
+export default function AiProcessingDraftPage() {
   const policyVersion = env.AI_CONSENT_POLICY_VERSION;
 
   return (
     <div className="flex min-h-full flex-col">
-      <SiteHeader signedIn={Boolean(session?.user)} />
+      <header className="border-b border-border/70 px-4 py-6 sm:px-8">
+        <BrandLockup />
+      </header>
       <main className="mx-auto w-full max-w-2xl flex-1 px-4 py-12 sm:px-6">
         <p className="text-xs font-medium tracking-[0.28em] text-primary uppercase">
           Draft — not counsel-approved
