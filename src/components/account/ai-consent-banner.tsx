@@ -1,6 +1,7 @@
 "use client";
 
 import { useState } from "react";
+import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { Button } from "@/components/ui/button";
 
@@ -35,8 +36,15 @@ export function AiConsentBanner({
     <div className="border-b border-border/70 bg-muted/40 px-4 py-3 sm:px-6">
       <p className="text-sm">
         YouFlicks beta may send photos, video frames, or transcripts to configured
-        AI vendors for analysis or generation. This is a legal placeholder
-        ({policyVersion}). Review your own counsel before production use.
+        AI vendors for analysis or generation. This is a legal placeholder (
+        {policyVersion}).{" "}
+        <Link
+          href="/legal/ai-processing-draft"
+          className="text-primary underline-offset-4 hover:underline"
+        >
+          Draft AI processing notice
+        </Link>{" "}
+        (not counsel-approved). Review your own counsel before production use.
       </p>
       <div className="mt-2 flex flex-wrap items-center gap-3">
         <Button type="button" size="sm" disabled={pending} onClick={() => void onAccept()}>
