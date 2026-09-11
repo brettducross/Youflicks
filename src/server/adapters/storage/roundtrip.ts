@@ -18,6 +18,7 @@ export type StorageRoundtripEnv = {
   STORAGE_S3_ACCESS_KEY_ID?: string;
   STORAGE_S3_SECRET_ACCESS_KEY?: string;
   STORAGE_S3_FORCE_PATH_STYLE?: string;
+  [key: string]: string | undefined;
 };
 
 export type StorageRoundtripResolved =
@@ -79,7 +80,7 @@ export function resolveStorageRoundtripConfig(
   };
 }
 
-export function disposableRoundtripKey(now = Date.now(), id = randomUUID()): string {
+export function disposableRoundtripKey(now = Date.now(), id: string = randomUUID()): string {
   return `${DISPOSABLE_PREFIX}/${now}-${id}.txt`;
 }
 
