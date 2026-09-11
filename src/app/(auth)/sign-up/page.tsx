@@ -23,8 +23,9 @@ export default async function SignUpPage() {
         <div className="w-full max-w-md rounded-2xl border border-border/70 bg-card/80 p-6 shadow-[0_0_80px_-28px_oklch(0.84_0.11_82/0.4)] sm:p-8">
           <h1 className="text-3xl">Open your studio</h1>
           <p className="mt-2 mb-6 text-sm text-muted-foreground">
-            Create an account to start a project. We will send a confirmation
-            link — movie generation stays locked until that email is verified.
+            Create an account to start a project. Closed beta may require an
+            invite. Invited emails can be pre-verified. Movie generation stays
+            locked until the account is verified.
           </p>
           <div className="grid gap-6">
             <SignUpForm />

@@ -32,7 +32,9 @@ import {
 import type { AbuseSignalPort } from "@/server/ports/abuse-signal";
 import type { EntitlementPort } from "@/server/ports/entitlement";
 import type { RateLimitPort } from "@/server/ports/rate-limit";
+import { SHARE_LINK_MINT_KIND, SHARE_LINK_MINTS_PER_HOUR } from "@/server/beta/defaults";
 import { AccountLifecycleService } from "@/server/services/account-lifecycle";
+import { ConsentService } from "@/server/services/consent";
 
 const DENY_MESSAGES: Record<(typeof EntitlementDenyCode)[keyof typeof EntitlementDenyCode], string> =
   {
@@ -41,6 +43,7 @@ const DENY_MESSAGES: Record<(typeof EntitlementDenyCode)[keyof typeof Entitlemen
     DURATION_EXCEEDS_PLAN: "Free movies can be at most 5 minutes long.",
     SUSPENDED: "This account cannot start a movie right now.",
     INSUFFICIENT_CREDITS: "This account does not have enough credits to start a movie.",
+    CONSENT_REQUIRED: "Accept AI processing terms before sending footage to a vendor.",
   };
 
 export class EntitlementService implements EntitlementPort {
@@ -51,6 +54,7 @@ export class EntitlementService implements EntitlementPort {
     private readonly rateLimit: RateLimitPort = new PrismaRateLimitAdapter(),
     private readonly abuse: AbuseSignalPort = new PrismaAbuseSignalAdapter(),
     private readonly now: () => Date = () => new Date(),
+    private readonly consents: ConsentService = new ConsentService(),
   ) {}
 
   async resolve(userId: string): Promise<EntitlementSnapshot> {
@@ -131,6 +135,43 @@ export class EntitlementService implements EntitlementPort {
       throw denyToError(decision.code, decision.message);
     }
     return decision;
+  }
+
+  /**
+   * Email + optional consent gate for paid/vendor enqueues.
+   * Does not consume the free-tier 1 AI_DIRECT/hour movie quota.
+   */
+  async requirePaidEnqueue(
+    userId: string,
+    input: { requireConsent?: boolean } = {},
+  ) {
+    const account = await this.accounts.getAccountGate(userId);
+    if (!account.emailVerified) {
+      throw denyToError(
+        EntitlementDenyCode.EMAIL_UNVERIFIED,
+        DENY_MESSAGES.EMAIL_UNVERIFIED,
+      );
+    }
+    if (await this.abuse.isQuarantined(userId)) {
+      throw denyToError(EntitlementDenyCode.SUSPENDED, DENY_MESSAGES.SUSPENDED);
+    }
+    if (input.requireConsent) {
+      await this.consents.requireAccepted(userId);
+    }
+  }
+
+  async assertShareLinkMint(userId: string, projectId?: string) {
+    const since = new Date(this.now().getTime() - MOVIE_GENERATION_WINDOW_MS);
+    const used = await this.rateLimit.countInWindow(userId, SHARE_LINK_MINT_KIND, since);
+    if (used >= SHARE_LINK_MINTS_PER_HOUR) {
+      throw AppError.rateLimited("Too many share links this hour. Try again later.");
+    }
+    await this.rateLimit.record({
+      userId,
+      kind: SHARE_LINK_MINT_KIND,
+      projectId,
+      recordedAt: this.now(),
+    });
   }
 
   async getEntitlementSummary(userId: string): Promise<EntitlementSummary> {
@@ -360,6 +401,8 @@ export function denyToError(code: string, message: string) {
       return AppError.suspended(message);
     case EntitlementDenyCode.INSUFFICIENT_CREDITS:
       return AppError.insufficientCredits(message);
+    case EntitlementDenyCode.CONSENT_REQUIRED:
+      return AppError.consentRequired(message);
     default:
       return AppError.forbidden(message);
   }

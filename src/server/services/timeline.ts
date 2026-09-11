@@ -14,6 +14,7 @@ import {
 import type { TimelineComposerPort } from "@/server/ports/timeline-composer";
 import type { JobQueuePort, JobRecord } from "@/server/ports/jobs";
 import { AttributionService } from "@/server/services/attribution";
+import { EntitlementService } from "@/server/services/entitlement";
 import { ProjectService } from "@/server/services/projects";
 import {
   extractPriorTimeline,
@@ -102,6 +103,7 @@ export class TimelineService {
     private readonly attribution: AttributionService,
     private readonly resolveComposer: () => ResolvedTimelineRuntime | null,
     private readonly availability: () => TimelineAvailability,
+    private readonly entitlements: EntitlementService = new EntitlementService(),
   ) {}
 
   getAvailability(): TimelineAvailability {
@@ -134,6 +136,7 @@ export class TimelineService {
   async requestCompose(userId: string, projectId: string) {
     await this.projects.getForUser(userId, projectId);
     this.requireComposeCapability();
+    await this.entitlements.requirePaidEnqueue(userId);
     await this.requireReadyStory(projectId);
 
     const job = await this.jobs.enqueue({

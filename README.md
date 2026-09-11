@@ -27,7 +27,7 @@ Read [ARCHITECTURE.md](./ARCHITECTURE.md) for the analysis, technology choices, 
 - **M7 share / export**: explicit Export (owner attachment) and Share link (time-limited revocable watch-only token) through `PublicationService` + `PublicationPort` against exactly one READY FinishedMovie
 - Extensible domain schema: User → Project → Media → Analysis → CreativePlan → Story → Timeline → Render → Movie → Publish
 - Ports for object storage, background jobs, AI Director, story composer, timeline composer, asset generator, media analysis, rendering, and playback
-- Local filesystem storage adapter (swap later for S3/R2 behind the same port)
+- StoragePort: local disk, plus S3-compatible Cloudflare R2 / generic S3 (`STORAGE_DRIVER=r2|s3`)
 - Structured JSON logging and typed `AppError`s
 
 ## What is intentionally not built
@@ -100,8 +100,11 @@ See `.env.example`. Required:
 - `DATABASE_URL` — PostgreSQL connection string
 - `BETTER_AUTH_SECRET` — session signing secret (16+ characters)
 - `BETTER_AUTH_URL` — public origin of the app
-- `STORAGE_DRIVER` — `local` until an S3 adapter is added
+- `STORAGE_DRIVER` — `local` (dev) or `r2` / `s3` for closed-beta object storage
 - `STORAGE_LOCAL_PATH` — directory for the local storage adapter
+- `STORAGE_S3_*` — bucket, endpoint, and keys when `STORAGE_DRIVER` is `r2` or `s3`
+- `BETA_INVITE_ONLY` — temporary closed-beta front door; unset is fail-closed in production
+- `EMAIL_DRIVER` — `log` (dev) or `none` (Path B invite pre-verify). `log` is forbidden in production beta.
 - `LOG_LEVEL` — `debug` \| `info` \| `warn` \| `error`
 - `MEDIA_MAX_IMAGE_BYTES` / `MEDIA_MAX_VIDEO_BYTES` — ingest caps
 - `ANALYSIS_PROVIDER` — optional preferred adapter key. Leave empty to use the first ready adapter for the requested capability.
@@ -345,6 +348,14 @@ M7 lets the project owner explicitly export or share a READY kept film:
 - Honesty flags: `canExport` / `canShareLink`. Missing destinations fail as unavailable.
 
 See [PHASE_M7_SHARE_EXPORT_ROADMAP_DECISION.md](./PHASE_M7_SHARE_EXPORT_ROADMAP_DECISION.md).
+
+## Closed beta (Wave 1)
+
+Temporary invite-only gate (`BETA_INVITE_ONLY`). Public free-tier rules are unchanged when the flag is off (email verification, 1 `AI_DIRECT` / hour, 5-minute cap, watermark, ads).
+
+- Mint invites: `npx tsx scripts/mint-beta-invite.ts --email you@example.com` or `--code`
+- Wipe SLA ≤ 24h: [docs/BETA_WIPE_RUNBOOK.md](./docs/BETA_WIPE_RUNBOOK.md)
+- Backup + alerts: [docs/BETA_BACKUP_MONITORING.md](./docs/BETA_BACKUP_MONITORING.md)
 
 ## Next phase
 

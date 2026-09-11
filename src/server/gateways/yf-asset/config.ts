@@ -1,4 +1,8 @@
 import {
+  BETA_DEFAULT_MAX_JOBS,
+  BETA_DEFAULT_MAX_SPEND_USD,
+} from "@/server/beta/defaults";
+import {
   ALL_ASSET_CAPABILITIES,
   AssetCapability,
   type AssetCapabilityValue,
@@ -100,8 +104,7 @@ export function parseYfAssetGatewayConfig(
     webhookSecret: emptyToUndefined(env.YF_GATEWAY_WEBHOOK_SECRET),
     timeoutMs: positiveInt(env.YF_GATEWAY_TIMEOUT_MS, 300_000),
     pollMs: positiveInt(env.YF_GATEWAY_POLL_MS, 2_000),
-    maxJobs: optionalPositiveInt(env.YF_GATEWAY_MAX_JOBS),
-    maxSpendUsd: optionalPositiveNumber(env.YF_GATEWAY_MAX_SPEND_USD),
+    ...resolveLiveSpendCaps(backend, env),
     estimatedUsdPerJob: optionalPositiveNumber(env.YF_GATEWAY_ESTIMATED_USD_PER_JOB) ?? 0.5,
     downloadMaxBytes: positiveInt(env.YF_GATEWAY_DOWNLOAD_MAX_BYTES, 100 * 1024 * 1024),
     extraInput: parseExtraInput(env.YF_GATEWAY_BACKEND_INPUT_JSON),
@@ -121,6 +124,33 @@ export function assertGatewaySecrets(config: YfAssetGatewayConfig): void {
         : "YF_GATEWAY_BACKEND_API_KEY (or FAL_KEY for the fal preset) is required. The gateway fails closed without a backend key.",
     );
   }
+  if (config.backend !== "mock") {
+    if (config.maxJobs == null || config.maxSpendUsd == null) {
+      throw new GatewayConfigError(
+        "YF_GATEWAY_MAX_JOBS and YF_GATEWAY_MAX_SPEND_USD are required for a live gateway backend. Uncapped spend is fail-closed.",
+      );
+    }
+  }
+  if (config.webhookUrl && !config.webhookSecret) {
+    throw new GatewayConfigError(
+      "YF_GATEWAY_WEBHOOK_SECRET is required when YF_GATEWAY_WEBHOOK_URL is set. Webhooks fail closed without a shared secret.",
+    );
+  }
+}
+
+function resolveLiveSpendCaps(
+  backend: YfAssetGatewayBackend,
+  env: GatewayEnv,
+): { maxJobs?: number; maxSpendUsd?: number } {
+  const maxJobs = optionalPositiveInt(env.YF_GATEWAY_MAX_JOBS);
+  const maxSpendUsd = optionalPositiveNumber(env.YF_GATEWAY_MAX_SPEND_USD);
+  if (backend === "mock") {
+    return { maxJobs, maxSpendUsd };
+  }
+  return {
+    maxJobs: maxJobs ?? BETA_DEFAULT_MAX_JOBS,
+    maxSpendUsd: maxSpendUsd ?? BETA_DEFAULT_MAX_SPEND_USD,
+  };
 }
 
 export function gatewayReady(config: YfAssetGatewayConfig): boolean {

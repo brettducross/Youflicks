@@ -68,7 +68,7 @@ export class YfAssetGenerateService {
     }
 
     try {
-      this.spend.assertWithinCap();
+      await this.spend.assertWithinCap();
     } catch (error) {
       if (error instanceof GatewaySpendCapError) {
         return gatewayError(429, error.code, error.message);
@@ -77,7 +77,7 @@ export class YfAssetGenerateService {
     }
 
     const input = asRecord(request.input);
-    const estimatedCostUsd = this.spend.recordAccepted();
+    const estimatedCostUsd = await this.spend.recordAccepted();
     const job = this.jobs.create({
       providerKey: this.config.providerKey,
       capability,

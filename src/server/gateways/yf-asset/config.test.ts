@@ -74,6 +74,56 @@ describe("assertGatewaySecrets", () => {
     });
     expect(() => assertGatewaySecrets(config)).not.toThrow();
     expect(gatewayReady(config)).toBe(true);
+    expect(config.maxJobs).toBeUndefined();
+    expect(config.maxSpendUsd).toBeUndefined();
+  });
+
+  it("applies beta spend defaults for a live backend when caps are unset", () => {
+    const config = parseYfAssetGatewayConfig({
+      YF_GATEWAY_API_KEY: "gw-key",
+      YF_GATEWAY_BACKEND_API_KEY: "backend-key",
+      YF_GATEWAY_BACKEND: "replicate",
+      REPLICATE_API_TOKEN: "r8_token",
+    });
+    expect(config.maxJobs).toBe(10);
+    expect(config.maxSpendUsd).toBe(8);
+    expect(() => assertGatewaySecrets(config)).not.toThrow();
+  });
+
+  it("fails closed when a webhook URL is set without a secret", () => {
+    const config = parseYfAssetGatewayConfig({
+      YF_GATEWAY_API_KEY: "gw-key",
+      YF_GATEWAY_BACKEND: "mock",
+      YF_GATEWAY_MODEL: "mock.video",
+      YF_GATEWAY_WEBHOOK_URL: "https://example.test/hook",
+    });
+    expect(() => assertGatewaySecrets(config)).toThrow(/YF_GATEWAY_WEBHOOK_SECRET/);
+  });
+});
+
+describe("live gateway durable ledger", () => {
+  it("fails closed without DATABASE_URL when the backend is not mock", async () => {
+    const { createYfAssetGatewayRuntime } = await import("@/server/gateways/yf-asset/server");
+    const previous = process.env.DATABASE_URL;
+    delete process.env.DATABASE_URL;
+    try {
+      expect(() =>
+        createYfAssetGatewayRuntime(
+          parseYfAssetGatewayConfig({
+            YF_GATEWAY_API_KEY: "gw-key",
+            YF_GATEWAY_BACKEND_API_KEY: "backend-key",
+            YF_GATEWAY_BACKEND: "http",
+            YF_GATEWAY_MODEL: "open.model",
+          }),
+        ),
+      ).toThrow(/DATABASE_URL/);
+    } finally {
+      if (previous === undefined) {
+        delete process.env.DATABASE_URL;
+      } else {
+        process.env.DATABASE_URL = previous;
+      }
+    }
   });
 });
 

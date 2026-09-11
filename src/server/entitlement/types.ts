@@ -8,6 +8,7 @@ export const EntitlementDenyCode = {
   DURATION_EXCEEDS_PLAN: "DURATION_EXCEEDS_PLAN",
   SUSPENDED: "SUSPENDED",
   INSUFFICIENT_CREDITS: "INSUFFICIENT_CREDITS",
+  CONSENT_REQUIRED: "CONSENT_REQUIRED",
 } as const;
 
 export type EntitlementDenyCodeValue =

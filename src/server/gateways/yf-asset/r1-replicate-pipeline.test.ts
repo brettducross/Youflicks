@@ -54,6 +54,7 @@ import { RenderWorker } from "@/server/services/render-worker";
 import { TimelineContractService } from "@/server/services/timeline-contract";
 import { TimelineService } from "@/server/services/timeline";
 import { TimelineWorker } from "@/server/services/timeline-worker";
+import { ConsentService } from "@/server/services/consent";
 import { TasteService } from "@/server/services/taste";
 import { describeAssetAvailability } from "@/server/assets/provider-config";
 import { describeRenderAvailability } from "@/server/render/provider-config";
@@ -150,7 +151,7 @@ describe("R1 Replicate transport → GeneratedAsset → Render → Keep → Play
     dir = await mkdtemp(path.join(tmpdir(), "youflicks-r1-replicate-"));
     storage = new LocalStorageAdapter(dir);
     await prisma.user.create({
-      data: { id: ownerId, name: "Owner", email: `${ownerId}@example.com`, emailVerified: false },
+      data: { id: ownerId, name: "Owner", email: `${ownerId}@example.com`, emailVerified: true },
     });
     const project = await projects.create(ownerId, {
       title: "R1 replicate proof",
@@ -164,6 +165,7 @@ describe("R1 Replicate transport → GeneratedAsset → Render → Keep → Play
       bytes: new Uint8Array(PNG_1X1),
     });
     mediaAssetId = ingested.id;
+    await new ConsentService().accept(ownerId);
     await intent.upsert(ownerId, projectId, {
       purpose: "A quiet family afternoon",
       mood: "warm",

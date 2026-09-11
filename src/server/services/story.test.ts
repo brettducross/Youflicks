@@ -83,7 +83,7 @@ describe("StoryService M1", () => {
     dir = await mkdtemp(path.join(tmpdir(), "youflicks-story-"));
     await prisma.user.createMany({
       data: [
-        { id: ownerId, name: "Owner", email: `${ownerId}@example.com`, emailVerified: false },
+        { id: ownerId, name: "Owner", email: `${ownerId}@example.com`, emailVerified: true },
         {
           id: strangerId,
           name: "Stranger",

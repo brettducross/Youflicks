@@ -1,11 +1,12 @@
-export class GatewaySpendCapError extends Error {
-  readonly code = "GATEWAY_SPEND_CAP";
+import {
+  alertSpendCap,
+  assertWithinCaps,
+  GatewaySpendCapError,
+  MemorySpendLedger,
+  type SpendLedgerPort,
+} from "@/server/gateways/yf-asset/ledger";
 
-  constructor(message: string) {
-    super(message);
-    this.name = "GatewaySpendCapError";
-  }
-}
+export { GatewaySpendCapError } from "@/server/gateways/yf-asset/ledger";
 
 export type SpendGuardSnapshot = {
   jobsAccepted: number;
@@ -16,49 +17,66 @@ export type SpendGuardSnapshot = {
 };
 
 /**
- * Process-local spend / job caps. Ops only — never fed to Director / Story / Timeline.
- * Values are placeholders until Brett sets real keys + caps.
+ * Durable spend / job caps. Ops only — never fed to Director / Story / Timeline.
+ * Live backends always have caps (env or beta defaults). Restart must not reset spend.
  */
 export class SpendGuard {
-  jobsAccepted = 0;
-  spendUsd = 0;
-
   constructor(
     private readonly maxJobs?: number,
     private readonly maxSpendUsd?: number,
     private readonly estimatedUsdPerJob = 0.5,
+    private readonly ledger: SpendLedgerPort = new MemorySpendLedger(),
   ) {}
 
-  snapshot(): SpendGuardSnapshot {
+  async snapshot(): Promise<SpendGuardSnapshot> {
+    const persisted = await this.ledger.snapshot();
     return {
-      jobsAccepted: this.jobsAccepted,
-      spendUsd: this.spendUsd,
+      jobsAccepted: persisted.jobsAccepted,
+      spendUsd: persisted.spendUsd,
       maxJobs: this.maxJobs,
       maxSpendUsd: this.maxSpendUsd,
       estimatedUsdPerJob: this.estimatedUsdPerJob,
     };
   }
 
-  assertWithinCap(): void {
-    if (this.maxJobs !== undefined && this.jobsAccepted >= this.maxJobs) {
-      throw new GatewaySpendCapError(
-        `Gateway job cap reached (${this.maxJobs}). Raise YF_GATEWAY_MAX_JOBS or wait.`,
-      );
-    }
-    if (
-      this.maxSpendUsd !== undefined &&
-      this.spendUsd + this.estimatedUsdPerJob > this.maxSpendUsd
-    ) {
-      throw new GatewaySpendCapError(
-        `Gateway spend cap reached ($${this.maxSpendUsd}). Raise YF_GATEWAY_MAX_SPEND_USD or wait.`,
-      );
+  async assertWithinCap(): Promise<void> {
+    const current = await this.ledger.snapshot();
+    try {
+      assertWithinCaps(current.jobsAccepted, current.spendUsd, this.estimatedUsdPerJob, {
+        maxJobs: this.maxJobs,
+        maxSpendUsd: this.maxSpendUsd,
+      });
+    } catch (error) {
+      if (error instanceof GatewaySpendCapError) {
+        await alertSpendCap(error, {
+          maxJobs: this.maxJobs,
+          maxSpendUsd: this.maxSpendUsd,
+          jobsAccepted: current.jobsAccepted,
+          spendUsd: current.spendUsd,
+        });
+      }
+      throw error;
     }
   }
 
-  recordAccepted(): number {
-    this.assertWithinCap();
-    this.jobsAccepted += 1;
-    this.spendUsd += this.estimatedUsdPerJob;
+  async recordAccepted(): Promise<number> {
+    try {
+      await this.ledger.tryReserve(this.estimatedUsdPerJob, {
+        maxJobs: this.maxJobs,
+        maxSpendUsd: this.maxSpendUsd,
+      });
+    } catch (error) {
+      if (error instanceof GatewaySpendCapError) {
+        const current = await this.ledger.snapshot();
+        await alertSpendCap(error, {
+          maxJobs: this.maxJobs,
+          maxSpendUsd: this.maxSpendUsd,
+          jobsAccepted: current.jobsAccepted,
+          spendUsd: current.spendUsd,
+        });
+      }
+      throw error;
+    }
     return this.estimatedUsdPerJob;
   }
 }

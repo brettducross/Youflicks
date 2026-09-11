@@ -144,6 +144,15 @@ export class PostgresJobQueue implements JobQueuePort {
       retry: canRetry,
       attempts: row.attempts,
     });
+    if (!canRetry) {
+      void import("@/lib/ops-alerts").then(({ OpsAlertKind, reportOpsAlert }) =>
+        reportOpsAlert({
+          kind: OpsAlertKind.JOB_FAILED,
+          message: input.error,
+          context: { jobId: row.id, type: row.type, projectId: row.projectId },
+        }),
+      );
+    }
     return toRecord(row);
   }
 

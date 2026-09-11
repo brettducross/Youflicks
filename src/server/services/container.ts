@@ -7,6 +7,14 @@ import { env } from "@/lib/env";
 import { AppError } from "@/lib/errors";
 import { PostgresJobQueue } from "@/server/adapters/jobs/postgres";
 import { LocalStorageAdapter } from "@/server/adapters/storage/local";
+import {
+  createAwsS3Store,
+  S3CompatibleStorageAdapter,
+} from "@/server/adapters/storage/s3";
+import { logEmailForbiddenInProductionBeta } from "@/server/beta/flags";
+import { ConsentService } from "@/server/services/consent";
+import { InviteService } from "@/server/services/invite";
+import { WipeService } from "@/server/services/wipe";
 import { registerConfiguredAdapters } from "@/server/analysis/provider-config";
 import { ProviderRegistry } from "@/server/analysis/registry";
 import { RegistryMediaAnalyzer } from "@/server/analysis/registry-analyzer";
@@ -74,6 +82,9 @@ export type ServiceContainer = {
   jobs: JobQueuePort;
   accountLifecycle: AccountLifecycleService;
   entitlements: EntitlementService;
+  invites: InviteService;
+  consents: ConsentService;
+  wipe: WipeService;
   billing: BillingService;
   usageMeter: UsageMeterService;
   watermarkPolicy: WatermarkPolicyService;
@@ -123,6 +134,27 @@ function createStorage(): StoragePort {
   if (env.STORAGE_DRIVER === "local") {
     return new LocalStorageAdapter(path.resolve(env.STORAGE_LOCAL_PATH));
   }
+  if (env.STORAGE_DRIVER === "r2" || env.STORAGE_DRIVER === "s3") {
+    if (
+      !env.STORAGE_S3_BUCKET ||
+      !env.STORAGE_S3_ACCESS_KEY_ID ||
+      !env.STORAGE_S3_SECRET_ACCESS_KEY
+    ) {
+      throw AppError.providerNotConfigured("StoragePort");
+    }
+    return new S3CompatibleStorageAdapter(
+      createAwsS3Store({
+        driver: env.STORAGE_DRIVER,
+        bucket: env.STORAGE_S3_BUCKET,
+        region: env.STORAGE_S3_REGION,
+        endpoint: env.STORAGE_S3_ENDPOINT,
+        accessKeyId: env.STORAGE_S3_ACCESS_KEY_ID,
+        secretAccessKey: env.STORAGE_S3_SECRET_ACCESS_KEY,
+        forcePathStyle: env.STORAGE_S3_FORCE_PATH_STYLE,
+      }),
+      env.STORAGE_DRIVER,
+    );
+  }
   throw AppError.providerNotConfigured("StoragePort");
 }
 
@@ -130,10 +162,16 @@ function createServices(): ServiceContainer {
   const storage = createStorage();
   const jobs = new PostgresJobQueue();
   const projects = new ProjectService();
-  const media = new MediaService(storage, projects, {
-    maxImageBytes: env.MEDIA_MAX_IMAGE_BYTES,
-    maxVideoBytes: env.MEDIA_MAX_VIDEO_BYTES,
-  });
+  const consents = new ConsentService(env.AI_CONSENT_POLICY_VERSION);
+  const media = new MediaService(
+    storage,
+    projects,
+    {
+      maxImageBytes: env.MEDIA_MAX_IMAGE_BYTES,
+      maxVideoBytes: env.MEDIA_MAX_VIDEO_BYTES,
+    },
+    consents,
+  );
 
   const providers = registerConfiguredAdapters(new ProviderRegistry(), storage);
   const analyzer = new RegistryMediaAnalyzer(
@@ -146,7 +184,38 @@ function createServices(): ServiceContainer {
   const attribution = new AttributionService(projects);
   const sponsorship = new SponsorshipService();
   const credits = new CreditsService(projects, attribution, taste, sponsorship);
-  const analysis = new AnalysisService(media, jobs, analyzer, projects, attribution);
+
+  if (logEmailForbiddenInProductionBeta()) {
+    throw new Error(
+      "EMAIL_DRIVER=log is not allowed in production beta. Use EMAIL_DRIVER=none (invite Path B) or a real mailer.",
+    );
+  }
+  const accountLifecycle = new AccountLifecycleService(async ({ email }) => {
+    if (env.EMAIL_DRIVER === "none") {
+      return;
+    }
+    await auth.api.sendVerificationEmail({
+      body: { email, callbackURL: "/verify-email" },
+      headers: await headers(),
+    });
+  });
+  const entitlements = new EntitlementService(
+    accountLifecycle,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    consents,
+  );
+  const analysis = new AnalysisService(
+    media,
+    jobs,
+    analyzer,
+    projects,
+    attribution,
+    entitlements,
+  );
   const analysisWorker = new AnalysisWorker(jobs, analysis);
   const director = new DirectorContractService(
     projects,
@@ -156,14 +225,8 @@ function createServices(): ServiceContainer {
     analysis,
     new DirectorCapabilityGateway(providers, new PreferredThenFirstPolicy()),
   );
-
-  const accountLifecycle = new AccountLifecycleService(async ({ email }) => {
-    await auth.api.sendVerificationEmail({
-      body: { email, callbackURL: "/verify-email" },
-      headers: await headers(),
-    });
-  });
-  const entitlements = new EntitlementService(accountLifecycle);
+  const invites = new InviteService();
+  const wipe = new WipeService(storage, projects);
   const billing = new BillingService();
   const usageMeter = new UsageMeterService();
   const watermarkPolicy = new WatermarkPolicyService();
@@ -210,6 +273,7 @@ function createServices(): ServiceContainer {
         canCompose: Boolean(resolved),
       };
     },
+    entitlements,
   );
   const storyWorker = new StoryWorker(jobs, storyService);
   const timeline = new TimelineContractService(projects, taste, intent, media, analysis);
@@ -231,6 +295,7 @@ function createServices(): ServiceContainer {
         canCompose: Boolean(resolved),
       };
     },
+    entitlements,
   );
   const timelineWorker = new TimelineWorker(jobs, timelineService);
   const assets = new AssetContractService(projects, taste, intent);
@@ -251,6 +316,7 @@ function createServices(): ServiceContainer {
     },
     () => describeAssetAvailability(resolveAssetGeneratorAdapter(storage)),
     usageMeter,
+    entitlements,
   );
   const assetWorker = new AssetWorker(jobs, assetService);
   const render = new RenderContractService(projects, storage);
@@ -307,6 +373,9 @@ function createServices(): ServiceContainer {
     jobs,
     accountLifecycle,
     entitlements,
+    invites,
+    consents,
+    wipe,
     billing,
     usageMeter,
     watermarkPolicy,

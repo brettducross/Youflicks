@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import { authClient } from "@/lib/auth-client";
 import { Button } from "@/components/ui/button";
@@ -11,6 +11,16 @@ export function SignUpForm() {
   const router = useRouter();
   const [error, setError] = useState<string | null>(null);
   const [pending, setPending] = useState(false);
+  const [inviteOnly, setInviteOnly] = useState(false);
+
+  useEffect(() => {
+    void fetch("/api/beta/status")
+      .then((response) => response.json())
+      .then((data: { inviteOnly?: boolean }) => {
+        setInviteOnly(data.inviteOnly === true);
+      })
+      .catch(() => undefined);
+  }, []);
 
   async function onSubmit(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -20,6 +30,24 @@ export function SignUpForm() {
     const name = String(form.get("name") ?? "");
     const email = String(form.get("email") ?? "");
     const password = String(form.get("password") ?? "");
+    const inviteCode = String(form.get("inviteCode") ?? "").trim();
+
+    if (inviteOnly) {
+      const response = await fetch("/api/beta/register", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ name, email, password, inviteCode: inviteCode || undefined }),
+      });
+      const payload = (await response.json()) as { error?: { message?: string } };
+      setPending(false);
+      if (!response.ok) {
+        setError(payload.error?.message || "Could not create that account.");
+        return;
+      }
+      router.push("/verify-email");
+      router.refresh();
+      return;
+    }
 
     const result = await authClient.signUp.email({
       name,
@@ -64,6 +92,18 @@ export function SignUpForm() {
           className="h-10"
         />
       </div>
+      {inviteOnly ? (
+        <div className="grid gap-2">
+          <Label htmlFor="inviteCode">Invite code</Label>
+          <Input
+            id="inviteCode"
+            name="inviteCode"
+            autoComplete="off"
+            placeholder="Optional if your email is already allowlisted"
+            className="h-10"
+          />
+        </div>
+      ) : null}
       <div className="grid gap-2">
         <Label htmlFor="password">Password</Label>
         <Input

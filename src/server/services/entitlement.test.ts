@@ -409,4 +409,30 @@ describe("EntitlementService M8.2 free-tier gate", () => {
     expect(snapshot).not.toHaveProperty("price");
     expect(JSON.stringify(snapshot)).not.toMatch(/stripe|cpm|sku/i);
   });
+
+  it("requirePaidEnqueue fails closed on unverified email without consuming movie quota", async () => {
+    await prisma.generationAuthorization.deleteMany({
+      where: { userId: verifiedId, kind: MeterKind.MOVIE_GENERATION },
+    });
+    await expect(entitlements.requirePaidEnqueue(unverifiedId)).rejects.toMatchObject({
+      code: "EMAIL_UNVERIFIED",
+    });
+    await entitlements.requirePaidEnqueue(verifiedId);
+    const movie = await entitlements.authorizeGeneration(verifiedId, {
+      projectId: ownerProjectId,
+    });
+    expect(movie.allowed).toBe(true);
+  });
+
+  it("rate-limits share-link minting to 10 per hour", async () => {
+    await prisma.generationAuthorization.deleteMany({
+      where: { userId: strangerId, kind: "SHARE_LINK_MINT" },
+    });
+    for (let i = 0; i < 10; i += 1) {
+      await entitlements.assertShareLinkMint(strangerId, strangerProjectId);
+    }
+    await expect(
+      entitlements.assertShareLinkMint(strangerId, strangerProjectId),
+    ).rejects.toMatchObject({ code: "RATE_LIMITED" });
+  });
 });

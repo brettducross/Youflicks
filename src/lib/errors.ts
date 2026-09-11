@@ -61,6 +61,7 @@ export const ErrorCodes = {
   WATERMARK_APPLY_FAILED: "WATERMARK_APPLY_FAILED",
   SUSPENDED: "SUSPENDED",
   INSUFFICIENT_CREDITS: "INSUFFICIENT_CREDITS",
+  CONSENT_REQUIRED: "CONSENT_REQUIRED",
   INTERNAL: "INTERNAL",
 } as const;
 
@@ -368,6 +369,12 @@ export class AppError extends Error {
 
   static insufficientCredits(message = "This account does not have enough credits to start a movie.") {
     return new AppError(ErrorCodes.INSUFFICIENT_CREDITS, message, 403);
+  }
+
+  static consentRequired(
+    message = "Accept AI processing terms before sending footage to a vendor.",
+  ) {
+    return new AppError(ErrorCodes.CONSENT_REQUIRED, message, 403);
   }
 }
 

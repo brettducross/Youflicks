@@ -153,6 +153,7 @@ export class PublicationService implements PublicationShareAccess {
     assertPublicationInputPrivacy(body);
     const movie = await this.requireReadyMovie(projectId, movieId);
     await this.entitlements.assertOutputDuration(userId, movie.durationMs, projectId);
+    await this.entitlements.assertShareLinkMint(userId, projectId);
     if (!this.shareConfigured() || !this.adapters.has(PublicationDestination.SHARE_LINK)) {
       throw AppError.publicationDestinationUnavailable("Share links are not available.");
     }

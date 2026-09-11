@@ -10,7 +10,9 @@ import { capabilityForKind } from "@/server/analysis/required-capability";
 import { AnalysisStatus, JobType, ProjectStatus } from "@/server/domain/status";
 import type { JobQueuePort, JobRecord } from "@/server/ports/jobs";
 import type { MediaAnalyzerPort } from "@/server/ports/media-analyzer";
+import { isHttpVisionConfigured } from "@/server/beta/flags";
 import { AttributionService } from "@/server/services/attribution";
+import { EntitlementService } from "@/server/services/entitlement";
 import { MediaService } from "@/server/services/media";
 import { ProjectService } from "@/server/services/projects";
 
@@ -27,6 +29,8 @@ export class AnalysisService {
     private readonly analyzer: MediaAnalyzerPort,
     private readonly projects: ProjectService = new ProjectService(),
     private readonly attribution: AttributionService = new AttributionService(),
+    private readonly entitlements: EntitlementService = new EntitlementService(),
+    private readonly httpVisionConfigured: () => boolean = isHttpVisionConfigured,
   ) {}
 
   toView(row: {
@@ -60,6 +64,9 @@ export class AnalysisService {
   async requestAnalysis(userId: string, projectId: string, assetId: string) {
     const asset = await this.media.getOwnedAsset(userId, projectId, assetId);
     capabilityForKind(asset.kind);
+    if (this.httpVisionConfigured()) {
+      await this.entitlements.requirePaidEnqueue(userId, { requireConsent: true });
+    }
 
     await prisma.mediaAsset.update({
       where: { id: asset.id },

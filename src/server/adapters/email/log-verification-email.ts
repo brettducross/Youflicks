@@ -28,8 +28,20 @@ export class LogVerificationEmailAdapter implements VerificationEmailPort {
   }
 }
 
-const adapter = new LogVerificationEmailAdapter();
+export class NoneVerificationEmailAdapter implements VerificationEmailPort {
+  readonly providerKey = "youflicks.none.email";
+
+  async send(): Promise<void> {
+    // Path B / no-send. Invite mint pre-verifies. Never log a verify URL in production.
+  }
+}
+
+const logAdapter = new LogVerificationEmailAdapter();
+const noneAdapter = new NoneVerificationEmailAdapter();
 
 export function getVerificationEmailAdapter(): VerificationEmailPort {
-  return adapter;
+  if (process.env.EMAIL_DRIVER === "none") {
+    return noneAdapter;
+  }
+  return logAdapter;
 }
