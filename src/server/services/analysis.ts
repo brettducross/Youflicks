@@ -64,9 +64,9 @@ export class AnalysisService {
   async requestAnalysis(userId: string, projectId: string, assetId: string) {
     const asset = await this.media.getOwnedAsset(userId, projectId, assetId);
     capabilityForKind(asset.kind);
-    if (this.httpVisionConfigured()) {
-      await this.entitlements.requirePaidEnqueue(userId, { requireConsent: true });
-    }
+    await this.entitlements.requirePaidEnqueue(userId, {
+      requireConsent: this.httpVisionConfigured(),
+    });
 
     await prisma.mediaAsset.update({
       where: { id: asset.id },

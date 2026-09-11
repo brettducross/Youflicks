@@ -3,6 +3,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { LocalDeterministicStoryComposer } from "@/server/adapters/story/local-deterministic";
+import { LocalDeterministicTimelineComposer } from "@/server/adapters/timeline/local-deterministic";
 import { LocalStorageAdapter } from "@/server/adapters/storage/local";
 import { PostgresJobQueue } from "@/server/adapters/jobs/postgres";
 import { CREATIVE_PLAN_SCHEMA_VERSION, type CreativePlan } from "@/server/director/schema";
@@ -18,6 +19,8 @@ import { StoryContractService } from "@/server/services/story-contract";
 import { StoryService } from "@/server/services/story";
 import { AnalysisService } from "@/server/services/analysis";
 import { TasteService } from "@/server/services/taste";
+import { TimelineContractService } from "@/server/services/timeline-contract";
+import { TimelineService } from "@/server/services/timeline";
 import { WipeService } from "@/server/services/wipe";
 
 const PNG_1X1 = Buffer.from(
@@ -164,6 +167,76 @@ describe("W1.3 YF-B01 paid enqueue + W1.6 consent + W1.7 wipe", () => {
     await entitlements.requirePaidEnqueue(verifiedId);
     const movie = await entitlements.authorizeGeneration(verifiedId, { projectId });
     expect(movie.allowed).toBe(true);
+  });
+
+  it("denies local MEDIA_ANALYZE when emailVerified is false", async () => {
+    const asset = await media.ingest(unverifiedId, unverifiedProjectId, {
+      filename: "local.png",
+      bytes: new Uint8Array(PNG_1X1),
+    });
+    const analysis = new AnalysisService(
+      media,
+      jobs,
+      {
+        async analyze() {
+          throw new Error("should not run");
+        },
+      } as never,
+      projects,
+      attribution,
+      entitlements,
+      () => false,
+    );
+    await expect(
+      analysis.requestAnalysis(unverifiedId, unverifiedProjectId, asset.id),
+    ).rejects.toMatchObject({ code: "EMAIL_UNVERIFIED" });
+    expect(
+      await prisma.job.count({
+        where: { projectId: unverifiedProjectId, type: JobType.MEDIA_ANALYZE },
+      }),
+    ).toBe(0);
+  });
+
+  it("blocks production AI_STORY without AiProcessingConsent", async () => {
+    await expect(story.requestCompose(verifiedId, projectId)).rejects.toMatchObject({
+      code: "CONSENT_REQUIRED",
+    });
+    expect(
+      await prisma.job.count({ where: { projectId, type: JobType.AI_STORY } }),
+    ).toBe(0);
+  });
+
+  it("blocks production AI_TIMELINE without AiProcessingConsent", async () => {
+    const composer = new LocalDeterministicTimelineComposer();
+    const timeline = new TimelineService(
+      jobs,
+      new TimelineContractService(
+        projects,
+        taste,
+        intent,
+        media,
+        new AnalysisService(
+          media,
+          jobs,
+          { async analyze() { throw new Error("unused"); } } as never,
+          projects,
+          attribution,
+          entitlements,
+          () => false,
+        ),
+      ),
+      projects,
+      attribution,
+      () => ({ adapter: composer, attribution: composer.executionAttribution() }),
+      () => ({ productionAvailable: true, localDevAvailable: false, canCompose: true }),
+      entitlements,
+    );
+    await expect(timeline.requestCompose(verifiedId, projectId)).rejects.toMatchObject({
+      code: "CONSENT_REQUIRED",
+    });
+    expect(
+      await prisma.job.count({ where: { projectId, type: JobType.AI_TIMELINE } }),
+    ).toBe(0);
   });
 
   it("blocks HTTP-vision analyze without AiProcessingConsent", async () => {

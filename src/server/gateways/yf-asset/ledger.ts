@@ -62,11 +62,21 @@ export class PrismaSpendLedger implements SpendLedgerPort {
 
   async tryReserve(estimatedUsd: number, caps: SpendLedgerCaps): Promise<void> {
     await this.db.$transaction(async (tx) => {
-      const row = await tx.gatewaySpendLedger.upsert({
-        where: { id: this.id },
-        create: { id: this.id, jobsAccepted: 0, spendUsd: 0 },
-        update: {},
-      });
+      await tx.$executeRaw`
+        INSERT INTO gateway_spend_ledger (id, "jobsAccepted", "spendUsd", "updatedAt", "createdAt")
+        VALUES (${this.id}, 0, 0, NOW(), NOW())
+        ON CONFLICT (id) DO NOTHING
+      `;
+      const locked = await tx.$queryRaw<Array<{ jobsAccepted: number; spendUsd: number }>>`
+        SELECT "jobsAccepted", "spendUsd"
+        FROM gateway_spend_ledger
+        WHERE id = ${this.id}
+        FOR UPDATE
+      `;
+      const row = locked[0];
+      if (!row) {
+        throw new Error("Spend ledger row missing after insert.");
+      }
       assertWithinCaps(row.jobsAccepted, row.spendUsd, estimatedUsd, caps);
       await tx.gatewaySpendLedger.update({
         where: { id: this.id },

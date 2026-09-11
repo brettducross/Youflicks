@@ -26,6 +26,7 @@ import {
 } from "@/server/timeline/schema";
 import { STORY_DOCUMENT_SCHEMA_VERSION, type StoryDocument } from "@/server/story/schema";
 import { AttributionService } from "@/server/services/attribution";
+import { ConsentService } from "@/server/services/consent";
 import { AnalysisService } from "@/server/services/analysis";
 import { IntentService } from "@/server/services/intent";
 import { MediaService } from "@/server/services/media";
@@ -125,6 +126,7 @@ describe("TimelineService M2", () => {
       logline: "M2.",
     });
     projectId = project.id;
+    await new ConsentService().accept(ownerId);
     media = new MediaService(new LocalStorageAdapter(dir), projects);
     jobs = new PostgresJobQueue();
     const analysis = new AnalysisService(media, jobs, {

@@ -116,7 +116,9 @@ export class StoryService {
   async requestCompose(userId: string, projectId: string) {
     await this.projects.getForUser(userId, projectId);
     this.requireComposeCapability();
-    await this.entitlements.requirePaidEnqueue(userId);
+    await this.entitlements.requirePaidEnqueue(userId, {
+      requireConsent: this.availability().productionAvailable,
+    });
     await this.requireReadyPlan(projectId);
 
     const job = await this.jobs.enqueue({

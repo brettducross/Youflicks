@@ -136,7 +136,9 @@ export class TimelineService {
   async requestCompose(userId: string, projectId: string) {
     await this.projects.getForUser(userId, projectId);
     this.requireComposeCapability();
-    await this.entitlements.requirePaidEnqueue(userId);
+    await this.entitlements.requirePaidEnqueue(userId, {
+      requireConsent: this.availability().productionAvailable,
+    });
     await this.requireReadyStory(projectId);
 
     const job = await this.jobs.enqueue({
