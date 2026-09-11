@@ -8,6 +8,7 @@ const envSchema = z.object({
   DATABASE_URL: z.string().min(1),
   BETTER_AUTH_SECRET: z.string().min(16),
   BETTER_AUTH_URL: z.string().min(1),
+  /** Unset/empty → local. Production boot refuses local; closed beta requires r2|s3. */
   STORAGE_DRIVER: z.enum(["local", "r2", "s3"]).default("local"),
   STORAGE_LOCAL_PATH: z.string().default("./storage"),
   STORAGE_S3_BUCKET: z.string().optional(),
@@ -117,8 +118,8 @@ const envSchema = z.object({
     .optional()
     .transform((value) => value === "true" || value === "1"),
   /**
-   * HMAC secret for SHARE_LINK tokens. When unset, BETTER_AUTH_SECRET is used.
-   * Empty string disables share links (canShareLink = false).
+   * HMAC secret for SHARE_LINK tokens. Empty or unset disables share links
+   * (canShareLink = false). There is no BETTER_AUTH_SECRET fallback.
    */
   SHARE_TOKEN_SECRET: z.string().optional(),
   /** Soft default SHARE_LINK TTL (7 days). Expiry is always required. */
@@ -127,13 +128,23 @@ const envSchema = z.object({
 
 export type AppEnv = z.infer<typeof envSchema>;
 
+export const PRODUCTION_LOCAL_STORAGE_ERROR =
+  "Invalid environment configuration: STORAGE_DRIVER=local is not allowed in production. Closed beta requires STORAGE_DRIVER=r2 or s3.";
+
+/** Production beta must use r2|s3. Unset STORAGE_DRIVER resolves to local and is refused. */
+export function assertProductionStorageDriver(nodeEnv: string, storageDriver: string) {
+  if (nodeEnv === "production" && storageDriver === "local") {
+    throw new Error(PRODUCTION_LOCAL_STORAGE_ERROR);
+  }
+}
+
 function readEnv(): AppEnv {
   const parsed = envSchema.safeParse({
     NODE_ENV: process.env.NODE_ENV,
     DATABASE_URL: process.env.DATABASE_URL,
     BETTER_AUTH_SECRET: process.env.BETTER_AUTH_SECRET,
     BETTER_AUTH_URL: process.env.BETTER_AUTH_URL,
-    STORAGE_DRIVER: process.env.STORAGE_DRIVER ?? "local",
+    STORAGE_DRIVER: process.env.STORAGE_DRIVER || "local",
     STORAGE_LOCAL_PATH: process.env.STORAGE_LOCAL_PATH ?? "./storage",
     STORAGE_S3_BUCKET: process.env.STORAGE_S3_BUCKET || undefined,
     STORAGE_S3_REGION: process.env.STORAGE_S3_REGION ?? "auto",
@@ -224,6 +235,9 @@ function readEnv(): AppEnv {
         "Invalid environment configuration: EMAIL_DRIVER=log is not allowed in production beta. Use Path B invite pre-verify (EMAIL_DRIVER=none) or a real mailer.",
       );
     }
+  }
+  if (!skipBootGuard) {
+    assertProductionStorageDriver(data.NODE_ENV, data.STORAGE_DRIVER);
   }
   if (
     (data.STORAGE_DRIVER === "r2" || data.STORAGE_DRIVER === "s3") &&

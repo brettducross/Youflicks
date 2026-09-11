@@ -23,6 +23,18 @@ type TokenPayload = {
 };
 
 /**
+ * Empty or unset SHARE_TOKEN_SECRET disables share (fail-closed).
+ * Do not fall back to BETTER_AUTH_SECRET.
+ */
+export function resolveShareSigningSecret(shareTokenSecret: string | undefined): string {
+  return shareTokenSecret?.trim() ?? "";
+}
+
+export function isShareTokenSecretConfigured(shareTokenSecret: string | undefined): boolean {
+  return resolveShareSigningSecret(shareTokenSecret).length >= 16;
+}
+
+/**
  * Time-limited, revocable SHARE_LINK tokens.
  * Runtime only — the durable record is tokenFingerprint on Publication.payload.
  */
