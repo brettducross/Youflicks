@@ -23,6 +23,7 @@ import type { AiDirectorPort } from "@/server/ports/ai-director";
 import type { StoryComposerInput } from "@/server/story/input";
 import { STORY_DOCUMENT_SCHEMA_VERSION, type StoryDocument } from "@/server/story/schema";
 import { AttributionService } from "@/server/services/attribution";
+import { ConsentService } from "@/server/services/consent";
 import { IntentService } from "@/server/services/intent";
 import { MediaService } from "@/server/services/media";
 import { ProjectService } from "@/server/services/projects";
@@ -83,7 +84,7 @@ describe("StoryService M1", () => {
     dir = await mkdtemp(path.join(tmpdir(), "youflicks-story-"));
     await prisma.user.createMany({
       data: [
-        { id: ownerId, name: "Owner", email: `${ownerId}@example.com`, emailVerified: false },
+        { id: ownerId, name: "Owner", email: `${ownerId}@example.com`, emailVerified: true },
         {
           id: strangerId,
           name: "Stranger",
@@ -97,6 +98,7 @@ describe("StoryService M1", () => {
       logline: "M1.",
     });
     projectId = project.id;
+    await new ConsentService().accept(ownerId);
     media = new MediaService(new LocalStorageAdapter(dir), projects);
     jobs = new PostgresJobQueue();
     contract = new StoryContractService(projects, taste, intent, media);

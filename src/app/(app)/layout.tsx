@@ -1,4 +1,5 @@
 import type { ReactNode } from "react";
+import { AiConsentBanner } from "@/components/account/ai-consent-banner";
 import { EmailVerificationBanner } from "@/components/account/email-verification-banner";
 import { EntitlementHonesty } from "@/components/account/entitlement-honesty";
 import { AdSurface } from "@/components/commercial/ad-surface";
@@ -12,9 +13,10 @@ import { getServices } from "@/server/services/container";
 export default async function AppLayout({ children }: { children: ReactNode }) {
   const user = await requireUser();
   const services = getServices();
-  const [gate, presentation] = await Promise.all([
+  const [gate, presentation, consentAccepted] = await Promise.all([
     services.accountLifecycle.getAccountGate(user.id),
     services.presentation.forUser(user.id),
+    services.consents.hasAccepted(user.id),
   ]);
   const shellAd = presentation.ads.find((surface) => surface.key === CommercialSurface.UI_SHELL);
 
@@ -45,6 +47,10 @@ export default async function AppLayout({ children }: { children: ReactNode }) {
           </div>
         </header>
         <EmailVerificationBanner email={user.email} verified={gate.emailVerified} />
+        <AiConsentBanner
+          accepted={consentAccepted}
+          policyVersion={services.consents.currentPolicyVersion()}
+        />
         {shellAd ? <AdSurface surface={shellAd} /> : null}
         <div className="flex-1">{children}</div>
       </div>

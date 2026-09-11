@@ -46,5 +46,7 @@ describe("isAppError", () => {
     );
     expect(toErrorResponse(AppError.suspended()).status).toBe(403);
     expect(toErrorResponse(AppError.suspended()).body.error.code).toBe("SUSPENDED");
+    expect(toErrorResponse(AppError.consentRequired()).status).toBe(403);
+    expect(toErrorResponse(AppError.consentRequired()).body.error.code).toBe("CONSENT_REQUIRED");
   });
 });

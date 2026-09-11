@@ -16,6 +16,8 @@ import {
 } from "@/server/media/sniff";
 import { ProjectStatus } from "@/server/domain/status";
 import type { StoragePort } from "@/server/ports/storage";
+import { vendorEgressConfigured } from "@/server/beta/flags";
+import { ConsentService } from "@/server/services/consent";
 import { ProjectService } from "@/server/services/projects";
 
 type MediaAssetRow = {
@@ -39,6 +41,8 @@ export class MediaService {
     private readonly storage: StoragePort,
     private readonly projects: ProjectService = new ProjectService(),
     private readonly limits: MediaLimitConfig = defaultMediaLimits,
+    private readonly consents: ConsentService = new ConsentService(),
+    private readonly vendorEgress: () => boolean = vendorEgressConfigured,
   ) {}
 
   toView(projectId: string, asset: MediaAssetRow): MediaAssetView {
@@ -85,6 +89,9 @@ export class MediaService {
     input: { filename: string; bytes: Uint8Array },
   ) {
     const project = await this.projects.getForUser(userId, projectId);
+    if (this.vendorEgress()) {
+      await this.consents.requireAccepted(userId);
+    }
     const filename = sanitizeFilename(input.filename);
     if (!Number.isFinite(input.bytes.byteLength) || input.bytes.byteLength <= 0) {
       throw AppError.validation("That file is empty.");

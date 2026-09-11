@@ -1,17 +1,21 @@
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { pathToFileURL } from "node:url";
+import { PrismaPg } from "@prisma/adapter-pg";
+import { PrismaClient } from "@/generated/prisma/client";
 import { HttpQueueVideoBackend } from "@/server/gateways/yf-asset/backends/http-queue";
 import { MockVideoBackend } from "@/server/gateways/yf-asset/backends/mock";
 import { ReplicateVideoBackend } from "@/server/gateways/yf-asset/backends/replicate";
 import type { VideoBackend } from "@/server/gateways/yf-asset/backends/types";
 import {
   assertGatewaySecrets,
+  GatewayConfigError,
   gatewayReady,
   parseYfAssetGatewayConfig,
   type YfAssetGatewayConfig,
 } from "@/server/gateways/yf-asset/config";
 import { YfAssetGenerateService } from "@/server/gateways/yf-asset/generate";
 import { GatewayJobStore } from "@/server/gateways/yf-asset/jobs";
+import { MemorySpendLedger, PrismaSpendLedger } from "@/server/gateways/yf-asset/ledger";
 import { SpendGuard } from "@/server/gateways/yf-asset/spend";
 import { logger } from "@/lib/logger";
 
@@ -27,9 +31,30 @@ export function createYfAssetGatewayRuntime(
   backend: VideoBackend = createBackend(config),
 ): YfAssetGatewayRuntime {
   const jobs = new GatewayJobStore();
-  const spend = new SpendGuard(config.maxJobs, config.maxSpendUsd, config.estimatedUsdPerJob);
+  const spend = new SpendGuard(
+    config.maxJobs,
+    config.maxSpendUsd,
+    config.estimatedUsdPerJob,
+    createSpendLedger(config),
+  );
   const generate = new YfAssetGenerateService(config, backend, jobs, spend);
   return { config, jobs, spend, generate };
+}
+
+function createSpendLedger(config: YfAssetGatewayConfig) {
+  if (config.backend === "mock") {
+    return new MemorySpendLedger();
+  }
+  const databaseUrl = process.env.DATABASE_URL?.trim();
+  if (!databaseUrl) {
+    throw new GatewayConfigError(
+      "DATABASE_URL is required for a durable SpendGuard on a live gateway backend. Restart must not reset spend.",
+    );
+  }
+  const prisma = new PrismaClient({
+    adapter: new PrismaPg({ connectionString: databaseUrl }),
+  });
+  return new PrismaSpendLedger(prisma);
 }
 
 export function createBackend(config: YfAssetGatewayConfig): VideoBackend {
@@ -75,7 +100,7 @@ async function handleRequest(
         providerKey: runtime.config.providerKey,
         backend: runtime.config.backend,
         capabilities: runtime.config.capabilities,
-        spend: runtime.spend.snapshot(),
+        spend: await runtime.spend.snapshot(),
       });
     }
 
@@ -139,7 +164,7 @@ function authorizeBearer(config: YfAssetGatewayConfig, req: IncomingMessage): bo
 
 function authorizeWebhook(config: YfAssetGatewayConfig, req: IncomingMessage): boolean {
   if (!config.webhookSecret) {
-    return true;
+    return false;
   }
   const header = req.headers.authorization ?? "";
   return header === `Bearer ${config.webhookSecret}`;

@@ -125,6 +125,9 @@ export class RenderService {
       outputProfile,
     );
     await this.entitlements.assertOutputDuration(userId, manifest.totalDurationMs, projectId);
+    if (this.availability().productionAvailable) {
+      await this.entitlements.requirePaidEnqueue(userId, { requireConsent: true });
+    }
     const inputFingerprint = fingerprintRenderRequest({
       projectId,
       timelineId: timeline.id,

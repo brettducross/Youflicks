@@ -40,6 +40,8 @@ model User {
   creditBalance            CreditBalance?
   paymentEvents            PaymentEvent[]
   advertisingEvents        AdvertisingEvent[]
+  redeemedInvites          BetaInvite[]
+  aiConsents               AiProcessingConsent[]
 
   @@map("user")
 }
@@ -942,4 +944,55 @@ model AdvertisingEvent {
   @@index([kind, recordedAt])
   @@index([surface, recordedAt])
   @@map("advertising_event")
+}
+
+// ---------------------------------------------------------------------------
+// Wave 1 closed beta — invite, consent, durable spend (not creative meaning)
+// ---------------------------------------------------------------------------
+
+/// Allowlist email and/or hashed single-use invite code. Temporary closed-beta
+/// gate. Public free-tier signup remains when BETA_INVITE_ONLY is off.
+model BetaInvite {
+  id               String    @id @default(cuid())
+  /// Normalized lowercase email. Optional when the row is a bare hashed code.
+  email            String?
+  /// SHA-256 of the single-use plaintext code. Null for email-only allowlist.
+  codeHash         String?   @unique
+  /// Path B: invited signup may mark User.emailVerified without SMTP.
+  preVerifyEmail   Boolean   @default(true)
+  note             String?
+  consumedAt       DateTime?
+  consumedByUserId String?
+  consumedBy       User?     @relation(fields: [consumedByUserId], references: [id], onDelete: SetNull)
+  createdAt        DateTime  @default(now())
+  updatedAt        DateTime  @updatedAt
+
+  @@index([email])
+  @@map("beta_invite")
+}
+
+/// Required before vendor upload / HTTP vision / gateway generate.
+/// policyVersion is an open string (e.g. beta-ai-v1). Not CreativePlan JSON.
+model AiProcessingConsent {
+  id            String   @id @default(cuid())
+  userId        String
+  user          User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  policyVersion String
+  acceptedAt    DateTime
+  createdAt     DateTime @default(now())
+
+  @@unique([userId, policyVersion])
+  @@index([userId, acceptedAt])
+  @@map("ai_processing_consent")
+}
+
+/// Durable gateway spend counters. Ops-only — never fed to Director / Story / Timeline.
+model GatewaySpendLedger {
+  id           String   @id
+  jobsAccepted Int      @default(0)
+  spendUsd     Float    @default(0)
+  updatedAt    DateTime @updatedAt
+  createdAt    DateTime @default(now())
+
+  @@map("gateway_spend_ledger")
 }

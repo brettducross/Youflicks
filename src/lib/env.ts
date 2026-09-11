@@ -8,8 +8,33 @@ const envSchema = z.object({
   DATABASE_URL: z.string().min(1),
   BETTER_AUTH_SECRET: z.string().min(16),
   BETTER_AUTH_URL: z.string().min(1),
-  STORAGE_DRIVER: z.enum(["local"]).default("local"),
+  STORAGE_DRIVER: z.enum(["local", "r2", "s3"]).default("local"),
   STORAGE_LOCAL_PATH: z.string().default("./storage"),
+  STORAGE_S3_BUCKET: z.string().optional(),
+  STORAGE_S3_REGION: z.string().default("auto"),
+  STORAGE_S3_ENDPOINT: z.string().optional(),
+  STORAGE_S3_ACCESS_KEY_ID: z.string().optional(),
+  STORAGE_S3_SECRET_ACCESS_KEY: z.string().optional(),
+  STORAGE_S3_FORCE_PATH_STYLE: z
+    .enum(["true", "false", "1", "0", ""])
+    .optional()
+    .transform((value) => value === "true" || value === "1"),
+  /**
+   * Temporary closed-beta invite gate. Unset is fail-closed in production.
+   * Explicit false restores public free-tier signup.
+   */
+  BETA_INVITE_ONLY: z
+    .enum(["true", "false", "1", "0", ""])
+    .optional()
+    .transform((value) => {
+      if (value === "true" || value === "1") return true;
+      if (value === "false" || value === "0") return false;
+      return undefined;
+    }),
+  BETA_OPS_SECRET: z.string().optional(),
+  EMAIL_DRIVER: z.enum(["log", "none"]).default("log"),
+  AI_CONSENT_POLICY_VERSION: z.string().default("beta-ai-v1"),
+  SENTRY_DSN: z.string().optional(),
   LOG_LEVEL: z.enum(["debug", "info", "warn", "error"]).default("info"),
   MEDIA_MAX_IMAGE_BYTES: z.coerce.number().int().positive().default(DEFAULT_MAX_IMAGE_BYTES),
   MEDIA_MAX_VIDEO_BYTES: z.coerce.number().int().positive().default(DEFAULT_MAX_VIDEO_BYTES),
@@ -110,6 +135,18 @@ function readEnv(): AppEnv {
     BETTER_AUTH_URL: process.env.BETTER_AUTH_URL,
     STORAGE_DRIVER: process.env.STORAGE_DRIVER ?? "local",
     STORAGE_LOCAL_PATH: process.env.STORAGE_LOCAL_PATH ?? "./storage",
+    STORAGE_S3_BUCKET: process.env.STORAGE_S3_BUCKET || undefined,
+    STORAGE_S3_REGION: process.env.STORAGE_S3_REGION ?? "auto",
+    STORAGE_S3_ENDPOINT: process.env.STORAGE_S3_ENDPOINT || undefined,
+    STORAGE_S3_ACCESS_KEY_ID: process.env.STORAGE_S3_ACCESS_KEY_ID || undefined,
+    STORAGE_S3_SECRET_ACCESS_KEY: process.env.STORAGE_S3_SECRET_ACCESS_KEY || undefined,
+    STORAGE_S3_FORCE_PATH_STYLE: process.env.STORAGE_S3_FORCE_PATH_STYLE ?? "",
+    BETA_INVITE_ONLY: process.env.BETA_INVITE_ONLY ?? "",
+    BETA_OPS_SECRET: process.env.BETA_OPS_SECRET || undefined,
+    EMAIL_DRIVER:
+      process.env.EMAIL_DRIVER ?? (process.env.NODE_ENV === "production" ? "none" : "log"),
+    AI_CONSENT_POLICY_VERSION: process.env.AI_CONSENT_POLICY_VERSION ?? "beta-ai-v1",
+    SENTRY_DSN: process.env.SENTRY_DSN || undefined,
     LOG_LEVEL: process.env.LOG_LEVEL ?? "info",
     MEDIA_MAX_IMAGE_BYTES: process.env.MEDIA_MAX_IMAGE_BYTES ?? DEFAULT_MAX_IMAGE_BYTES,
     MEDIA_MAX_VIDEO_BYTES: process.env.MEDIA_MAX_VIDEO_BYTES ?? DEFAULT_MAX_VIDEO_BYTES,
@@ -176,6 +213,27 @@ function readEnv(): AppEnv {
   }
   if (data.NODE_ENV === "production" && data.RENDER_ALLOW_LOCAL) {
     data.RENDER_ALLOW_LOCAL = false;
+  }
+  const skipBootGuard =
+    process.env.VITEST === "true" || process.env.NEXT_PHASE === "phase-production-build";
+  if (!skipBootGuard && data.NODE_ENV === "production" && data.EMAIL_DRIVER === "log") {
+    const inviteOnly =
+      data.BETA_INVITE_ONLY === true || data.BETA_INVITE_ONLY === undefined;
+    if (inviteOnly) {
+      throw new Error(
+        "Invalid environment configuration: EMAIL_DRIVER=log is not allowed in production beta. Use Path B invite pre-verify (EMAIL_DRIVER=none) or a real mailer.",
+      );
+    }
+  }
+  if (
+    (data.STORAGE_DRIVER === "r2" || data.STORAGE_DRIVER === "s3") &&
+    (!data.STORAGE_S3_BUCKET ||
+      !data.STORAGE_S3_ACCESS_KEY_ID ||
+      !data.STORAGE_S3_SECRET_ACCESS_KEY)
+  ) {
+    throw new Error(
+      "Invalid environment configuration: STORAGE_DRIVER r2|s3 requires STORAGE_S3_BUCKET, STORAGE_S3_ACCESS_KEY_ID, and STORAGE_S3_SECRET_ACCESS_KEY.",
+    );
   }
   return data;
 }

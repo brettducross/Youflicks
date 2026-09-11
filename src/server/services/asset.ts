@@ -35,6 +35,7 @@ import {
 } from "@/server/services/asset-contract";
 import type { UsageMeterPort } from "@/server/ports/usage-meter";
 import { AttributionService } from "@/server/services/attribution";
+import { EntitlementService } from "@/server/services/entitlement";
 import { ProjectService } from "@/server/services/projects";
 import { UsageMeterService } from "@/server/services/usage-meter";
 import { UsageKind, UsageOutcome } from "@/server/usage/types";
@@ -112,6 +113,7 @@ export class AssetService {
     private readonly resolveGenerator: () => ResolvedAssetRuntime | null,
     private readonly availability: () => AssetAvailability,
     private readonly usage: UsageMeterPort = new UsageMeterService(),
+    private readonly entitlements: EntitlementService = new EntitlementService(),
   ) {}
 
   getAvailability(): AssetAvailability {
@@ -156,6 +158,9 @@ export class AssetService {
     for (const role of roles) {
       this.requireGenerateCapability(role.kind);
     }
+    await this.entitlements.requirePaidEnqueue(userId, {
+      requireConsent: this.availability().productionAvailable,
+    });
 
     const inputFingerprint = fingerprintAssetBatchRequest({
       projectId,

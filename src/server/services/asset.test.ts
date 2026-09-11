@@ -32,6 +32,7 @@ import {
   type TimelineDocument,
 } from "@/server/timeline/schema";
 import { AttributionService } from "@/server/services/attribution";
+import { ConsentService } from "@/server/services/consent";
 import { AnalysisService } from "@/server/services/analysis";
 import { AssetContractService } from "@/server/services/asset-contract";
 import { AssetService } from "@/server/services/asset";
@@ -160,7 +161,7 @@ describe("AssetService M3", () => {
     storage = new LocalStorageAdapter(dir);
     await prisma.user.createMany({
       data: [
-        { id: ownerId, name: "Owner", email: `${ownerId}@example.com`, emailVerified: false },
+        { id: ownerId, name: "Owner", email: `${ownerId}@example.com`, emailVerified: true },
         {
           id: strangerId,
           name: "Stranger",
@@ -174,6 +175,7 @@ describe("AssetService M3", () => {
       logline: "M3.",
     });
     projectId = project.id;
+    await new ConsentService().accept(ownerId);
     media = new MediaService(storage, projects);
     jobs = new PostgresJobQueue();
     const analysis = new AnalysisService(media, jobs, {

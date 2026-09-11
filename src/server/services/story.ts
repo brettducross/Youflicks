@@ -14,6 +14,7 @@ import {
 import type { StoryComposerPort } from "@/server/ports/story-composer";
 import type { JobQueuePort, JobRecord } from "@/server/ports/jobs";
 import { AttributionService } from "@/server/services/attribution";
+import { EntitlementService } from "@/server/services/entitlement";
 import { ProjectService } from "@/server/services/projects";
 import {
   extractPriorStory,
@@ -87,6 +88,7 @@ export class StoryService {
     private readonly attribution: AttributionService,
     private readonly resolveComposer: () => ResolvedStoryRuntime | null,
     private readonly availability: () => StoryAvailability,
+    private readonly entitlements: EntitlementService = new EntitlementService(),
   ) {}
 
   getAvailability(): StoryAvailability {
@@ -114,6 +116,9 @@ export class StoryService {
   async requestCompose(userId: string, projectId: string) {
     await this.projects.getForUser(userId, projectId);
     this.requireComposeCapability();
+    await this.entitlements.requirePaidEnqueue(userId, {
+      requireConsent: this.availability().productionAvailable,
+    });
     await this.requireReadyPlan(projectId);
 
     const job = await this.jobs.enqueue({
