@@ -130,38 +130,68 @@ export class InviteService {
     if (!input.inviteId) {
       return { preVerifyEmail: false };
     }
-    const existing = await prisma.betaInvite.findUnique({
-      where: { id: input.inviteId },
-      select: { consumedByUserId: true, preVerifyEmail: true, consumedAt: true },
-    });
-    if (existing?.consumedByUserId === input.userId) {
-      return { preVerifyEmail: existing.preVerifyEmail };
-    }
-    const row = await prisma.betaInvite.updateMany({
-      where: { id: input.inviteId, consumedAt: null },
-      data: {
-        consumedAt: new Date(),
-        consumedByUserId: input.userId,
-      },
-    });
-    if (row.count === 0) {
-      throw AppError.forbidden("That invite is no longer available.");
-    }
-    const invite = await prisma.betaInvite.findUniqueOrThrow({
-      where: { id: input.inviteId },
-      select: { preVerifyEmail: true },
-    });
-    if (invite.preVerifyEmail) {
-      await prisma.user.update({
-        where: { id: input.userId },
-        data: { emailVerified: true },
-      });
-      logger.info("beta.invite_preverified", {
+    const inviteId = input.inviteId;
+    try {
+      return await this.attachInviteToUser({
         userId: input.userId,
-        email: normalizeEmail(input.email),
+        email: input.email,
+        inviteId,
       });
+    } catch (error) {
+      await this.deleteOrphanSignup(input.userId);
+      throw error;
     }
-    return { preVerifyEmail: invite.preVerifyEmail };
+  }
+
+  /**
+   * YF-W1-03: if consume loses the race after Better Auth committed a user,
+   * delete that user so we never leave an unverified leftover account.
+   */
+  async deleteOrphanSignup(userId: string) {
+    await prisma.user.deleteMany({ where: { id: userId } });
+    logger.info("beta.invite_orphan_deleted", { userId });
+  }
+
+  private async attachInviteToUser(input: {
+    userId: string;
+    email: string;
+    inviteId: string;
+  }): Promise<{ preVerifyEmail: boolean }> {
+    return prisma.$transaction(async (tx) => {
+      await tx.$executeRaw`SELECT 1 FROM beta_invite WHERE id = ${input.inviteId} FOR UPDATE`;
+      const existing = await tx.betaInvite.findUnique({
+        where: { id: input.inviteId },
+        select: { consumedByUserId: true, preVerifyEmail: true, consumedAt: true },
+      });
+      if (existing?.consumedByUserId === input.userId) {
+        return { preVerifyEmail: existing.preVerifyEmail };
+      }
+      const row = await tx.betaInvite.updateMany({
+        where: { id: input.inviteId, consumedAt: null },
+        data: {
+          consumedAt: new Date(),
+          consumedByUserId: input.userId,
+        },
+      });
+      if (row.count === 0) {
+        throw AppError.forbidden("That invite is no longer available.");
+      }
+      const invite = await tx.betaInvite.findUniqueOrThrow({
+        where: { id: input.inviteId },
+        select: { preVerifyEmail: true },
+      });
+      if (invite.preVerifyEmail) {
+        await tx.user.update({
+          where: { id: input.userId },
+          data: { emailVerified: true },
+        });
+        logger.info("beta.invite_preverified", {
+          userId: input.userId,
+          email: normalizeEmail(input.email),
+        });
+      }
+      return { preVerifyEmail: invite.preVerifyEmail };
+    });
   }
 }
 

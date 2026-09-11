@@ -93,4 +93,55 @@ describe("InviteService W1.1", () => {
     await prisma.betaInvite.deleteMany({ where: { id: minted.id } });
     await prisma.user.deleteMany({ where: { id: userId } });
   });
+
+  it("deletes the losing signup when two users race the same invite (YF-W1-03)", async () => {
+    const minted = await invites.mintCode();
+    const userA = `invite-race-a-${suffix}`;
+    const userB = `invite-race-b-${suffix}`;
+    await prisma.user.createMany({
+      data: [
+        {
+          id: userA,
+          name: "A",
+          email: `race-a-${suffix}@example.com`,
+          emailVerified: false,
+        },
+        {
+          id: userB,
+          name: "B",
+          email: `race-b-${suffix}@example.com`,
+          emailVerified: false,
+        },
+      ],
+    });
+    const results = await Promise.allSettled([
+      invites.consumeForUser({
+        userId: userA,
+        email: `race-a-${suffix}@example.com`,
+        inviteId: minted.id,
+      }),
+      invites.consumeForUser({
+        userId: userB,
+        email: `race-b-${suffix}@example.com`,
+        inviteId: minted.id,
+      }),
+    ]);
+    const accepted = results.filter((result) => result.status === "fulfilled");
+    const denied = results.filter((result) => result.status === "rejected");
+    expect(accepted).toHaveLength(1);
+    expect(denied).toHaveLength(1);
+    if (denied[0]?.status === "rejected") {
+      expect(denied[0].reason).toMatchObject({ code: "FORBIDDEN" });
+    }
+    const remaining = await prisma.user.findMany({
+      where: { id: { in: [userA, userB] } },
+    });
+    expect(remaining).toHaveLength(1);
+    expect(remaining[0]?.emailVerified).toBe(true);
+    const invite = await prisma.betaInvite.findUniqueOrThrow({ where: { id: minted.id } });
+    expect(invite.consumedByUserId).toBe(remaining[0]?.id);
+    expect(invite.consumedAt).toBeTruthy();
+    await prisma.betaInvite.deleteMany({ where: { id: minted.id } });
+    await prisma.user.deleteMany({ where: { id: remaining[0]!.id } });
+  });
 });
