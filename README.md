@@ -100,10 +100,10 @@ See `.env.example`. Required:
 - `DATABASE_URL` — PostgreSQL connection string
 - `BETTER_AUTH_SECRET` — session signing secret (16+ characters)
 - `BETTER_AUTH_URL` — public origin of the app
-- `STORAGE_DRIVER` — `local` (dev/test only; production refuses local, including unset→local) or `r2` / `s3` for closed-beta object storage
+- `STORAGE_DRIVER` — `local` (dev/test only; production refuses local, including unset→local) or `r2` / `s3` for closed-beta object storage. Env matrix + live roundtrip: [docs/BETA_OBJECT_STORAGE.md](./docs/BETA_OBJECT_STORAGE.md).
 - `STORAGE_LOCAL_PATH` — directory for the local storage adapter
 - `STORAGE_S3_*` — bucket, endpoint, and keys when `STORAGE_DRIVER` is `r2` or `s3`
-- `BETA_INVITE_ONLY` — temporary closed-beta front door; unset is fail-closed in production
+- `BETA_INVITE_ONLY` — temporary closed-beta front door; unset is fail-closed in production. Hosted beta must not set `false`.
 - `EMAIL_DRIVER` — `log` (dev) or `none` (Path B invite pre-verify). `log` is forbidden in production beta.
 - `SHARE_TOKEN_SECRET` — HMAC for share links (16+). Empty or unset disables share (fail-closed; no `BETTER_AUTH_SECRET` fallback).
 - `LOG_LEVEL` — `debug` \| `info` \| `warn` \| `error`
@@ -352,11 +352,14 @@ See [PHASE_M7_SHARE_EXPORT_ROADMAP_DECISION.md](./PHASE_M7_SHARE_EXPORT_ROADMAP_
 
 ## Closed beta (Wave 1)
 
-Temporary invite-only gate (`BETA_INVITE_ONLY`). Public free-tier rules are unchanged when the flag is off (email verification, 1 `AI_DIRECT` / hour, 5-minute cap, watermark, ads).
+Temporary invite-only gate (`BETA_INVITE_ONLY`). Public free-tier rules are unchanged when the flag is off (email verification, 1 `AI_DIRECT` / hour, 5-minute cap, watermark, ads). Hosted closed beta must keep invite-only on; do not set `false` on production.
 
-- Mint invites: `npx tsx scripts/mint-beta-invite.ts --email you@example.com` or `--code`
+- Launch-gate flags: [docs/LAUNCH_GATE_CHECKLIST.md](./docs/LAUNCH_GATE_CHECKLIST.md)
+- Object storage env + verify: [docs/BETA_OBJECT_STORAGE.md](./docs/BETA_OBJECT_STORAGE.md) (`npm run ops:verify-storage`)
+- Mint invites (ops, after launch-gate PASS): `npx tsx scripts/mint-beta-invite.ts --email you@example.com` or `--code`
 - Wipe SLA ≤ 24h: [docs/BETA_WIPE_RUNBOOK.md](./docs/BETA_WIPE_RUNBOOK.md)
-- Backup + alerts: [docs/BETA_BACKUP_MONITORING.md](./docs/BETA_BACKUP_MONITORING.md)
+- Backup + restore drill: [docs/BETA_BACKUP_MONITORING.md](./docs/BETA_BACKUP_MONITORING.md)
+- Consent copy template (not legal text): [docs/BETA_AI_CONSENT_COPY_TEMPLATE.md](./docs/BETA_AI_CONSENT_COPY_TEMPLATE.md) · draft URL `/legal/ai-processing-draft`
 
 ## Next phase
 
