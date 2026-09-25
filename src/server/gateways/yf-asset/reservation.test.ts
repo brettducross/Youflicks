@@ -1,3 +1,4 @@
+import { readFileSync } from "node:fs";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -413,7 +414,7 @@ describe("live generate fail-closed and cap", () => {
       YF_GATEWAY_BACKEND_API_KEY: "backend-key",
       YF_GATEWAY_BACKEND: "http",
       YF_GATEWAY_MODEL: "open.model",
-      YF_GATEWAY_LANE_ID: "veo31lite-720",
+      YF_GATEWAY_LANE_ID: "r1-wan27-replicate",
       YF_GATEWAY_MAX_JOBS: "10",
       YF_GATEWAY_MAX_SPEND_USD: "100",
       YF_GATEWAY_BACKEND_INPUT_JSON: JSON.stringify({ duration: 9 }),
@@ -473,16 +474,36 @@ describe("gateway boot fail-closed", () => {
     await writeFile(
       zeroFile,
       JSON.stringify({
+        registryVersion: "sg-lanes-v1",
+        thresholdsVersion: "po-sg-2026-09-25",
+        regenCeilings: { "draft-cost": 3, "draft-quality": 2, standard: 2, premium: 2 },
+        classOrder: ["draft-cost", "draft-quality", "standard", "premium"],
+        processors: [],
         lanes: [
           {
             laneId: "zero-rate",
+            laneClass: "standard",
             providerKey: "TBD:zero-rate",
+            modelId: "TBD:zero-rate",
+            gateway: {
+              baseUrlEnv: "SG_LANE_ZERO_RATE_BASE_URL",
+              apiKeyEnv: "SG_LANE_ZERO_RATE_API_KEY",
+            },
+            resolutionTier: "720p",
             usdPerSecond: 0,
+            rateRef: "fixture",
             clipDurationS: 5,
             supportedDurationsS: [5],
             billingGranularityS: 1,
             failuresBillable: true,
-            rateRef: "fixture",
+            audioMode: "OFF",
+            enabled: false,
+            designation: "NONE",
+            gates: {
+              HERO: { status: "NOT_QUALIFIED" },
+              IDENTITY: { status: "NOT_QUALIFIED" },
+              NON_IDENTITY: { status: "NOT_QUALIFIED" },
+            },
           },
         ],
       }),
@@ -528,6 +549,28 @@ describe("gateway boot fail-closed", () => {
       expect.objectContaining({ env: "YF_GATEWAY_ESTIMATED_USD_PER_JOB" }),
     );
     warn.mockRestore();
+  });
+
+  it("refuses to boot a live gateway on a disabled non-TBD lane", async () => {
+    dir = dir || (await mkdtemp(path.join(tmpdir(), "youflicks-gw-boot-")));
+    const file = path.join(dir, "disabled.json");
+    const source = JSON.parse(
+      readFileSync(path.join(process.cwd(), "config/sg-lane-registry.json"), "utf8"),
+    ) as { lanes: Array<{ laneId: string; enabled: boolean }> };
+    const row = source.lanes.find((item) => item.laneId === "r1-wan27-replicate");
+    expect(row).toBeTruthy();
+    row!.enabled = false;
+    await writeFile(file, JSON.stringify(source), "utf8");
+    const config = parseYfAssetGatewayConfig({
+      YF_GATEWAY_API_KEY: "gw-key",
+      YF_GATEWAY_BACKEND_API_KEY: "backend-key",
+      YF_GATEWAY_BACKEND: "http",
+      YF_GATEWAY_MODEL: "open.model",
+      YF_GATEWAY_LANE_ID: "r1-wan27-replicate",
+      SG_LANE_REGISTRY_PATH: file,
+    });
+    expect(() => assertLiveGatewayLane(config)).toThrow(GatewayConfigError);
+    expect(() => assertLiveGatewayLane(config)).toThrow(/disabled/);
   });
 
   it("refuses to boot a live gateway on a TBD providerKey", () => {

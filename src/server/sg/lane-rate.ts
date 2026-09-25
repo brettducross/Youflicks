@@ -1,5 +1,9 @@
-import { readFileSync } from "node:fs";
-import { z } from "zod";
+import {
+  DEFAULT_SG_LANE_REGISTRY_PATH,
+  LaneRegistryError,
+  loadSgLaneRegistry,
+  type RegistryLane,
+} from "@/server/sg/lane-registry";
 
 /** Open strings validated here. Not Prisma enums. */
 export const GATEWAY_LEDGER_SCOPE_KINDS = ["GLOBAL", "LANE", "BAKEOFF", "BAKEOFF_CELL"] as const;
@@ -11,37 +15,20 @@ export type ReservationStatus = (typeof RESERVATION_STATUSES)[number];
 export const AI_VIDEO_BUDGET_SCOPE_KINDS = ["PROJECT", "USER_WINDOW"] as const;
 export type AiVideoBudgetScopeKind = (typeof AI_VIDEO_BUDGET_SCOPE_KINDS)[number];
 
-export const DEFAULT_SG_LANE_REGISTRY_PATH = "config/sg-lane-registry.json";
+export { DEFAULT_SG_LANE_REGISTRY_PATH, LaneRegistryError };
+export type { RegistryLane };
 
-const laneRateSchema = z
-  .object({
-    laneId: z.string().min(1),
-    providerKey: z.string().min(1),
-    usdPerSecond: z.number().finite(),
-    clipDurationS: z.number().positive(),
-    supportedDurationsS: z.array(z.number().positive()).min(1),
-    billingGranularityS: z.number().positive(),
-    failuresBillable: z.boolean(),
-    rateRef: z.string().min(1),
-  })
-  .strict();
-
-const registryFileSchema = z
-  .object({
-    lanes: z.array(laneRateSchema).min(1),
-  })
-  .strict();
-
-export type LaneRate = z.infer<typeof laneRateSchema>;
-
-export class LaneRegistryError extends Error {
-  readonly code = "LANE_REGISTRY_INVALID";
-
-  constructor(message: string) {
-    super(message);
-    this.name = "LaneRegistryError";
-  }
-}
+/** Rate fields the gateway prices from. The full lane lives on RegistryLane. */
+export type LaneRate = {
+  laneId: string;
+  providerKey: string;
+  usdPerSecond: number;
+  clipDurationS: number;
+  supportedDurationsS: number[];
+  billingGranularityS: number;
+  failuresBillable: boolean;
+  rateRef: string;
+};
 
 export class LaneDurationError extends Error {
   readonly code = "DURATION_UNSUPPORTED";
@@ -149,36 +136,8 @@ export function numericExtraDuration(extra: Record<string, unknown>): number | u
   return undefined;
 }
 
-export function loadLaneRegistry(path = DEFAULT_SG_LANE_REGISTRY_PATH): LaneRate[] {
-  let raw: string;
-  try {
-    raw = readFileSync(path, "utf8");
-  } catch (error) {
-    throw new LaneRegistryError(
-      `Lane registry at ${path} could not be read (${error instanceof Error ? error.message : "unknown"}).`,
-    );
-  }
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(raw) as unknown;
-  } catch {
-    throw new LaneRegistryError(`Lane registry at ${path} is not valid JSON.`);
-  }
-  const result = registryFileSchema.safeParse(parsed);
-  if (!result.success) {
-    const detail = result.error.issues
-      .map((issue) => `${issue.path.join(".") || "registry"}: ${issue.message}`)
-      .join("; ");
-    throw new LaneRegistryError(`Lane registry at ${path} is invalid. ${detail}`);
-  }
-  const ids = new Set<string>();
-  for (const lane of result.data.lanes) {
-    if (ids.has(lane.laneId)) {
-      throw new LaneRegistryError(`Lane registry contains a duplicate laneId ${lane.laneId}.`);
-    }
-    ids.add(lane.laneId);
-  }
-  return result.data.lanes;
+export function loadLaneRegistry(path = DEFAULT_SG_LANE_REGISTRY_PATH): RegistryLane[] {
+  return loadSgLaneRegistry(path).lanes;
 }
 
 export function settleTransition(
@@ -202,7 +161,7 @@ export function settleTransition(
   return { kind: "reject", message: `Cannot mark a ${current} reservation unreconciled.` };
 }
 
-export function requireLaneRate(laneId: string, path?: string): LaneRate {
+export function requireLaneRate(laneId: string, path?: string): RegistryLane {
   const trimmed = laneId.trim();
   if (!trimmed) {
     throw new LaneRegistryError("YF_GATEWAY_LANE_ID is required for a live gateway backend.");
@@ -216,6 +175,24 @@ export function requireLaneRate(laneId: string, path?: string): LaneRate {
     throw new LaneRegistryError(
       `Lane ${trimmed} has usdPerSecond ${lane.usdPerSecond}. A live backend requires usdPerSecond > 0.`,
     );
+  }
+  return lane;
+}
+
+/**
+ * Rate lookup for a new reservation or a live gateway call.
+ * A disabled lane or a TBD transport fails closed. Settlement of an
+ * existing hold uses requireLaneRate, which does not apply these checks.
+ */
+export function requireLiveLane(laneId: string, path?: string): RegistryLane {
+  const lane = requireLaneRate(laneId, path);
+  if (/^\s*tbd:/i.test(lane.providerKey)) {
+    throw new LaneRegistryError(
+      `Lane ${lane.laneId} providerKey starts with TBD:. A live gateway fails closed until the transport is set.`,
+    );
+  }
+  if (!lane.enabled) {
+    throw new LaneRegistryError(`Lane ${lane.laneId} is disabled. A live gateway fails closed.`);
   }
   return lane;
 }

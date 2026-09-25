@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterAll, describe, expect, it } from "vitest";
@@ -13,6 +13,7 @@ import {
   fulfillmentSlotKey,
   LEGACY_DECISION_REASON,
   PrismaShotFulfillment,
+  readRegistryStamp,
   recordedLaneClass,
   ShotFulfillmentError,
   UNCLASSIFIED_LANE_CLASS,
@@ -219,6 +220,71 @@ describe("creative payloads and GeneratedAsset stay unchanged", () => {
   });
 });
 
+describe("recorded lane class", () => {
+  it("reads laneClass from the registry and uses unclassified only when it cannot", async () => {
+    const filePath = path.join(process.cwd(), "config/sg-lane-registry.json");
+    expect(recordedLaneClass("r1-wan27-replicate", filePath)).toBe("standard");
+    expect(recordedLaneClass("boreal-720", filePath)).toBe("draft-cost");
+    expect(recordedLaneClass("yf.kenburns.v1", filePath)).toBe("processor");
+    expect(recordedLaneClass("not-a-lane", filePath)).toBe(UNCLASSIFIED_LANE_CLASS);
+    expect(recordedLaneClass("r1-wan27-replicate", "/tmp/youflicks-missing-lane-registry.json")).toBe(
+      UNCLASSIFIED_LANE_CLASS,
+    );
+
+    const dir = await mkdtemp(path.join(tmpdir(), "youflicks-lane-class-"));
+    try {
+      const doc = JSON.parse(readFileSync(filePath, "utf8")) as {
+        lanes: Array<{ laneId: string; laneClass: string }>;
+      };
+      const row = doc.lanes.find((item) => item.laneId === "r1-wan27-replicate");
+      expect(row).toBeTruthy();
+      row!.laneClass = "draft-quality";
+      const patched = path.join(dir, "registry.json");
+      await writeFile(patched, JSON.stringify(doc), "utf8");
+      expect(recordedLaneClass("r1-wan27-replicate", patched)).toBe("draft-quality");
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("registry stamp", () => {
+  it("does not invent a registry version when the file cannot be read", () => {
+    const stamp = readRegistryStamp("/tmp/youflicks-no-such-lane-registry.json");
+    expect(stamp).toEqual({ registryVersion: "", registrySha256: "" });
+    expect(stamp.registryVersion).not.toBe("v0");
+    expect(stamp.registrySha256).not.toBe("unavailable");
+  });
+
+  it("stamps an invalid registry as empty", async () => {
+    const dir = await mkdtemp(path.join(tmpdir(), "youflicks-registry-stamp-bad-"));
+    try {
+      const file = path.join(dir, "registry.json");
+      await writeFile(file, JSON.stringify({ registryVersion: "sg-lanes-v1" }), "utf8");
+      expect(readRegistryStamp(file)).toEqual({ registryVersion: "", registrySha256: "" });
+      await writeFile(file, "{not json", "utf8");
+      expect(readRegistryStamp(file)).toEqual({ registryVersion: "", registrySha256: "" });
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("records the in-file version and sha for a readable registry", async () => {
+    const dir = await mkdtemp(path.join(tmpdir(), "youflicks-registry-stamp-"));
+    try {
+      const source = readFileSync(path.join(process.cwd(), "config/sg-lane-registry.json"));
+      const file = path.join(dir, "registry.json");
+      await writeFile(file, source);
+      const stamp = readRegistryStamp(file);
+      const doc = JSON.parse(source.toString("utf8")) as { registryVersion: string };
+      expect(stamp.registryVersion).toBe(doc.registryVersion);
+      expect(stamp.registrySha256).toBe(createHash("sha256").update(source).digest("hex"));
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+});
+
 describe("ShotFulfillment records", () => {
   const userId = `sg-pr2-${Date.now()}`;
   const projects = new ProjectService();
@@ -271,6 +337,14 @@ describe("ShotFulfillment records", () => {
     expect(first.treatment).toBe("GENERATE");
     expect(first.decisionReason).toBe(LEGACY_DECISION_REASON);
     expect(first.identityEvidence).toBeNull();
+    const registryFile = path.join(process.cwd(), "config/sg-lane-registry.json");
+    const registryBytes = readFileSync(registryFile);
+    const registryDoc = JSON.parse(registryBytes.toString("utf8")) as { registryVersion: string };
+    expect(first.registryVersion).toBe(registryDoc.registryVersion);
+    expect(first.registryVersion).toBe("sg-lanes-v1");
+    expect(first.registryVersion).not.toBe("v0");
+    expect(first.registrySha256).toBe(createHash("sha256").update(registryBytes).digest("hex"));
+    expect(first.registrySha256).not.toBe("unavailable");
 
     const standard = await records.beginAttempt({
       shotFulfillmentId: first.id,

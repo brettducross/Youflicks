@@ -4,6 +4,7 @@ export const OpsAlertKind = {
   JOB_FAILED: "JOB_FAILED",
   SPEND_GUARD: "SPEND_GUARD",
   STORAGE_ERROR: "STORAGE_ERROR",
+  LANE_REGISTRY_INVALID: "LANE_REGISTRY_INVALID",
 } as const;
 
 export type OpsAlertKindValue = (typeof OpsAlertKind)[keyof typeof OpsAlertKind];

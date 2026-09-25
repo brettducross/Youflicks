@@ -1,4 +1,6 @@
-import { mkdtemp, rm } from "node:fs/promises";
+import { createHash } from "node:crypto";
+import { readFileSync } from "node:fs";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
@@ -33,6 +35,7 @@ import {
   type TimelineDocument,
 } from "@/server/timeline/schema";
 import type { AiVideoBudgetPort } from "@/server/sg/ai-video-budget";
+import { PrismaShotFulfillment } from "@/server/sg/shot-fulfillment";
 import { AttributionService } from "@/server/services/attribution";
 import { ConsentService } from "@/server/services/consent";
 import { AnalysisService } from "@/server/services/analysis";
@@ -232,6 +235,7 @@ describe("AssetService M3", () => {
     localDevAvailable?: boolean;
     supportedCapabilities?: AssetCapabilityValue[];
     budgets?: AiVideoBudgetPort;
+    fulfillments?: PrismaShotFulfillment;
   }) {
     const productionAvailable = options.productionAvailable ?? Boolean(options.adapter);
     const localDevAvailable = options.localDevAvailable ?? false;
@@ -273,6 +277,7 @@ describe("AssetService M3", () => {
       undefined,
       undefined,
       options.budgets,
+      options.fulfillments,
     );
     return { assets, worker: new AssetWorker(jobs, assets) };
   }
@@ -802,6 +807,237 @@ describe("AssetService M3", () => {
     }
   });
 
+  it("records the registry laneClass, version, and sha on a priced attempt", async () => {
+    const previousLane = process.env.YF_GATEWAY_LANE_ID;
+    const previousRegistry = process.env.SG_LANE_REGISTRY_PATH;
+    delete process.env.SG_BUDGET_PROJECT_MAX_SECONDS;
+    delete process.env.SG_BUDGET_PROJECT_MAX_USD;
+    delete process.env.SG_BUDGET_USER_WINDOW_MAX_SECONDS;
+    delete process.env.SG_BUDGET_USER_WINDOW_MAX_USD;
+    const dir = await mkdtemp(path.join(tmpdir(), "youflicks-asset-lane-class-"));
+    const sourcePath = path.join(process.cwd(), "config/sg-lane-registry.json");
+    const doc = JSON.parse(readFileSync(sourcePath, "utf8")) as {
+      registryVersion: string;
+      lanes: Array<{ laneId: string; laneClass: string }>;
+    };
+    const row = doc.lanes.find((item) => item.laneId === "r1-wan27-replicate");
+    expect(row).toBeTruthy();
+    row!.laneClass = "premium";
+    const file = path.join(dir, "registry.json");
+    await writeFile(file, JSON.stringify(doc), "utf8");
+    process.env.SG_LANE_REGISTRY_PATH = file;
+    process.env.YF_GATEWAY_LANE_ID = "r1-wan27-replicate";
+    try {
+      const { assets, worker } = harness({
+        adapter: scriptedGenerator(async () => {
+          throw AppError.spendCapReached();
+        }),
+        productionAvailable: true,
+        supportedCapabilities: [AssetCapability.IMAGE_GENERATION],
+      });
+      const queued = await assets.requestGenerate(ownerId, projectId, {
+        roles: [{ role: "intimate_portrait", storySceneId: "scene-registry-class", kind: "IMAGE" }],
+      });
+      for (let attempt = 0; attempt < 5; attempt += 1) {
+        const current = await jobs.get(queued.jobId);
+        if (current?.status !== JobStatus.PENDING) break;
+        const ran = await worker.processNext();
+        if (!ran) break;
+      }
+      const attempt = await prisma.shotFulfillmentAttempt.findFirst({
+        where: { jobId: queued.jobId },
+      });
+      expect(attempt?.laneClass).toBe("premium");
+      expect(attempt?.laneId).toBe("r1-wan27-replicate");
+      const slot = await prisma.shotFulfillment.findFirst({
+        where: { id: attempt?.shotFulfillmentId },
+      });
+      const bytes = readFileSync(file);
+      expect(slot?.registryVersion).toBe(doc.registryVersion);
+      expect(slot?.registryVersion).not.toBe("v0");
+      expect(slot?.registrySha256).toBe(createHash("sha256").update(bytes).digest("hex"));
+      expect(slot?.registrySha256).not.toBe("unavailable");
+    } finally {
+      if (previousLane === undefined) delete process.env.YF_GATEWAY_LANE_ID;
+      else process.env.YF_GATEWAY_LANE_ID = previousLane;
+      if (previousRegistry === undefined) delete process.env.SG_LANE_REGISTRY_PATH;
+      else process.env.SG_LANE_REGISTRY_PATH = previousRegistry;
+      await rm(dir, { recursive: true, force: true });
+      await prisma.aiVideoBudgetLedger.deleteMany({
+        where: { OR: [{ projectId }, { userId: ownerId }] },
+      });
+    }
+  });
+
+  async function runPricedJob(sceneId: string, adapter: AssetGeneratorPort) {
+    const { assets, worker } = harness({
+      adapter,
+      productionAvailable: true,
+      supportedCapabilities: [AssetCapability.IMAGE_GENERATION],
+    });
+    const queued = await assets.requestGenerate(ownerId, projectId, {
+      roles: [{ role: "intimate_portrait", storySceneId: sceneId, kind: "IMAGE" }],
+    });
+    for (let attempt = 0; attempt < 5; attempt += 1) {
+      const current = await jobs.get(queued.jobId);
+      if (current?.status !== JobStatus.PENDING) break;
+      const ran = await worker.processNext();
+      if (!ran) break;
+    }
+    return queued.jobId;
+  }
+
+  function clearBudgetCaps() {
+    delete process.env.SG_BUDGET_PROJECT_MAX_SECONDS;
+    delete process.env.SG_BUDGET_PROJECT_MAX_USD;
+    delete process.env.SG_BUDGET_USER_WINDOW_MAX_SECONDS;
+    delete process.env.SG_BUDGET_USER_WINDOW_MAX_USD;
+  }
+
+  it("refuses a disabled lane before any provider call, hold, or attempt", async () => {
+    const previousLane = process.env.YF_GATEWAY_LANE_ID;
+    const previousRegistry = process.env.SG_LANE_REGISTRY_PATH;
+    clearBudgetCaps();
+    const scratch = await mkdtemp(path.join(tmpdir(), "youflicks-asset-disabled-lane-"));
+    const file = path.join(scratch, "registry.json");
+    const doc = JSON.parse(
+      readFileSync(path.join(process.cwd(), "config/sg-lane-registry.json"), "utf8"),
+    ) as { lanes: Array<{ laneId: string; enabled: boolean }> };
+    const row = doc.lanes.find((item) => item.laneId === "r1-wan27-replicate");
+    expect(row).toBeTruthy();
+    row!.enabled = false;
+    await writeFile(file, JSON.stringify(doc), "utf8");
+    process.env.SG_LANE_REGISTRY_PATH = file;
+    process.env.YF_GATEWAY_LANE_ID = "r1-wan27-replicate";
+    const calls: string[] = [];
+    try {
+      const jobId = await runPricedJob(
+        "scene-disabled-lane",
+        scriptedGenerator(async () => {
+          calls.push("generate");
+          throw new Error("adapter should not run");
+        }),
+      );
+      const job = await jobs.get(jobId);
+      expect(job?.status).toBe(JobStatus.FAILED);
+      expect(job?.attempts).toBe(1);
+      expect(calls).toEqual([]);
+      const reservation = await prisma.aiVideoBudgetReservation.findFirst({
+        where: { idempotencyKey: { startsWith: `asset:${jobId}:` } },
+      });
+      expect(reservation).toBeNull();
+      const attempt = await prisma.shotFulfillmentAttempt.findFirst({ where: { jobId } });
+      expect(attempt).toBeNull();
+      const slot = await prisma.shotFulfillment.findFirst({
+        where: { projectId, slotKey: { contains: "scene-disabled-lane" } },
+      });
+      expect(slot?.status).toBe("FAILED");
+    } finally {
+      if (previousLane === undefined) delete process.env.YF_GATEWAY_LANE_ID;
+      else process.env.YF_GATEWAY_LANE_ID = previousLane;
+      if (previousRegistry === undefined) delete process.env.SG_LANE_REGISTRY_PATH;
+      else process.env.SG_LANE_REGISTRY_PATH = previousRegistry;
+      await rm(scratch, { recursive: true, force: true });
+      await prisma.aiVideoBudgetLedger.deleteMany({
+        where: { OR: [{ projectId }, { userId: ownerId }] },
+      });
+    }
+  });
+
+  it("refuses a TBD lane on the app path before any provider call, hold, or attempt", async () => {
+    const previousLane = process.env.YF_GATEWAY_LANE_ID;
+    const previousRegistry = process.env.SG_LANE_REGISTRY_PATH;
+    clearBudgetCaps();
+    delete process.env.SG_LANE_REGISTRY_PATH;
+    process.env.YF_GATEWAY_LANE_ID = "boreal-720";
+    const calls: string[] = [];
+    try {
+      const jobId = await runPricedJob(
+        "scene-tbd-lane",
+        scriptedGenerator(async () => {
+          calls.push("generate");
+          throw new Error("adapter should not run");
+        }),
+      );
+      const job = await jobs.get(jobId);
+      expect(job?.status).toBe(JobStatus.FAILED);
+      expect(job?.attempts).toBe(1);
+      expect(calls).toEqual([]);
+      const reservation = await prisma.aiVideoBudgetReservation.findFirst({
+        where: { idempotencyKey: { startsWith: `asset:${jobId}:` } },
+      });
+      expect(reservation).toBeNull();
+      const attempt = await prisma.shotFulfillmentAttempt.findFirst({ where: { jobId } });
+      expect(attempt).toBeNull();
+      const slot = await prisma.shotFulfillment.findFirst({
+        where: { projectId, slotKey: { contains: "scene-tbd-lane" } },
+      });
+      expect(slot?.status).toBe("FAILED");
+    } finally {
+      if (previousLane === undefined) delete process.env.YF_GATEWAY_LANE_ID;
+      else process.env.YF_GATEWAY_LANE_ID = previousLane;
+      if (previousRegistry === undefined) delete process.env.SG_LANE_REGISTRY_PATH;
+      else process.env.SG_LANE_REGISTRY_PATH = previousRegistry;
+      await prisma.aiVideoBudgetLedger.deleteMany({
+        where: { OR: [{ projectId }, { userId: ownerId }] },
+      });
+    }
+  });
+
+  it("settles an existing hold after the lane is disabled", async () => {
+    const previousLane = process.env.YF_GATEWAY_LANE_ID;
+    const previousRegistry = process.env.SG_LANE_REGISTRY_PATH;
+    clearBudgetCaps();
+    const scratch = await mkdtemp(path.join(tmpdir(), "youflicks-asset-settle-disabled-"));
+    const file = path.join(scratch, "registry.json");
+    const doc = JSON.parse(
+      readFileSync(path.join(process.cwd(), "config/sg-lane-registry.json"), "utf8"),
+    ) as { lanes: Array<{ laneId: string; enabled: boolean; designation: string }> };
+    const live = doc.lanes.find((item) => item.laneId === "r1-wan27-replicate");
+    expect(live).toBeTruthy();
+    live!.designation = "NONE";
+    await writeFile(file, JSON.stringify(doc), "utf8");
+    process.env.SG_LANE_REGISTRY_PATH = file;
+    process.env.YF_GATEWAY_LANE_ID = "r1-wan27-replicate";
+    const local = new LocalDeterministicAssetGenerator(storage);
+    const calls: string[] = [];
+    try {
+      const jobId = await runPricedJob(
+        "scene-settle-disabled",
+        scriptedGenerator(async (input) => {
+          calls.push("generate");
+          const doc = JSON.parse(readFileSync(file, "utf8")) as {
+            lanes: Array<{ laneId: string; enabled: boolean }>;
+          };
+          const row = doc.lanes.find((item) => item.laneId === "r1-wan27-replicate");
+          expect(row?.enabled).toBe(true);
+          row!.enabled = false;
+          await writeFile(file, JSON.stringify(doc), "utf8");
+          return local.generate(input);
+        }),
+      );
+      expect(calls).toEqual(["generate"]);
+      const job = await jobs.get(jobId);
+      expect(job?.status).toBe(JobStatus.SUCCEEDED);
+      const reservation = await prisma.aiVideoBudgetReservation.findFirst({
+        where: { idempotencyKey: { startsWith: `asset:${jobId}:` } },
+      });
+      expect(reservation?.status).toBe("RECONCILED");
+      expect(reservation?.laneId).toBe("r1-wan27-replicate");
+      const attempt = await prisma.shotFulfillmentAttempt.findFirst({ where: { jobId } });
+      expect(attempt?.outcome).toBe("SUCCEEDED");
+    } finally {
+      if (previousLane === undefined) delete process.env.YF_GATEWAY_LANE_ID;
+      else process.env.YF_GATEWAY_LANE_ID = previousLane;
+      if (previousRegistry === undefined) delete process.env.SG_LANE_REGISTRY_PATH;
+      else process.env.SG_LANE_REGISTRY_PATH = previousRegistry;
+      await rm(scratch, { recursive: true, force: true });
+      await prisma.aiVideoBudgetLedger.deleteMany({
+        where: { OR: [{ projectId }, { userId: ownerId }] },
+      });
+    }
+  });
+
   async function settleThroughGateway(
     backend: VideoBackend,
     download: typeof fetch = async () => new Response("clip"),
@@ -1062,7 +1298,6 @@ describe("AssetService M3", () => {
       },
     };
     const { reservation, gatewayRow } = await settleThroughGateway(neverCalled, async () => new Response("no"), {
-      YF_GATEWAY_LANE_ID: "veo31lite-720",
       YF_GATEWAY_BACKEND_INPUT_JSON: JSON.stringify({ duration: 9 }),
     });
     expect(gatewayRow).toBeUndefined();
@@ -1304,6 +1539,61 @@ describe("AssetService M3", () => {
         await prisma.shotFulfillmentAttempt.count({ where: { shotFulfillmentId: slot?.id } }),
       ).toBe(0);
     } finally {
+      if (previousLane === undefined) delete process.env.YF_GATEWAY_LANE_ID;
+      else process.env.YF_GATEWAY_LANE_ID = previousLane;
+    }
+  });
+
+  it("keeps the original AppError when markUnattemptedFailure throws", async () => {
+    const previousLane = process.env.YF_GATEWAY_LANE_ID;
+    process.env.YF_GATEWAY_LANE_ID = "r1-wan27-replicate";
+    const fulfillments = new PrismaShotFulfillment(prisma);
+    fulfillments.markUnattemptedFailure = async () => {
+      throw new Error("marker write failed");
+    };
+    const warns: string[] = [];
+    const originalWarn = console.warn;
+    console.warn = (...args: unknown[]) => {
+      warns.push(args.map((arg) => String(arg)).join(" "));
+      originalWarn.apply(console, args);
+    };
+    const calls: string[] = [];
+    try {
+      const { assets, worker } = harness({
+        adapter: scriptedGenerator(async () => {
+          calls.push("generate");
+          throw new Error("provider must not be called");
+        }),
+        productionAvailable: true,
+        supportedCapabilities: [AssetCapability.IMAGE_GENERATION],
+        budgets: budgetThatThrows(AppError.assetProviderUnavailable("registry vanished after quote")),
+        fulfillments,
+      });
+      const queued = await assets.requestGenerate(ownerId, projectId, {
+        roles: [{ role: "intimate_portrait", storySceneId: "scene-marker-mask", kind: "IMAGE" }],
+      });
+      await worker.processNext();
+      const job = await jobs.get(queued.jobId);
+      expect(calls).toEqual([]);
+      expect(job?.status).toBe(JobStatus.FAILED);
+      expect(job?.attempts).toBe(1);
+      expect(job?.error).toBe("registry vanished after quote");
+      expect(job?.error).not.toContain("marker write failed");
+      expect(await prisma.shotFulfillmentAttempt.count({ where: { jobId: queued.jobId } })).toBe(0);
+      const logged = warns
+        .map((line) => {
+          try {
+            return JSON.parse(line) as Record<string, unknown>;
+          } catch {
+            return null;
+          }
+        })
+        .filter((entry): entry is Record<string, unknown> => entry?.message === "asset.slot_mark_failed");
+      expect(logged.some((entry) => entry.error === "marker write failed" && entry.jobId === queued.jobId)).toBe(
+        true,
+      );
+    } finally {
+      console.warn = originalWarn;
       if (previousLane === undefined) delete process.env.YF_GATEWAY_LANE_ID;
       else process.env.YF_GATEWAY_LANE_ID = previousLane;
     }
