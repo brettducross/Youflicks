@@ -3,6 +3,7 @@ import { ReplicateVideoBackend } from "@/server/gateways/yf-asset/backends/repli
 import { parseYfAssetGatewayConfig } from "@/server/gateways/yf-asset/config";
 import { YfAssetGenerateService } from "@/server/gateways/yf-asset/generate";
 import { GatewayJobStore } from "@/server/gateways/yf-asset/jobs";
+import { MemoryGatewayReservation } from "@/server/gateways/yf-asset/reservation";
 import { SpendGuard } from "@/server/gateways/yf-asset/spend";
 
 const liveEnabled =
@@ -27,6 +28,7 @@ describe.skipIf(!liveEnabled)("optional live Replicate I2V under spend caps", ()
         YF_GATEWAY_PROVIDER_KEY: "replicate:wan-video/wan-2.7-i2v",
         YF_GATEWAY_MAX_JOBS: process.env.YF_GATEWAY_MAX_JOBS || "1",
         YF_GATEWAY_MAX_SPEND_USD: process.env.YF_GATEWAY_MAX_SPEND_USD || "2",
+        YF_GATEWAY_LANE_ID: process.env.YF_GATEWAY_LANE_ID || "r1-wan27-replicate",
         YF_GATEWAY_TIMEOUT_MS: process.env.YF_GATEWAY_TIMEOUT_MS || "300000",
         YF_GATEWAY_POLL_MS: process.env.YF_GATEWAY_POLL_MS || "2000",
         YF_GATEWAY_BACKEND_INPUT_JSON: process.env.YF_GATEWAY_BACKEND_INPUT_JSON,
@@ -36,6 +38,9 @@ describe.skipIf(!liveEnabled)("optional live Replicate I2V under spend caps", ()
         new ReplicateVideoBackend(config),
         new GatewayJobStore(),
         new SpendGuard(config.maxJobs, config.maxSpendUsd, config.estimatedUsdPerJob),
+        fetch,
+        (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
+        new MemoryGatewayReservation(),
       );
       const result = await generate.generate({
         model: config.model,

@@ -2,7 +2,7 @@ import "server-only";
 
 import { createHash } from "node:crypto";
 import type { Prisma } from "@/generated/prisma/client";
-import { AppError } from "@/lib/errors";
+import { AppError, isAppError } from "@/lib/errors";
 import { logger } from "@/lib/logger";
 import type { AssetExecutionAttribution } from "@/server/adapters/assets/attribution";
 import { fingerprintAssetBatchRequest, fingerprintAssetGeneratorInput } from "@/server/assets/fingerprint";
@@ -39,6 +39,16 @@ import { EntitlementService } from "@/server/services/entitlement";
 import { ProjectService } from "@/server/services/projects";
 import { UsageMeterService } from "@/server/services/usage-meter";
 import { UsageKind, UsageOutcome } from "@/server/usage/types";
+import { PrismaAiVideoBudget, AiVideoBudgetCapError, type AiVideoBudgetPort, type AiVideoBudgetReservationRecord } from "@/server/sg/ai-video-budget";
+import {
+  AiVideoBudgetSource,
+  hasAnyBudgetCap,
+} from "@/server/sg/budget-source";
+import {
+  actualBilledSecondsFromDurationMs,
+  estimateLaneCharge,
+  requireLaneRate,
+} from "@/server/sg/lane-rate";
 
 export type GeneratedAssetView = {
   id: string;
@@ -114,6 +124,7 @@ export class AssetService {
     private readonly availability: () => AssetAvailability,
     private readonly usage: UsageMeterPort = new UsageMeterService(),
     private readonly entitlements: EntitlementService = new EntitlementService(),
+    private readonly budgets: AiVideoBudgetPort = new PrismaAiVideoBudget(prisma),
   ) {}
 
   getAvailability(): AssetAvailability {
@@ -327,10 +338,23 @@ export class AssetService {
       logger.info("asset.started", { projectId, jobId: job.id, role: role.role, kind });
 
       const attribution = resolved.attributionFor(capability);
+      const budgetHold = await this.reserveProductionBudget({
+        userId,
+        projectId,
+        job,
+        role: role.role,
+        storySceneId: role.storySceneId,
+      });
       let rawDocument;
       try {
         rawDocument = await resolved.adapter.generate(input);
+        if (budgetHold) {
+          await this.reconcileBudget(budgetHold, rawDocument.durationMs);
+        }
       } catch (error) {
+        if (budgetHold) {
+          await this.settleBudgetFailure(budgetHold, error);
+        }
         await this.usage.recordJobUsage({
           userId,
           projectId,
@@ -565,6 +589,138 @@ export class AssetService {
     }
   }
 
+  /**
+   * Books project + user-window seconds before the adapter runs.
+   * The lane's configured clip duration is the billed length. Per-shot duration
+   * is not an AssetGeneratorInput field.
+   * Returns null when this process is not on a production generator, or when
+   * no lane and no ops cap is configured (those scopes stay unenforced).
+   */
+  private async reserveProductionBudget(input: {
+    userId: string;
+    projectId: string;
+    job: JobRecord;
+    role: string;
+    storySceneId?: string;
+  }): Promise<AiVideoBudgetReservationRecord | null> {
+    if (!this.availability().productionAvailable) {
+      return null;
+    }
+    const resolved = AiVideoBudgetSource.resolve(input.userId, input.projectId);
+    const laneId = process.env.YF_GATEWAY_LANE_ID?.trim();
+    if (!laneId) {
+      if (!hasAnyBudgetCap(resolved.caps)) {
+        return null;
+      }
+      logger.info("asset.cap_denied", {
+        settleReason: "CAP_DENIED",
+        userId: input.userId,
+        projectId: input.projectId,
+        jobId: input.job.id,
+        detail: "budget cap set without YF_GATEWAY_LANE_ID",
+      });
+      throw AppError.spendCapReached(
+        "Clip generation is paused because a usage limit was reached. We did not retry automatically.",
+      );
+    }
+    let lane;
+    try {
+      lane = requireLaneRate(laneId, registryPathFromEnv());
+    } catch (error) {
+      throw AppError.assetProviderUnavailable(
+        error instanceof Error ? error.message : "AI video lane registry failed closed.",
+      );
+    }
+    const charge = estimateLaneCharge(lane);
+    try {
+      return await this.budgets.reserve({
+        idempotencyKey: `asset:${input.job.id}:${input.role}:${input.storySceneId ?? "-"}:${input.job.attempts}`,
+        projectId: input.projectId,
+        userId: input.userId,
+        windowKey: resolved.windowKey,
+        laneId: lane.laneId,
+        providerKey: lane.providerKey,
+        estimatedBilledSeconds: charge.estimatedBilledSeconds,
+        usdPerSecond: lane.usdPerSecond,
+        estimatedUsd: charge.reservedUsd,
+        caps: resolved.caps,
+      });
+    } catch (error) {
+      if (error instanceof AiVideoBudgetCapError) {
+        logger.info("asset.cap_denied", {
+          settleReason: "CAP_DENIED",
+          userId: input.userId,
+          projectId: input.projectId,
+          jobId: input.job.id,
+          laneId: lane.laneId,
+          message: error.message,
+        });
+        throw AppError.spendCapReached(error.message);
+      }
+      throw error;
+    }
+  }
+
+  private async reconcileBudget(
+    hold: AiVideoBudgetReservationRecord,
+    durationMs: number | undefined,
+  ) {
+    const lane = requireLaneRate(hold.laneId, registryPathFromEnv());
+    const actual = actualBilledSecondsFromDurationMs(
+      durationMs,
+      lane.billingGranularityS,
+      hold.estimatedBilledSeconds,
+    );
+    await this.budgets.reconcile(hold.id, {
+      actualBilledSeconds: actual.seconds,
+      reason: actual.flagged ? "ACTUAL_DURATION_FALLBACK" : "SUCCEEDED",
+    });
+  }
+
+  /**
+   * Mirrors the gateway settlement carried on the adapter error.
+   * A missing settlement stays counted (UNRECONCILED). Release only for an
+   * explicit RELEASED, or for errors raised before the request was sent.
+   */
+  private async settleBudgetFailure(hold: AiVideoBudgetReservationRecord, error: unknown) {
+    if (isAppError(error) && error.code === "SPEND_CAP_REACHED") {
+      await this.budgets.release(hold.id, "CAP_DENIED");
+      logger.info("asset.cap_denied", {
+        settleReason: "CAP_DENIED",
+        reservationId: hold.id,
+        projectId: hold.projectId,
+        userId: hold.userId,
+        laneId: hold.laneId,
+      });
+      return;
+    }
+    const settlement = appSettlementFor(error);
+    if (settlement === "NONE") {
+      await this.budgets.release(hold.id, "GATEWAY_NONE");
+      return;
+    }
+    if (settlement === "RELEASED") {
+      await this.budgets.release(hold.id, "GATEWAY_RELEASED");
+      return;
+    }
+    if (settlement === "RECONCILED") {
+      const reported = isAppError(error) ? error.details?.actualBilledSeconds : undefined;
+      const actualBilledSeconds =
+        typeof reported === "number" && Number.isFinite(reported) && reported >= 0
+          ? reported
+          : hold.estimatedBilledSeconds;
+      await this.budgets.reconcile(hold.id, {
+        actualBilledSeconds,
+        reason: "GATEWAY_RECONCILED",
+      });
+      return;
+    }
+    await this.budgets.markUnreconciled(
+      hold.id,
+      settlement === "UNRECONCILED" ? "GATEWAY_UNRECONCILED" : "SETTLEMENT_MISSING",
+    );
+  }
+
   private async persistFailed(input: {
     projectId: string;
     jobId: string;
@@ -630,6 +786,38 @@ export class AssetService {
       finishedAt: job.finishedAt?.toISOString() ?? null,
     };
   }
+}
+
+function appSettlementFor(
+  error: unknown,
+): "RELEASED" | "RECONCILED" | "UNRECONCILED" | "NONE" | "MISSING" {
+  if (!isAppError(error)) {
+    return "MISSING";
+  }
+  if (error.code === "ASSET_CAPABILITY_UNAVAILABLE") {
+    return "RELEASED";
+  }
+  if (
+    error.code === "ASSET_PROVIDER_UNAVAILABLE" &&
+    /No production asset generator adapter is configured/i.test(error.message)
+  ) {
+    return "RELEASED";
+  }
+  const settlement = error.details?.settlement;
+  if (
+    settlement === "RELEASED" ||
+    settlement === "RECONCILED" ||
+    settlement === "UNRECONCILED" ||
+    settlement === "NONE"
+  ) {
+    return settlement;
+  }
+  return "MISSING";
+}
+
+function registryPathFromEnv(): string | undefined {
+  const path = process.env.SG_LANE_REGISTRY_PATH?.trim();
+  return path ? path : undefined;
 }
 
 function extensionFromMime(mimeType: string) {

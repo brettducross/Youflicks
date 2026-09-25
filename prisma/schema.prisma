@@ -124,6 +124,8 @@ model Project {
   attributions     ProviderAttribution[]
   credits          FilmCredits[]
   sponsorPlacements SponsorPlacement[]
+  /// Virtual back-relation only. No column is added to `project`.
+  aiVideoBudgetReservations AiVideoBudgetReservation[]
 
   @@index([ownerId, updatedAt])
   @@map("project")
@@ -987,12 +989,100 @@ model AiProcessingConsent {
 }
 
 /// Durable gateway spend counters. Ops-only — never fed to Director / Story / Timeline.
+/// Additive SG.2 columns. scopeKind is an open string (GLOBAL | LANE | BAKEOFF | BAKEOFF_CELL).
 model GatewaySpendLedger {
-  id           String   @id
-  jobsAccepted Int      @default(0)
-  spendUsd     Float    @default(0)
-  updatedAt    DateTime @updatedAt
-  createdAt    DateTime @default(now())
+  id              String   @id
+  jobsAccepted    Int      @default(0)
+  spendUsd        Float    @default(0)
+  /// Outstanding (RESERVED + UNRECONCILED) portion of spendUsd.
+  reservedUsd     Float    @default(0)
+  /// Committed + outstanding billed seconds.
+  billedSeconds   Float    @default(0)
+  /// Outstanding portion of billedSeconds.
+  reservedSeconds Float    @default(0)
+  scopeKind       String   @default("GLOBAL")
+  updatedAt       DateTime @updatedAt
+  createdAt       DateTime @default(now())
 
   @@map("gateway_spend_ledger")
+}
+
+/// One lane-priced hold against one or more GatewaySpendLedger rows.
+/// status is an open string: RESERVED | RECONCILED | RELEASED | UNRECONCILED.
+model GatewaySpendReservation {
+  id                     String    @id @default(cuid())
+  /// Ledger row ids charged. Locked in ascending id order.
+  ledgerIds              String[]
+  laneId                 String
+  /// Open provenance string. Never a Prisma enum.
+  providerKey            String
+  capability             String
+  modelId                String?
+  idempotencyKey         String    @unique
+  gatewayJobId           String?   @unique
+  requestedDurationS     Float
+  estimatedBilledSeconds Float
+  usdPerSecond           Float
+  reservedUsd            Float
+  actualBilledSeconds    Float?
+  actualUsd              Float?
+  status                 String    @default("RESERVED")
+  settleReason           String?
+  createdAt              DateTime  @default(now())
+  settledAt              DateTime?
+
+  @@index([laneId, createdAt])
+  @@index([status, createdAt])
+  @@map("gateway_spend_reservation")
+}
+
+/// Ops AI-video seconds and dollars. Not an entitlement plan and not CreativePlan.
+/// id is "project:<projectId>" or "user:<userId>:<windowKey>".
+/// scopeKind is an open string: PROJECT | USER_WINDOW.
+model AiVideoBudgetLedger {
+  id               String   @id
+  scopeKind        String
+  projectId        String?
+  userId           String?
+  /// UTC date, e.g. "2026-09-25".
+  windowKey        String?
+  reservedSeconds  Float    @default(0)
+  committedSeconds Float    @default(0)
+  reservedUsd      Float    @default(0)
+  committedUsd     Float    @default(0)
+  attempts         Int      @default(0)
+  createdAt        DateTime @default(now())
+  updatedAt        DateTime @updatedAt
+
+  @@index([projectId])
+  @@index([userId, windowKey])
+  @@map("ai_video_budget_ledger")
+}
+
+/// App-side hold booked before AssetGeneratorPort.generate. Project delete cascades.
+/// status is an open string: RESERVED | RECONCILED | RELEASED | UNRECONCILED.
+model AiVideoBudgetReservation {
+  id                     String    @id @default(cuid())
+  projectId              String
+  project                Project   @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  userId                 String
+  ledgerIds              String[]
+  laneId                 String
+  providerKey            String
+  idempotencyKey         String    @unique
+  estimatedBilledSeconds Float
+  usdPerSecond           Float
+  estimatedUsd           Float
+  actualBilledSeconds    Float?
+  actualUsd              Float?
+  status                 String    @default("RESERVED")
+  settleReason           String?
+  gatewayReservationId   String?
+  createdAt              DateTime  @default(now())
+  settledAt              DateTime?
+
+  @@index([projectId, createdAt])
+  @@index([userId, createdAt])
+  @@index([status])
+  @@map("ai_video_budget_reservation")
 }

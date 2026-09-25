@@ -62,6 +62,7 @@ export const ErrorCodes = {
   SUSPENDED: "SUSPENDED",
   INSUFFICIENT_CREDITS: "INSUFFICIENT_CREDITS",
   CONSENT_REQUIRED: "CONSENT_REQUIRED",
+  SPEND_CAP_REACHED: "SPEND_CAP_REACHED",
   INTERNAL: "INTERNAL",
 } as const;
 
@@ -211,8 +212,11 @@ export class AppError extends Error {
     return new AppError(ErrorCodes.ASSET_DOCUMENT_INVALID, message, 422, details);
   }
 
-  static assetProviderUnavailable(message = "A required asset generator adapter is unavailable.") {
-    return new AppError(ErrorCodes.ASSET_PROVIDER_UNAVAILABLE, message, 503);
+  static assetProviderUnavailable(
+    message = "A required asset generator adapter is unavailable.",
+    details?: Record<string, unknown>,
+  ) {
+    return new AppError(ErrorCodes.ASSET_PROVIDER_UNAVAILABLE, message, 503, details);
   }
 
   static assetTimelineRequired(
@@ -375,6 +379,16 @@ export class AppError extends Error {
     message = "Accept AI processing terms before sending footage to a vendor.",
   ) {
     return new AppError(ErrorCodes.CONSENT_REQUIRED, message, 403);
+  }
+
+  /**
+   * Usage limit reached. Non-retryable: AssetWorker retries only non-AppError failures,
+   * and a cap hit never starts another lane.
+   */
+  static spendCapReached(
+    message = "Clip generation is paused because a usage limit was reached. We did not retry automatically.",
+  ) {
+    return new AppError(ErrorCodes.SPEND_CAP_REACHED, message, 429);
   }
 }
 

@@ -106,7 +106,14 @@ export class HttpAssetGeneratorAdapter implements AssetGeneratorPort {
           status: response.status,
           body: redact(text, this.config.apiKey).slice(0, 500),
         });
-        throw AppError.assetProviderUnavailable("The asset generator adapter failed.");
+        const gatewayError = parseGatewayError(text);
+        if (response.status === 429 && gatewayError.code === "GATEWAY_SPEND_CAP") {
+          throw AppError.spendCapReached();
+        }
+        throw AppError.assetProviderUnavailable(
+          "The asset generator adapter failed.",
+          gatewaySettlementDetails(gatewayError),
+        );
       }
 
       const payload = (await response.json()) as {
@@ -220,6 +227,53 @@ function looksLikeVendorUrl(value: string) {
 function redact(text: string, secret?: string) {
   if (!secret) return text;
   return text.split(secret).join("[redacted]");
+}
+
+function parseGatewayError(text: string): {
+  code?: string;
+  settlement?: "RELEASED" | "RECONCILED" | "UNRECONCILED" | "NONE";
+  actualBilledSeconds?: number;
+} {
+  try {
+    const parsed = JSON.parse(text) as {
+      code?: unknown;
+      settlement?: unknown;
+      actualBilledSeconds?: unknown;
+    };
+    const settlement =
+      parsed.settlement === "RELEASED" ||
+      parsed.settlement === "RECONCILED" ||
+      parsed.settlement === "UNRECONCILED" ||
+      parsed.settlement === "NONE"
+        ? parsed.settlement
+        : undefined;
+    const actualBilledSeconds =
+      typeof parsed.actualBilledSeconds === "number" && Number.isFinite(parsed.actualBilledSeconds)
+        ? parsed.actualBilledSeconds
+        : undefined;
+    return {
+      code: typeof parsed.code === "string" ? parsed.code : undefined,
+      settlement,
+      actualBilledSeconds,
+    };
+  } catch {
+    return {};
+  }
+}
+
+function gatewaySettlementDetails(parsed: {
+  settlement?: "RELEASED" | "RECONCILED" | "UNRECONCILED" | "NONE";
+  actualBilledSeconds?: number;
+}): Record<string, unknown> | undefined {
+  if (!parsed.settlement) {
+    return undefined;
+  }
+  return {
+    settlement: parsed.settlement,
+    ...(parsed.actualBilledSeconds !== undefined
+      ? { actualBilledSeconds: parsed.actualBilledSeconds }
+      : {}),
+  };
 }
 
 function isAppErrorLike(error: unknown): boolean {

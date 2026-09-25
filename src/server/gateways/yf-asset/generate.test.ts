@@ -8,6 +8,7 @@ import {
 } from "@/server/gateways/yf-asset/fixtures/replicate/recorded-fetch";
 import { YfAssetGenerateService } from "@/server/gateways/yf-asset/generate";
 import { GatewayJobStore } from "@/server/gateways/yf-asset/jobs";
+import { MemoryGatewayReservation } from "@/server/gateways/yf-asset/reservation";
 import { SpendGuard } from "@/server/gateways/yf-asset/spend";
 import { AssetCapability } from "@/server/ports/capabilities";
 
@@ -173,6 +174,7 @@ describe("YfAssetGenerateService replicate transport", () => {
       YF_GATEWAY_POLL_MS: "1",
       YF_GATEWAY_MAX_JOBS: "2",
       YF_GATEWAY_MAX_SPEND_USD: "5",
+      YF_GATEWAY_LANE_ID: "r1-wan27-replicate",
       YF_GATEWAY_BACKEND_INPUT_JSON: JSON.stringify({
         imageBytesBase64: PNG_1X1.toString("base64"),
       }),
@@ -187,6 +189,7 @@ describe("YfAssetGenerateService replicate transport", () => {
       spend,
       createRecordedReplicateFetch(),
       async () => {},
+      new MemoryGatewayReservation(),
     );
 
     const result = await generate.generate({
@@ -226,6 +229,8 @@ describe("YfAssetGenerateService replicate transport", () => {
       REPLICATE_API_TOKEN: "r8_recorded_token",
       YF_GATEWAY_POLL_MS: "1",
       YF_GATEWAY_MAX_JOBS: "1",
+      YF_GATEWAY_MAX_SPEND_USD: "5",
+      YF_GATEWAY_LANE_ID: "r1-wan27-replicate",
       YF_GATEWAY_ESTIMATED_USD_PER_JOB: "0.4",
       YF_GATEWAY_BACKEND_INPUT_JSON: JSON.stringify({
         imageBytesBase64: PNG_1X1.toString("base64"),
@@ -239,6 +244,7 @@ describe("YfAssetGenerateService replicate transport", () => {
       new SpendGuard(config.maxJobs, config.maxSpendUsd, config.estimatedUsdPerJob),
       fetchImpl,
       async () => {},
+      new MemoryGatewayReservation(),
     );
     const first = await generate.generate({
       ...videoBody,

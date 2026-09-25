@@ -4,11 +4,13 @@ import {
   mapQueueStatus,
   normalizeBackendAsset,
 } from "@/server/gateways/yf-asset/normalize";
-import type {
-  BackendStatusResult,
-  BackendSubmitInput,
-  BackendSubmitResult,
-  VideoBackend,
+import {
+  BackendSubmitError,
+  submitHttpError,
+  type BackendStatusResult,
+  type BackendSubmitInput,
+  type BackendSubmitResult,
+  type VideoBackend,
 } from "@/server/gateways/yf-asset/backends/types";
 import type { NormalizedAssetMeta } from "@/server/gateways/yf-asset/jobs";
 
@@ -32,25 +34,33 @@ export class HttpQueueVideoBackend implements VideoBackend {
     const submitUrl = webhookUrl
       ? appendQuery(url, this.config.webhookQueryParam, webhookUrl)
       : url;
-    const response = await this.fetchImpl(submitUrl, {
-      method: "POST",
-      headers: {
-        "content-type": "application/json",
-        authorization: `${this.config.backendAuthScheme} ${this.config.backendApiKey}`,
-      },
-      body: JSON.stringify({
-        prompt: input.prompt,
-        ...input.extra,
-      }),
-    });
+    let response: Response;
+    try {
+      response = await this.fetchImpl(submitUrl, {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          authorization: `${this.config.backendAuthScheme} ${this.config.backendApiKey}`,
+        },
+        body: JSON.stringify({
+          prompt: input.prompt,
+          ...input.extra,
+        }),
+      });
+    } catch (error) {
+      throw new BackendSubmitError(
+        error instanceof Error ? error.message : "fetch failed",
+        "unknown",
+      );
+    }
     if (!response.ok) {
       const text = await response.text().catch(() => "");
-      throw new Error(`Backend submit failed (${response.status}): ${text.slice(0, 240)}`);
+      throw submitHttpError("Backend submit failed", response.status, text);
     }
     const payload = (await response.json()) as unknown;
     const backendRequestId = extractBackendRequestId(payload);
     if (!backendRequestId) {
-      throw new Error("Backend submit returned no request id.");
+      throw new BackendSubmitError("Backend submit returned no request id.", "unknown");
     }
     return { backendRequestId };
   }

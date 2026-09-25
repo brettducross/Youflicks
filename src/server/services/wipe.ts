@@ -25,6 +25,7 @@ export class WipeService {
   async deleteProject(userId: string, projectId: string): Promise<WipeResult> {
     await this.projects.getForUser(userId, projectId);
     const keys = await collectProjectStorageKeys(projectId);
+    await prisma.aiVideoBudgetLedger.deleteMany({ where: { projectId } });
     await prisma.project.delete({ where: { id: projectId } });
     const storageKeysDeleted = await this.deleteKeys(keys);
     logger.info("wipe.project_deleted", {
@@ -49,6 +50,15 @@ export class WipeService {
     for (const project of projects) {
       keys.push(...(await collectProjectStorageKeys(project.id)));
     }
+    const projectIds = projects.map((project) => project.id);
+    await prisma.aiVideoBudgetLedger.deleteMany({
+      where: {
+        OR: [
+          { userId },
+          ...(projectIds.length > 0 ? [{ projectId: { in: projectIds } }] : []),
+        ],
+      },
+    });
     await prisma.user.delete({ where: { id: userId } });
     const storageKeysDeleted = await this.deleteKeys(keys);
     logger.info("wipe.account_deleted", {

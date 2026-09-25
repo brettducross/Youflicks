@@ -36,6 +36,7 @@ import {
 } from "@/server/gateways/yf-asset/fixtures/replicate/recorded-fetch";
 import { YfAssetGenerateService } from "@/server/gateways/yf-asset/generate";
 import { GatewayJobStore } from "@/server/gateways/yf-asset/jobs";
+import { MemoryGatewayReservation } from "@/server/gateways/yf-asset/reservation";
 import { SpendGuard } from "@/server/gateways/yf-asset/spend";
 import { PlaybackSessionStore } from "@/server/playback/sessions";
 import { AttributionService } from "@/server/services/attribution";
@@ -239,6 +240,7 @@ describe("R1 Replicate transport → GeneratedAsset → Render → Keep → Play
       YF_GATEWAY_POLL_MS: "1",
       YF_GATEWAY_MAX_JOBS: "2",
       YF_GATEWAY_MAX_SPEND_USD: "5",
+      YF_GATEWAY_LANE_ID: "r1-wan27-replicate",
       YF_GATEWAY_BACKEND_INPUT_JSON: JSON.stringify({
         imageBytesBase64: PNG_1X1.toString("base64"),
       }),
@@ -251,6 +253,7 @@ describe("R1 Replicate transport → GeneratedAsset → Render → Keep → Play
       new SpendGuard(config.maxJobs, config.maxSpendUsd, config.estimatedUsdPerJob),
       recorded,
       async () => {},
+      new MemoryGatewayReservation(),
     );
 
     const adapter = new HttpAssetGeneratorAdapter(

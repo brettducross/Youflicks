@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 
-export type GatewayJobStatus = "queued" | "running" | "succeeded" | "failed";
+export type GatewayJobStatus = "queued" | "running" | "succeeded" | "failed" | "canceled";
 
 /**
  * YouFlicks-owned gateway job. Persist only job id + normalized asset
@@ -84,6 +84,13 @@ export class GatewayJobStore {
 
   markFailed(jobId: string, error: string): GatewayJobRecord | undefined {
     return this.patch(jobId, { status: "failed", error });
+  }
+
+  markCanceled(jobId: string): GatewayJobRecord | undefined {
+    return this.patch(jobId, {
+      status: "canceled",
+      error: "Backend generation was canceled.",
+    });
   }
 
   private patch(

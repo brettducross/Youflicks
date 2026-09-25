@@ -5,11 +5,13 @@ import {
   mapQueueStatus,
   normalizeBackendAsset,
 } from "@/server/gateways/yf-asset/normalize";
-import type {
-  BackendStatusResult,
-  BackendSubmitInput,
-  BackendSubmitResult,
-  VideoBackend,
+import {
+  BackendSubmitError,
+  submitHttpError,
+  type BackendStatusResult,
+  type BackendSubmitInput,
+  type BackendSubmitResult,
+  type VideoBackend,
 } from "@/server/gateways/yf-asset/backends/types";
 import type { NormalizedAssetMeta } from "@/server/gateways/yf-asset/jobs";
 
@@ -57,19 +59,27 @@ export class ReplicateVideoBackend implements VideoBackend {
         : {}),
     };
 
-    const response = await this.fetchImpl(this.predictionCreateUrl(input.model), {
-      method: "POST",
-      headers: this.jsonHeaders(),
-      body: JSON.stringify(body),
-    });
+    let response: Response;
+    try {
+      response = await this.fetchImpl(this.predictionCreateUrl(input.model), {
+        method: "POST",
+        headers: this.jsonHeaders(),
+        body: JSON.stringify(body),
+      });
+    } catch (error) {
+      throw new BackendSubmitError(
+        error instanceof Error ? error.message : "fetch failed",
+        "unknown",
+      );
+    }
     if (!response.ok) {
       const text = await response.text().catch(() => "");
-      throw new Error(`Replicate submit failed (${response.status}): ${text.slice(0, 240)}`);
+      throw submitHttpError("Replicate submit failed", response.status, text);
     }
     const payload = (await response.json()) as unknown;
     const backendRequestId = extractBackendRequestId(payload);
     if (!backendRequestId) {
-      throw new Error("Replicate submit returned no prediction id.");
+      throw new BackendSubmitError("Replicate submit returned no prediction id.", "unknown");
     }
     return { backendRequestId };
   }
@@ -99,16 +109,29 @@ export class ReplicateVideoBackend implements VideoBackend {
       new Blob([Buffer.from(frame.bytes)], { type: frame.mimeType }),
       frame.filename,
     );
-    const response = await this.fetchImpl(this.filesUrl(), {
-      method: "POST",
-      headers: {
-        authorization: this.authorization(),
-      },
-      body: form,
-    });
+    let response: Response;
+    try {
+      response = await this.fetchImpl(this.filesUrl(), {
+        method: "POST",
+        headers: {
+          authorization: this.authorization(),
+        },
+        body: form,
+      });
+    } catch (error) {
+      throw new BackendSubmitError(
+        error instanceof Error ? error.message : "fetch failed",
+        "unknown",
+      );
+    }
     if (!response.ok) {
       const text = await response.text().catch(() => "");
-      throw new Error(`Replicate files.create failed (${response.status}): ${text.slice(0, 240)}`);
+      // The prediction create has not been sent. An HTTP answer here is a definite non-job.
+      throw new BackendSubmitError(
+        `Replicate files.create failed (${response.status}): ${text.slice(0, 240)}`,
+        "rejected",
+        response.status,
+      );
     }
     const payload = (await response.json()) as unknown;
     const url = fileGetUrl(payload);

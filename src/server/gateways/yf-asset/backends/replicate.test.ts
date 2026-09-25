@@ -95,6 +95,9 @@ describe("Replicate payload normalization", () => {
     expect(mapQueueStatus("starting")).toBe("queued");
     expect(mapQueueStatus("processing")).toBe("running");
     expect(mapQueueStatus("succeeded")).toBe("succeeded");
+    expect(mapQueueStatus("canceled")).toBe("canceled");
+    expect(mapQueueStatus("cancelled")).toBe("canceled");
+    expect(mapQueueStatus("failed")).toBe("failed");
     expect(
       normalizeBackendAsset({
         id: "pred_1",
