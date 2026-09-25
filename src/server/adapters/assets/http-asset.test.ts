@@ -128,6 +128,32 @@ describe("HttpAssetGeneratorAdapter", () => {
     expect(Buffer.from(stored!.body).toString("utf8")).toBe("gateway-mp4");
   });
 
+  it("attaches gateway settlement and billed seconds to the error details", async () => {
+    const adapter = new HttpAssetGeneratorAdapter(
+      storage,
+      {
+        providerKey: "http.asset",
+        baseUrl: "http://127.0.0.1:43148",
+        apiKey: "gw-key",
+        model: "research.ltx",
+      },
+      async () =>
+        new Response(
+          JSON.stringify({
+            error: "download failed",
+            code: "ASSET_PROVIDER_UNAVAILABLE",
+            settlement: "RECONCILED",
+            actualBilledSeconds: 6,
+          }),
+          { status: 503 },
+        ),
+    );
+    await expect(adapter.generate(baseInput())).rejects.toMatchObject({
+      code: "ASSET_PROVIDER_UNAVAILABLE",
+      details: { settlement: "RECONCILED", actualBilledSeconds: 6 },
+    });
+  });
+
   it("maps gateway 429 GATEWAY_SPEND_CAP to SPEND_CAP_REACHED", async () => {
     const adapter = new HttpAssetGeneratorAdapter(
       storage,

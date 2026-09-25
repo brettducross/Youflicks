@@ -677,6 +677,11 @@ export class AssetService {
     });
   }
 
+  /**
+   * Mirrors the gateway settlement carried on the adapter error.
+   * A missing settlement stays counted (UNRECONCILED). Release only for an
+   * explicit RELEASED, or for errors raised before the request was sent.
+   */
   private async settleBudgetFailure(hold: AiVideoBudgetReservationRecord, error: unknown) {
     if (isAppError(error) && error.code === "SPEND_CAP_REACHED") {
       await this.budgets.release(hold.id, "CAP_DENIED");
@@ -689,20 +694,27 @@ export class AssetService {
       });
       return;
     }
-    const message = error instanceof Error ? error.message : "";
-    if (/timeout|timed out|abort|cancel/i.test(message)) {
-      await this.budgets.markUnreconciled(hold.id, "TIMEOUT_OR_CANCEL");
+    const settlement = appSettlementFor(error);
+    if (settlement === "RELEASED") {
+      await this.budgets.release(hold.id, "GATEWAY_RELEASED");
       return;
     }
-    const lane = requireLaneRate(hold.laneId, registryPathFromEnv());
-    if (lane.failuresBillable) {
+    if (settlement === "RECONCILED") {
+      const reported = isAppError(error) ? error.details?.actualBilledSeconds : undefined;
+      const actualBilledSeconds =
+        typeof reported === "number" && Number.isFinite(reported) && reported >= 0
+          ? reported
+          : hold.estimatedBilledSeconds;
       await this.budgets.reconcile(hold.id, {
-        actualBilledSeconds: hold.estimatedBilledSeconds,
-        reason: "FAILURE_BILLABLE",
+        actualBilledSeconds,
+        reason: "GATEWAY_RECONCILED",
       });
       return;
     }
-    await this.budgets.release(hold.id, "FAILURE_NOT_BILLABLE");
+    await this.budgets.markUnreconciled(
+      hold.id,
+      settlement === "UNRECONCILED" ? "GATEWAY_UNRECONCILED" : "SETTLEMENT_MISSING",
+    );
   }
 
   private async persistFailed(input: {
@@ -770,6 +782,28 @@ export class AssetService {
       finishedAt: job.finishedAt?.toISOString() ?? null,
     };
   }
+}
+
+function appSettlementFor(
+  error: unknown,
+): "RELEASED" | "RECONCILED" | "UNRECONCILED" | "MISSING" {
+  if (!isAppError(error)) {
+    return "MISSING";
+  }
+  if (error.code === "ASSET_CAPABILITY_UNAVAILABLE") {
+    return "RELEASED";
+  }
+  if (
+    error.code === "ASSET_PROVIDER_UNAVAILABLE" &&
+    /No production asset generator adapter is configured/i.test(error.message)
+  ) {
+    return "RELEASED";
+  }
+  const settlement = error.details?.settlement;
+  if (settlement === "RELEASED" || settlement === "RECONCILED" || settlement === "UNRECONCILED") {
+    return settlement;
+  }
+  return "MISSING";
 }
 
 function registryPathFromEnv(): string | undefined {

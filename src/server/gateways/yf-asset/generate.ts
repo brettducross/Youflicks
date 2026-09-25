@@ -7,6 +7,8 @@ import {
   capabilityForGenerateKind,
   gatewayError,
   yfGenerateRequestSchema,
+  type GatewayErrorBody,
+  type GatewaySettlement,
   type YfGenerateSuccess,
 } from "@/server/gateways/yf-asset/contract";
 import { downloadNormalizedAsset } from "@/server/gateways/yf-asset/download";
@@ -19,7 +21,7 @@ import {
   type GatewayReservationRecord,
 } from "@/server/gateways/yf-asset/reservation";
 import { SpendGuard } from "@/server/gateways/yf-asset/spend";
-import type { VideoBackend } from "@/server/gateways/yf-asset/backends/types";
+import { BackendSubmitError, type VideoBackend } from "@/server/gateways/yf-asset/backends/types";
 import { AssetCapability } from "@/server/ports/capabilities";
 import {
   actualBilledSecondsFromDurationMs,
@@ -33,7 +35,7 @@ import {
 
 export type GenerateHandlerResult =
   | { ok: true; status: 200; body: YfGenerateSuccess }
-  | { ok: false; status: number; body: { error: string; code: string; capability?: string } };
+  | { ok: false; status: number; body: GatewayErrorBody };
 
 export class YfAssetGenerateService {
   constructor(
@@ -254,13 +256,25 @@ export class YfAssetGenerateService {
         },
       };
     } catch (error) {
-      await this.settleLaneFailure(reservations, reservation, lane, charge.estimatedBilledSeconds, error);
+      const settled = await this.settleLaneFailure(
+        reservations,
+        reservation,
+        lane,
+        charge.estimatedBilledSeconds,
+        error,
+      );
       const message = error instanceof Error ? error.message : "Asset gateway generate failed.";
       this.jobs.markFailed(job.jobId, message);
+      const extra = {
+        settlement: settled.settlement,
+        ...(settled.actualBilledSeconds !== undefined
+          ? { actualBilledSeconds: settled.actualBilledSeconds }
+          : {}),
+      };
       if (error instanceof LaneDurationError) {
-        return gatewayError(400, error.code, message);
+        return gatewayError(400, error.code, message, extra);
       }
-      return gatewayError(503, "ASSET_PROVIDER_UNAVAILABLE", message);
+      return gatewayError(503, "ASSET_PROVIDER_UNAVAILABLE", message, extra);
     }
   }
 
@@ -270,7 +284,7 @@ export class YfAssetGenerateService {
     lane: LaneRate,
     estimatedBilledSeconds: number,
     error: unknown,
-  ) {
+  ): Promise<{ settlement: GatewaySettlement; actualBilledSeconds?: number }> {
     const classified = classifyBackendFailure(error);
     if (classified.kind === "download_after_success") {
       const actual = actualBilledSecondsFromDurationMs(
@@ -282,7 +296,7 @@ export class YfAssetGenerateService {
         actualBilledSeconds: actual.seconds,
         reason: actual.flagged ? "DOWNLOAD_FAILURE_ACTUAL_DURATION_FALLBACK" : "DOWNLOAD_FAILURE_BILLED",
       });
-      return;
+      return { settlement: "RECONCILED", actualBilledSeconds: actual.seconds };
     }
     if (classified.kind === "backend_failed") {
       if (lane.failuresBillable) {
@@ -290,16 +304,17 @@ export class YfAssetGenerateService {
           actualBilledSeconds: estimatedBilledSeconds,
           reason: "FAILURE_BILLABLE",
         });
-      } else {
-        await reservations.release(reservation.id, "FAILURE_NOT_BILLABLE");
+        return { settlement: "RECONCILED", actualBilledSeconds: estimatedBilledSeconds };
       }
-      return;
+      await reservations.release(reservation.id, "FAILURE_NOT_BILLABLE");
+      return { settlement: "RELEASED" };
     }
     if (classified.kind === "submit_rejected") {
       await reservations.release(reservation.id, "SUBMIT_REJECTED");
-      return;
+      return { settlement: "RELEASED" };
     }
     await reservations.markUnreconciled(reservation.id, classified.reason);
+    return { settlement: "UNRECONCILED" };
   }
 
   private async runBackend(
@@ -330,15 +345,12 @@ export class YfAssetGenerateService {
         webhookUrl: this.config.webhookUrl,
       });
     } catch (error) {
-      if (isUnreconciledSignal(error)) {
-        throw new GatewayUnreconciledError(
-          error instanceof Error ? error.message : "Backend submit was aborted.",
-          "SUBMIT_ABORTED",
-        );
+      const disposition = classifySubmitThrow(error);
+      const message = error instanceof Error ? error.message : "Backend submit failed.";
+      if (disposition === "unknown") {
+        throw new GatewayUnreconciledError(message, "SUBMIT_UNKNOWN");
       }
-      throw new GatewaySubmitRejectedError(
-        error instanceof Error ? error.message : "Backend submit was rejected.",
-      );
+      throw new GatewaySubmitRejectedError(message);
     }
     this.jobs.bindBackendRequest(jobId, submitted.backendRequestId);
     const asset = await this.waitForAsset(jobId, model, submitted.backendRequestId);
@@ -392,9 +404,6 @@ export class YfAssetGenerateService {
       }
       if (local?.status === "failed") {
         const message = local.error ?? "Gateway job failed.";
-        if (isUnreconciledText(message)) {
-          throw new GatewayUnreconciledError(message, "CANCELLED");
-        }
         throw new GatewayBackendFailedError(message);
       }
 
@@ -407,12 +416,14 @@ export class YfAssetGenerateService {
           "STATUS_UNKNOWN",
         );
       }
+      if (status.status === "canceled") {
+        throw new GatewayUnreconciledError(
+          status.error ?? "Backend generation was canceled.",
+          "CANCELLED",
+        );
+      }
       if (status.status === "failed") {
-        const message = status.error ?? "Backend generation failed.";
-        if (isUnreconciledText(message)) {
-          throw new GatewayUnreconciledError(message, "CANCELLED");
-        }
-        throw new GatewayBackendFailedError(message);
+        throw new GatewayBackendFailedError(status.error ?? "Backend generation failed.");
       }
       if (status.status === "succeeded") {
         try {
@@ -486,22 +497,43 @@ function classifyBackendFailure(error: unknown):
   if (error instanceof GatewayUnreconciledError) {
     return { kind: "unreconciled", reason: error.reason };
   }
-  if (isUnreconciledSignal(error)) {
+  if (error instanceof Error && error.name === "AbortError") {
     return { kind: "unreconciled", reason: "ABORTED" };
   }
   return { kind: "unreconciled", reason: "UNKNOWN" };
 }
 
-function isUnreconciledSignal(error: unknown): boolean {
-  if (error instanceof Error && error.name === "AbortError") {
-    return true;
+/**
+ * Release only when the create call definitely did not start a provider job.
+ * Network errors, 5xx, and a 2xx with no id stay UNRECONCILED. Cancel is not
+ * detected from error text; status() carries an explicit canceled value.
+ */
+function classifySubmitThrow(error: unknown): "rejected" | "unknown" {
+  if (error instanceof BackendSubmitError) {
+    return error.disposition;
+  }
+  if (error instanceof Error && (error.name === "AbortError" || error.name === "TypeError")) {
+    return "unknown";
   }
   const message = error instanceof Error ? error.message : "";
-  return isUnreconciledText(message);
-}
-
-function isUnreconciledText(message: string): boolean {
-  return /cancel|abort|timeout|timed out/i.test(message);
+  if (/\bfetch failed\b/i.test(message)) {
+    return "unknown";
+  }
+  const status = /failed \((\d{3})\)/.exec(message);
+  if (status) {
+    const code = Number(status[1]);
+    if (code >= 400 && code < 500) {
+      return "rejected";
+    }
+    return "unknown";
+  }
+  if (/no (prediction|request) id/i.test(message)) {
+    return "unknown";
+  }
+  if (/timeout|timed out|\babort\b/i.test(message)) {
+    return "unknown";
+  }
+  return "rejected";
 }
 
 function resolveModel(

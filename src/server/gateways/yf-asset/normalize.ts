@@ -52,7 +52,9 @@ export function extractBackendRequestId(payload: unknown): string | undefined {
   return typeof id === "string" && id.length > 0 ? id : undefined;
 }
 
-export function mapQueueStatus(raw: unknown): "queued" | "running" | "succeeded" | "failed" {
+export function mapQueueStatus(
+  raw: unknown,
+): "queued" | "running" | "succeeded" | "failed" | "canceled" {
   const value = typeof raw === "string" ? raw.toUpperCase() : "";
   if (
     value === "COMPLETED" ||
@@ -71,12 +73,10 @@ export function mapQueueStatus(raw: unknown): "queued" | "running" | "succeeded"
   ) {
     return value === "STARTING" ? "queued" : "running";
   }
-  if (
-    value === "FAILED" ||
-    value === "ERROR" ||
-    value === "CANCELLED" ||
-    value === "CANCELED"
-  ) {
+  if (value === "CANCELLED" || value === "CANCELED") {
+    return "canceled";
+  }
+  if (value === "FAILED" || value === "ERROR") {
     return "failed";
   }
   return "queued";

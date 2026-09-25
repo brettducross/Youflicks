@@ -212,8 +212,11 @@ export class AppError extends Error {
     return new AppError(ErrorCodes.ASSET_DOCUMENT_INVALID, message, 422, details);
   }
 
-  static assetProviderUnavailable(message = "A required asset generator adapter is unavailable.") {
-    return new AppError(ErrorCodes.ASSET_PROVIDER_UNAVAILABLE, message, 503);
+  static assetProviderUnavailable(
+    message = "A required asset generator adapter is unavailable.",
+    details?: Record<string, unknown>,
+  ) {
+    return new AppError(ErrorCodes.ASSET_PROVIDER_UNAVAILABLE, message, 503, details);
   }
 
   static assetTimelineRequired(

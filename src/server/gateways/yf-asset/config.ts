@@ -188,13 +188,20 @@ export function assertLiveGatewayLane(config: YfAssetGatewayConfig): LaneRate | 
       "YF_GATEWAY_LANE_ID is required when YF_GATEWAY_BACKEND is not mock. The gateway fails closed without a lane.",
     );
   }
+  let lane: LaneRate;
   try {
-    return requireLaneRate(config.laneId, config.registryPath);
+    lane = requireLaneRate(config.laneId, config.registryPath);
   } catch (error) {
     throw new GatewayConfigError(
       error instanceof Error ? error.message : "Lane registry failed closed.",
     );
   }
+  if (lane.providerKey.startsWith("TBD:")) {
+    throw new GatewayConfigError(
+      `Lane ${lane.laneId} providerKey starts with TBD:. A live gateway fails closed until the transport is set.`,
+    );
+  }
+  return lane;
 }
 
 export function warnIfFlatRateIgnored(config: YfAssetGatewayConfig): void {

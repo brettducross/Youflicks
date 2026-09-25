@@ -39,7 +39,7 @@ describe("lane-priced estimate fixtures", () => {
     const charge = estimateLaneCharge(
       lane({
         laneId: "veo31lite-720",
-        usdPerSecond: 0.03,
+        usdPerSecond: 0.05,
         clipDurationS: 6,
         supportedDurationsS: [4, 6, 8],
       }),
@@ -47,12 +47,12 @@ describe("lane-priced estimate fixtures", () => {
     );
     expect(charge.requestedDurationS).toBe(5);
     expect(charge.estimatedBilledSeconds).toBe(6);
-    expect(charge.reservedUsd).toBeCloseTo(0.18, 5);
+    expect(charge.reservedUsd).toBeCloseTo(0.3, 5);
   });
 
   it("uses the lane clip duration when no numeric duration is requested", () => {
     const charge = estimateLaneCharge(
-      lane({ clipDurationS: 6, supportedDurationsS: [4, 6, 8], usdPerSecond: 0.03 }),
+      lane({ clipDurationS: 6, supportedDurationsS: [4, 6, 8], usdPerSecond: 0.05 }),
     );
     expect(charge.requestedDurationS).toBe(6);
     expect(charge.estimatedBilledSeconds).toBe(6);
@@ -105,7 +105,13 @@ describe("lane-priced estimate fixtures", () => {
     expect(estimateLaneCharge(seedance!).reservedUsd).toBeCloseTo(1.2095, 5);
     expect(estimateLaneCharge(boreal!).reservedUsd).toBeCloseTo(0.05, 5);
     expect(wan?.failuresBillable).toBe(false);
-    expect(requireLaneRate("veo31lite-720", filePath).supportedDurationsS).toEqual([4, 6, 8]);
+    const veo = requireLaneRate("veo31lite-720", filePath);
+    expect(veo.usdPerSecond).toBe(0.05);
+    expect(veo.failuresBillable).toBe(true);
+    expect(veo.supportedDurationsS).toEqual([4, 6, 8]);
+    expect(estimateLaneCharge(veo).reservedUsd).toBeCloseTo(0.3, 5);
+    expect(lanes.every((item) => /ESTIMATE/i.test(item.rateRef))).toBe(true);
+    expect(lanes.every((item) => /not a price/i.test(item.rateRef))).toBe(true);
   });
 });
 

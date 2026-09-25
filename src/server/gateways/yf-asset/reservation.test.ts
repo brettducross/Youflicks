@@ -3,6 +3,8 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterAll, describe, expect, it, vi } from "vitest";
 import { MockVideoBackend } from "@/server/gateways/yf-asset/backends/mock";
+import { ReplicateVideoBackend } from "@/server/gateways/yf-asset/backends/replicate";
+import type { VideoBackend } from "@/server/gateways/yf-asset/backends/types";
 import {
   assertLiveGatewayLane,
   GatewayConfigError,
@@ -200,7 +202,7 @@ describe("GatewaySpendReservation Postgres", () => {
       where: { idempotencyKey: { startsWith: prefix } },
     });
     await prisma.gatewaySpendLedger.deleteMany({
-      where: { id: { contains: prefix } },
+      where: { OR: [{ id: { contains: prefix } }, { id: `lane:${wan.laneId}` }] },
     });
   });
 
@@ -523,6 +525,17 @@ describe("gateway boot fail-closed", () => {
     warn.mockRestore();
   });
 
+  it("refuses to boot a live gateway on a TBD providerKey", () => {
+    const config = parseYfAssetGatewayConfig({
+      YF_GATEWAY_API_KEY: "gw-key",
+      YF_GATEWAY_BACKEND_API_KEY: "backend-key",
+      YF_GATEWAY_BACKEND: "http",
+      YF_GATEWAY_MODEL: "open.model",
+      YF_GATEWAY_LANE_ID: "boreal-720",
+    });
+    expect(() => assertLiveGatewayLane(config)).toThrow(/TBD:/);
+  });
+
   it("does not require a lane for mock", () => {
     const config = parseYfAssetGatewayConfig({
       YF_GATEWAY_API_KEY: "gw-key",
@@ -531,5 +544,149 @@ describe("gateway boot fail-closed", () => {
     });
     expect(assertLiveGatewayLane(config)).toBeUndefined();
     expect(config.flatRateIgnored).toBe(false);
+  });
+});
+
+describe("live submit and cancel settlement", () => {
+  const png = Buffer.from(
+    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==",
+    "base64",
+  );
+
+  function liveGenerate(backend: VideoBackend, fetchImpl: typeof fetch = async () => new Response("nope", { status: 500 })) {
+    const store = new MemoryGatewayReservation();
+    const ledgerId = `settle-${Math.random().toString(16).slice(2)}`;
+    const config = parseYfAssetGatewayConfig({
+      YF_GATEWAY_API_KEY: "gw-key",
+      YF_GATEWAY_BACKEND_API_KEY: "backend-key",
+      YF_GATEWAY_BACKEND: "http",
+      YF_GATEWAY_MODEL: "open.model",
+      YF_GATEWAY_LANE_ID: "r1-wan27-replicate",
+      YF_GATEWAY_MAX_JOBS: "10",
+      YF_GATEWAY_MAX_SPEND_USD: "100",
+      YF_GATEWAY_POLL_MS: "1",
+      YF_GATEWAY_TIMEOUT_MS: "30",
+      YF_GATEWAY_LEDGER_ID: ledgerId,
+    });
+    const generate = new YfAssetGenerateService(
+      config,
+      backend,
+      new GatewayJobStore(),
+      new SpendGuard(config.maxJobs, config.maxSpendUsd, config.estimatedUsdPerJob),
+      fetchImpl,
+      async () => {},
+      store,
+    );
+    return { generate, store, ledgerId };
+  }
+
+  const body = {
+    model: "open.model",
+    kind: "VIDEO_CLIP" as const,
+    role: "broll",
+    input: {},
+  };
+
+  function row(store: MemoryGatewayReservation, ledgerId: string) {
+    const found = store.list().find((item) => item.ledgerIds.includes(ledgerId));
+    if (!found) {
+      throw new Error(`missing reservation for ${ledgerId}`);
+    }
+    return found;
+  }
+
+  it("keeps a Replicate canceled prediction UNRECONCILED when error is null", async () => {
+    const fetchImpl: typeof fetch = async (input, init) => {
+      const url = String(input);
+      if (url.endsWith("/v1/files")) {
+        return new Response(
+          JSON.stringify({ urls: { get: "https://api.replicate.com/v1/files/file_1" } }),
+          { status: 200 },
+        );
+      }
+      if (init?.method === "POST" && url.includes("/predictions")) {
+        return new Response(JSON.stringify({ id: "pred_canceled" }), { status: 200 });
+      }
+      if (url.endsWith("/predictions/pred_canceled")) {
+        return new Response(JSON.stringify({ status: "canceled", error: null }), { status: 200 });
+      }
+      return new Response("missing", { status: 404 });
+    };
+    const config = parseYfAssetGatewayConfig({
+      YF_GATEWAY_API_KEY: "gw-key",
+      YF_GATEWAY_BACKEND: "replicate",
+      REPLICATE_API_TOKEN: "r8_test_token",
+      YF_GATEWAY_MODEL: "wan-video/wan-2.7-i2v",
+      YF_GATEWAY_LANE_ID: "r1-wan27-replicate",
+      YF_GATEWAY_MAX_JOBS: "10",
+      YF_GATEWAY_MAX_SPEND_USD: "100",
+      YF_GATEWAY_POLL_MS: "1",
+      YF_GATEWAY_TIMEOUT_MS: "1000",
+      YF_GATEWAY_LEDGER_ID: `cancel-${Math.random().toString(16).slice(2)}`,
+      YF_GATEWAY_BACKEND_INPUT_JSON: JSON.stringify({ imageBytesBase64: png.toString("base64") }),
+    });
+    const store = new MemoryGatewayReservation();
+    const generate = new YfAssetGenerateService(
+      config,
+      new ReplicateVideoBackend(config, fetchImpl),
+      new GatewayJobStore(),
+      new SpendGuard(config.maxJobs, config.maxSpendUsd, config.estimatedUsdPerJob),
+      fetchImpl,
+      async () => {},
+      store,
+    );
+    const result = await generate.generate({
+      model: "wan-video/wan-2.7-i2v",
+      kind: "VIDEO_CLIP",
+      role: "broll",
+      input: {},
+    });
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error("expected canceled prediction to fail closed");
+    expect(result.body.settlement).toBe("UNRECONCILED");
+    const held = row(store, config.ledgerId);
+    expect(held.status).toBe("UNRECONCILED");
+    expect(held.settleReason).toBe("CANCELLED");
+    const snap = await store.snapshot(config.ledgerId);
+    expect(snap.reservedUsd).toBeCloseTo(wanCharge.reservedUsd, 5);
+    expect(snap.spendUsd).toBeCloseTo(wanCharge.reservedUsd, 5);
+  });
+
+  it("keeps fetch failed and 502 UNRECONCILED and releases a 422", async () => {
+    const cases: Array<{ message: string; status: "UNRECONCILED" | "RELEASED"; settlement: "UNRECONCILED" | "RELEASED" }> = [
+      { message: "fetch failed", status: "UNRECONCILED", settlement: "UNRECONCILED" },
+      { message: "Replicate submit failed (502): upstream", status: "UNRECONCILED", settlement: "UNRECONCILED" },
+      { message: "Replicate submit failed (422): invalid input", status: "RELEASED", settlement: "RELEASED" },
+    ];
+    for (const item of cases) {
+      const backend: VideoBackend = {
+        kind: "http",
+        async submit() {
+          if (item.message === "fetch failed") {
+            throw new TypeError("fetch failed");
+          }
+          throw new Error(item.message);
+        },
+        async status() {
+          return { status: "queued" };
+        },
+        async result() {
+          throw new Error("no result");
+        },
+      };
+      const { generate, store, ledgerId } = liveGenerate(backend);
+      const result = await generate.generate(body);
+      expect(result.ok).toBe(false);
+      if (result.ok) throw new Error("expected submit failure");
+      expect(result.body.settlement).toBe(item.settlement);
+      expect(row(store, ledgerId).status).toBe(item.status);
+      const snap = await store.snapshot(ledgerId);
+      if (item.status === "RELEASED") {
+        expect(snap.reservedUsd).toBeCloseTo(0, 5);
+        expect(snap.spendUsd).toBeCloseTo(0, 5);
+      } else {
+        expect(snap.reservedUsd).toBeCloseTo(wanCharge.reservedUsd, 5);
+      }
+    }
   });
 });

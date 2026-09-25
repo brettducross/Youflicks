@@ -182,24 +182,61 @@ describe("AiVideoBudgetLedger caps, seconds, and deletion", () => {
 });
 
 describe("GET /api/ops/spend", () => {
+  const opsSecret = "test-ops-secret";
+
+  function setOpsSecret(value: string | undefined) {
+    (env as { BETA_OPS_SECRET?: string }).BETA_OPS_SECRET = value;
+  }
+
+  it("returns 404 when the ops secret is unset or the header does not match", async () => {
+    const previous = env.BETA_OPS_SECRET;
+    try {
+      setOpsSecret(undefined);
+      const unset = await spendRoute(
+        new Request("http://localhost/api/ops/spend", {
+          headers: { authorization: `Bearer ${opsSecret}` },
+        }),
+      );
+      expect(unset.status).toBe(404);
+
+      setOpsSecret(opsSecret);
+      const missing = await spendRoute(new Request("http://localhost/api/ops/spend"));
+      expect(missing.status).toBe(404);
+      const wrong = await spendRoute(
+        new Request("http://localhost/api/ops/spend", {
+          headers: { authorization: "Bearer wrong" },
+        }),
+      );
+      expect(wrong.status).toBe(404);
+    } finally {
+      setOpsSecret(previous);
+    }
+  });
+
   it("returns the global row with additive fields only", async () => {
-    const response = await spendRoute(
-      new Request("http://localhost/api/ops/spend", {
-        headers: { authorization: `Bearer ${env.BETA_OPS_SECRET}` },
-      }),
-    );
-    expect(response.status).toBe(200);
-    const body = (await response.json()) as Record<string, unknown>;
-    expect(body.ledgerId).toBe(GATEWAY_SPEND_LEDGER_ID);
-    expect(body).toMatchObject({
-      jobsAccepted: expect.any(Number),
-      spendUsd: expect.any(Number),
-      reservedUsd: expect.any(Number),
-      billedSeconds: expect.any(Number),
-      reservedSeconds: expect.any(Number),
-      scopeKind: expect.any(String),
-    });
-    expect(body).not.toHaveProperty("creativePlan");
-    expect(body).not.toHaveProperty("lanes");
+    const previous = env.BETA_OPS_SECRET;
+    setOpsSecret(opsSecret);
+    try {
+      const response = await spendRoute(
+        new Request("http://localhost/api/ops/spend", {
+          headers: { authorization: `Bearer ${opsSecret}` },
+        }),
+      );
+      expect(response.status).toBe(200);
+      const body = (await response.json()) as Record<string, unknown>;
+      expect(body.ledgerId).toBe(GATEWAY_SPEND_LEDGER_ID);
+      expect(body).toMatchObject({
+        jobsAccepted: expect.any(Number),
+        spendUsd: expect.any(Number),
+        reservedUsd: expect.any(Number),
+        billedSeconds: expect.any(Number),
+        reservedSeconds: expect.any(Number),
+        scopeKind: expect.any(String),
+      });
+      expect(body).not.toHaveProperty("creativePlan");
+      expect(body).not.toHaveProperty("lanes");
+    } finally {
+      setOpsSecret(previous);
+    }
   });
 });

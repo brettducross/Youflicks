@@ -8,7 +8,7 @@
       "supportedDurationsS": [5],
       "billingGranularityS": 1,
       "failuresBillable": false,
-      "rateRef": "Economics BAKEOFF §2, Replicate VERIFIED 2026-09-25. Failures are not billed on Replicate."
+      "rateRef": "ESTIMATE list price; reservation config only, not a price. Economics BAKEOFF §2, Replicate VERIFIED 2026-09-25. Failures are not billed on Replicate."
     },
     {
       "laneId": "boreal-720",
@@ -18,7 +18,7 @@
       "supportedDurationsS": [5],
       "billingGranularityS": 1,
       "failuresBillable": true,
-      "rateRef": "PHASE_SG §4 initial rate. Supported durations TBD; clip length used until Economics re-verifies. No verified no-bill policy."
+      "rateRef": "ESTIMATE list price; reservation config only, not a price. PHASE_SG §4 initial rate. Supported durations TBD; clip length used until Economics re-verifies. No verified no-bill policy."
     },
     {
       "laneId": "pruna-480-cost",
@@ -28,7 +28,7 @@
       "supportedDurationsS": [5],
       "billingGranularityS": 1,
       "failuresBillable": true,
-      "rateRef": "PHASE_SG §4. Pruna failure-billing policy UNVERIFIED (BAKEOFF costing §2); failuresBillable defaults true."
+      "rateRef": "ESTIMATE list price; reservation config only, not a price. PHASE_SG §4. Pruna failure-billing policy UNVERIFIED (BAKEOFF costing §2); failuresBillable defaults true."
     },
     {
       "laneId": "pruna-768-cost",
@@ -38,7 +38,7 @@
       "supportedDurationsS": [5],
       "billingGranularityS": 1,
       "failuresBillable": true,
-      "rateRef": "PHASE_SG §4. Pruna failure-billing policy UNVERIFIED; failuresBillable defaults true."
+      "rateRef": "ESTIMATE list price; reservation config only, not a price. PHASE_SG §4. Pruna failure-billing policy UNVERIFIED; failuresBillable defaults true."
     },
     {
       "laneId": "h3turbo-768",
@@ -48,17 +48,17 @@
       "supportedDurationsS": [5],
       "billingGranularityS": 1,
       "failuresBillable": true,
-      "rateRef": "PHASE_SG §4 LIST rate; promo excluded. No verified no-bill policy."
+      "rateRef": "ESTIMATE list price; reservation config only, not a price. PHASE_SG §4 LIST rate; promo excluded. No verified no-bill policy."
     },
     {
       "laneId": "veo31lite-720",
       "providerKey": "TBD:veo31lite-720",
-      "usdPerSecond": 0.03,
+      "usdPerSecond": 0.05,
       "clipDurationS": 6,
       "supportedDurationsS": [4, 6, 8],
       "billingGranularityS": 1,
-      "failuresBillable": false,
-      "rateRef": "PHASE_SG §4 no-audio fal reference, durations VERIFIED [4, 6, 8]. Failures are not billed on fal."
+      "failuresBillable": true,
+      "rateRef": "ESTIMATE list price; reservation config only, not a price. Economics priced primary $0.05/s with audio (r2 envelope), not the $0.03 fal no-audio sensitivity. Transport undecided; failuresBillable stays true."
     },
     {
       "laneId": "pruna-768-quality",
@@ -68,7 +68,7 @@
       "supportedDurationsS": [5],
       "billingGranularityS": 1,
       "failuresBillable": true,
-      "rateRef": "PHASE_SG §4. Pruna failure-billing policy UNVERIFIED; failuresBillable defaults true."
+      "rateRef": "ESTIMATE list price; reservation config only, not a price. PHASE_SG §4. Pruna failure-billing policy UNVERIFIED; failuresBillable defaults true."
     },
     {
       "laneId": "kling3-pro-audio-off",
@@ -78,7 +78,7 @@
       "supportedDurationsS": [5],
       "billingGranularityS": 1,
       "failuresBillable": true,
-      "rateRef": "Economics BAKEOFF §2 Kling v3 Pro audio off. No verified no-bill policy; failuresBillable defaults true."
+      "rateRef": "ESTIMATE list price; reservation config only, not a price. Economics BAKEOFF §2 Kling v3 Pro audio off. No verified no-bill policy; failuresBillable defaults true."
     },
     {
       "laneId": "seedance2-fast-720",
@@ -88,7 +88,7 @@
       "supportedDurationsS": [5],
       "billingGranularityS": 1,
       "failuresBillable": true,
-      "rateRef": "Economics BAKEOFF §2 Seedance 2.0 Fast; audio always billed. No verified no-bill policy."
+      "rateRef": "ESTIMATE list price; reservation config only, not a price. Economics BAKEOFF §2 Seedance 2.0 Fast; audio always billed. No verified no-bill policy."
     }
   ]
 }

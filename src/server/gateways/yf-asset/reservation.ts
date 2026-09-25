@@ -211,6 +211,10 @@ export class MemoryGatewayReservation implements GatewayReservationPort {
     return { ...(this.ledgers.get(ledgerId) ?? emptyLedger(ledgerId)) };
   }
 
+  list(): GatewayReservationRecord[] {
+    return [...this.reservations.values()].map((row) => this.copy(row));
+  }
+
   private reserveUnlocked(input: GatewayReserveInput): GatewayReservationRecord {
     const ledgerIds = sortedIds(input.ledgerIds);
     const existingId = this.byKey.get(input.idempotencyKey);

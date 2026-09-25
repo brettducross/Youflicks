@@ -106,10 +106,14 @@ export class HttpAssetGeneratorAdapter implements AssetGeneratorPort {
           status: response.status,
           body: redact(text, this.config.apiKey).slice(0, 500),
         });
-        if (response.status === 429 && gatewayErrorCode(text) === "GATEWAY_SPEND_CAP") {
+        const gatewayError = parseGatewayError(text);
+        if (response.status === 429 && gatewayError.code === "GATEWAY_SPEND_CAP") {
           throw AppError.spendCapReached();
         }
-        throw AppError.assetProviderUnavailable("The asset generator adapter failed.");
+        throw AppError.assetProviderUnavailable(
+          "The asset generator adapter failed.",
+          gatewaySettlementDetails(gatewayError),
+        );
       }
 
       const payload = (await response.json()) as {
@@ -225,13 +229,50 @@ function redact(text: string, secret?: string) {
   return text.split(secret).join("[redacted]");
 }
 
-function gatewayErrorCode(text: string): string | undefined {
+function parseGatewayError(text: string): {
+  code?: string;
+  settlement?: "RELEASED" | "RECONCILED" | "UNRECONCILED";
+  actualBilledSeconds?: number;
+} {
   try {
-    const parsed = JSON.parse(text) as { code?: unknown };
-    return typeof parsed.code === "string" ? parsed.code : undefined;
+    const parsed = JSON.parse(text) as {
+      code?: unknown;
+      settlement?: unknown;
+      actualBilledSeconds?: unknown;
+    };
+    const settlement =
+      parsed.settlement === "RELEASED" ||
+      parsed.settlement === "RECONCILED" ||
+      parsed.settlement === "UNRECONCILED"
+        ? parsed.settlement
+        : undefined;
+    const actualBilledSeconds =
+      typeof parsed.actualBilledSeconds === "number" && Number.isFinite(parsed.actualBilledSeconds)
+        ? parsed.actualBilledSeconds
+        : undefined;
+    return {
+      code: typeof parsed.code === "string" ? parsed.code : undefined,
+      settlement,
+      actualBilledSeconds,
+    };
   } catch {
+    return {};
+  }
+}
+
+function gatewaySettlementDetails(parsed: {
+  settlement?: "RELEASED" | "RECONCILED" | "UNRECONCILED";
+  actualBilledSeconds?: number;
+}): Record<string, unknown> | undefined {
+  if (!parsed.settlement) {
     return undefined;
   }
+  return {
+    settlement: parsed.settlement,
+    ...(parsed.actualBilledSeconds !== undefined
+      ? { actualBilledSeconds: parsed.actualBilledSeconds }
+      : {}),
+  };
 }
 
 function isAppErrorLike(error: unknown): boolean {
