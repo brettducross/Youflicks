@@ -1,7 +1,14 @@
+import { logger } from "@/lib/logger";
 import {
   BETA_DEFAULT_MAX_JOBS,
   BETA_DEFAULT_MAX_SPEND_USD,
+  GATEWAY_SPEND_LEDGER_ID,
 } from "@/server/beta/defaults";
+import {
+  DEFAULT_SG_LANE_REGISTRY_PATH,
+  requireLaneRate,
+  type LaneRate,
+} from "@/server/sg/lane-rate";
 import {
   ALL_ASSET_CAPABILITIES,
   AssetCapability,
@@ -42,7 +49,16 @@ export type YfAssetGatewayConfig = {
   pollMs: number;
   maxJobs?: number;
   maxSpendUsd?: number;
+  /** Mock backends only. Ignored on a live backend (see flatRateIgnored). */
   estimatedUsdPerJob: number;
+  /** Set when a live backend was given YF_GATEWAY_ESTIMATED_USD_PER_JOB. Never the rate. */
+  flatRateIgnored: boolean;
+  ledgerId: string;
+  laneId?: string;
+  registryPath: string;
+  lane?: LaneRate;
+  maxBilledSeconds?: number;
+  laneMaxSpendUsd?: number;
   downloadMaxBytes: number;
   extraInput: Record<string, unknown>;
 };
@@ -106,6 +122,12 @@ export function parseYfAssetGatewayConfig(
     pollMs: positiveInt(env.YF_GATEWAY_POLL_MS, 2_000),
     ...resolveLiveSpendCaps(backend, env),
     estimatedUsdPerJob: optionalPositiveNumber(env.YF_GATEWAY_ESTIMATED_USD_PER_JOB) ?? 0.5,
+    flatRateIgnored: backend !== "mock" && Boolean(env.YF_GATEWAY_ESTIMATED_USD_PER_JOB?.trim()),
+    ledgerId: env.YF_GATEWAY_LEDGER_ID?.trim() || GATEWAY_SPEND_LEDGER_ID,
+    laneId: emptyToUndefined(env.YF_GATEWAY_LANE_ID),
+    registryPath: env.SG_LANE_REGISTRY_PATH?.trim() || DEFAULT_SG_LANE_REGISTRY_PATH,
+    maxBilledSeconds: optionalCap(env.YF_GATEWAY_MAX_BILLED_SECONDS, "YF_GATEWAY_MAX_BILLED_SECONDS"),
+    laneMaxSpendUsd: optionalCap(env.YF_GATEWAY_LANE_MAX_SPEND_USD, "YF_GATEWAY_LANE_MAX_SPEND_USD"),
     downloadMaxBytes: positiveInt(env.YF_GATEWAY_DOWNLOAD_MAX_BYTES, 100 * 1024 * 1024),
     extraInput: parseExtraInput(env.YF_GATEWAY_BACKEND_INPUT_JSON),
   };
@@ -153,9 +175,45 @@ function resolveLiveSpendCaps(
   };
 }
 
+/**
+ * Live backends price from the lane registry. A missing, unknown, non-positive,
+ * or unreadable lane fails closed before the process accepts work.
+ */
+export function assertLiveGatewayLane(config: YfAssetGatewayConfig): LaneRate | undefined {
+  if (config.backend === "mock") {
+    return undefined;
+  }
+  if (!config.laneId) {
+    throw new GatewayConfigError(
+      "YF_GATEWAY_LANE_ID is required when YF_GATEWAY_BACKEND is not mock. The gateway fails closed without a lane.",
+    );
+  }
+  try {
+    return requireLaneRate(config.laneId, config.registryPath);
+  } catch (error) {
+    throw new GatewayConfigError(
+      error instanceof Error ? error.message : "Lane registry failed closed.",
+    );
+  }
+}
+
+export function warnIfFlatRateIgnored(config: YfAssetGatewayConfig): void {
+  if (!config.flatRateIgnored) {
+    return;
+  }
+  logger.warn("yf_asset_gateway.flat_rate_ignored", {
+    env: "YF_GATEWAY_ESTIMATED_USD_PER_JOB",
+    backend: config.backend,
+    laneId: config.laneId ?? null,
+    message:
+      "YF_GATEWAY_ESTIMATED_USD_PER_JOB is ignored on a live backend and can never be the sole rate. Reservation uses the lane registry $/s.",
+  });
+}
+
 export function gatewayReady(config: YfAssetGatewayConfig): boolean {
   try {
     assertGatewaySecrets(config);
+    assertLiveGatewayLane(config);
     return config.model.trim().length > 0;
   } catch {
     return false;
@@ -239,6 +297,17 @@ function optionalPositiveNumber(raw: string | undefined): number | undefined {
   const value = Number(raw);
   if (!Number.isFinite(value) || value <= 0) {
     return undefined;
+  }
+  return value;
+}
+
+function optionalCap(raw: string | undefined, name: string): number | undefined {
+  if (!raw || raw.trim() === "") {
+    return undefined;
+  }
+  const value = Number(raw);
+  if (!Number.isFinite(value) || value <= 0) {
+    throw new GatewayConfigError(`${name} must be a positive number when set.`);
   }
   return value;
 }

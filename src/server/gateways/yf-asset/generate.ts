@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import {
   assertGatewaySecrets,
   type YfAssetGatewayConfig,
@@ -12,9 +13,23 @@ import { downloadNormalizedAsset } from "@/server/gateways/yf-asset/download";
 import { GatewayJobStore } from "@/server/gateways/yf-asset/jobs";
 import { extractBackendRequestId, normalizeBackendAsset } from "@/server/gateways/yf-asset/normalize";
 import { promptFromGenerateRequest } from "@/server/gateways/yf-asset/prompt";
-import { GatewaySpendCapError, SpendGuard } from "@/server/gateways/yf-asset/spend";
+import { alertSpendCap, GatewaySpendCapError } from "@/server/gateways/yf-asset/ledger";
+import {
+  type GatewayReservationPort,
+  type GatewayReservationRecord,
+} from "@/server/gateways/yf-asset/reservation";
+import { SpendGuard } from "@/server/gateways/yf-asset/spend";
 import type { VideoBackend } from "@/server/gateways/yf-asset/backends/types";
 import { AssetCapability } from "@/server/ports/capabilities";
+import {
+  actualBilledSecondsFromDurationMs,
+  estimateLaneCharge,
+  gatewayChargeLedgerIds,
+  LaneDurationError,
+  numericExtraDuration,
+  requireLaneRate,
+  type LaneRate,
+} from "@/server/sg/lane-rate";
 
 export type GenerateHandlerResult =
   | { ok: true; status: 200; body: YfGenerateSuccess }
@@ -29,6 +44,7 @@ export class YfAssetGenerateService {
     private readonly fetchImpl: typeof fetch = fetch,
     private readonly sleep: (ms: number) => Promise<void> = (ms) =>
       new Promise((resolve) => setTimeout(resolve, ms)),
+    private readonly reservations?: GatewayReservationPort,
   ) {}
 
   async generate(rawBody: unknown): Promise<GenerateHandlerResult> {
@@ -67,6 +83,20 @@ export class YfAssetGenerateService {
       );
     }
 
+    const input = asRecord(request.input);
+    if (this.config.backend === "mock") {
+      return this.generateFlat(capability, model, request, input);
+    }
+    return this.generateLanePriced(capability, model, request, input);
+  }
+
+  /** Mock only. Live backends never reserve a flat per-job amount. */
+  private async generateFlat(
+    capability: string,
+    model: string,
+    request: { kind: string; role: string },
+    input: Record<string, unknown>,
+  ): Promise<GenerateHandlerResult> {
     try {
       await this.spend.assertWithinCap();
     } catch (error) {
@@ -76,7 +106,6 @@ export class YfAssetGenerateService {
       throw error;
     }
 
-    const input = asRecord(request.input);
     const estimatedCostUsd = await this.spend.recordAccepted();
     const job = this.jobs.create({
       providerKey: this.config.providerKey,
@@ -86,27 +115,13 @@ export class YfAssetGenerateService {
     });
 
     try {
-      const submitted = await this.backend.submit({
-        model,
-        prompt: promptFromGenerateRequest({
-          kind: request.kind,
-          role: request.role,
-          creativeHints: asRecord(input.creativeHints),
-          projectIntent: asRecord(input.projectIntent),
-          effectiveBrief: asRecord(input.effectiveBrief),
-        }),
-        extra: this.config.extraInput,
-        webhookUrl: this.config.webhookUrl,
-      });
-      this.jobs.bindBackendRequest(job.jobId, submitted.backendRequestId);
-      const asset = await this.waitForAsset(job.jobId, model, submitted.backendRequestId);
-      const downloaded = await downloadNormalizedAsset(asset, {
-        maxBytes: this.config.downloadMaxBytes,
-        fetchImpl: this.fetchImpl,
-      });
+      const downloaded = await this.runBackend(job.jobId, model, request, input);
       this.jobs.markSucceeded(job.jobId, {
-        ...asset,
+        url: downloaded.assetUrl,
         mimeType: downloaded.mimeType,
+        durationMs: downloaded.durationMs,
+        width: downloaded.width,
+        height: downloaded.height,
       });
       return {
         ok: true,
@@ -124,6 +139,220 @@ export class YfAssetGenerateService {
       const message = error instanceof Error ? error.message : "Asset gateway generate failed.";
       this.jobs.markFailed(job.jobId, message);
       return gatewayError(503, "ASSET_PROVIDER_UNAVAILABLE", message);
+    }
+  }
+
+  private async generateLanePriced(
+    capability: string,
+    model: string,
+    request: { kind: string; role: string },
+    input: Record<string, unknown>,
+  ): Promise<GenerateHandlerResult> {
+    let lane: LaneRate;
+    try {
+      lane =
+        this.config.lane ??
+        requireLaneRate(this.config.laneId ?? "", this.config.registryPath);
+    } catch (error) {
+      return gatewayError(
+        503,
+        "GATEWAY_NOT_CONFIGURED",
+        error instanceof Error ? error.message : "Live gateway lane is not configured.",
+      );
+    }
+
+    let charge;
+    try {
+      charge = estimateLaneCharge(lane, numericExtraDuration(this.config.extraInput));
+    } catch (error) {
+      if (error instanceof LaneDurationError) {
+        return gatewayError(400, error.code, error.message);
+      }
+      throw error;
+    }
+
+    if (!this.reservations) {
+      return gatewayError(
+        503,
+        "GATEWAY_NOT_CONFIGURED",
+        "A live gateway requires a durable spend reservation ledger. Flat per-job reservation is not used.",
+      );
+    }
+    const reservations = this.reservations;
+    let reservation: GatewayReservationRecord;
+    try {
+      reservation = await reservations.reserve({
+        idempotencyKey: randomUUID(),
+        ledgerIds: gatewayChargeLedgerIds(this.config.ledgerId, lane.laneId),
+        laneId: lane.laneId,
+        providerKey: lane.providerKey,
+        capability,
+        modelId: model,
+        requestedDurationS: charge.requestedDurationS,
+        estimatedBilledSeconds: charge.estimatedBilledSeconds,
+        usdPerSecond: lane.usdPerSecond,
+        reservedUsd: charge.reservedUsd,
+        primaryLedgerId: this.config.ledgerId,
+        maxJobs: this.config.maxJobs,
+        maxSpendUsd: this.config.maxSpendUsd,
+        maxBilledSeconds: this.config.maxBilledSeconds,
+        laneLedgerId: `lane:${lane.laneId}`,
+        laneMaxSpendUsd: this.config.laneMaxSpendUsd,
+      });
+    } catch (error) {
+      if (error instanceof GatewaySpendCapError) {
+        const current = await reservations.snapshot(this.config.ledgerId);
+        await alertSpendCap(error, {
+          maxJobs: this.config.maxJobs,
+          maxSpendUsd: this.config.maxSpendUsd,
+          jobsAccepted: current.jobsAccepted,
+          spendUsd: current.spendUsd,
+          laneId: lane.laneId,
+          ledgerId: this.config.ledgerId,
+        });
+        return gatewayError(429, error.code, error.message);
+      }
+      throw error;
+    }
+
+    const job = this.jobs.create({
+      providerKey: this.config.providerKey,
+      capability,
+      modelId: model,
+      estimatedCostUsd: charge.reservedUsd,
+    });
+    await reservations.bindGatewayJob(reservation.id, job.jobId);
+
+    try {
+      const outcome = await this.runBackend(job.jobId, model, request, input);
+      const actual = actualBilledSecondsFromDurationMs(
+        outcome.durationMs,
+        lane.billingGranularityS,
+        charge.estimatedBilledSeconds,
+      );
+      await reservations.reconcile(reservation.id, {
+        actualBilledSeconds: actual.seconds,
+        reason: actual.flagged ? "ACTUAL_DURATION_FALLBACK" : "SUCCEEDED",
+      });
+      this.jobs.markSucceeded(job.jobId, {
+        url: outcome.assetUrl,
+        mimeType: outcome.mimeType,
+        durationMs: outcome.durationMs,
+        width: outcome.width,
+        height: outcome.height,
+      });
+      return {
+        ok: true,
+        status: 200,
+        body: {
+          mimeType: outcome.mimeType,
+          bytesBase64: Buffer.from(outcome.bytes).toString("base64"),
+          durationMs: outcome.durationMs,
+          width: outcome.width,
+          height: outcome.height,
+          jobId: job.jobId,
+        },
+      };
+    } catch (error) {
+      await this.settleLaneFailure(reservations, reservation, lane, charge.estimatedBilledSeconds, error);
+      const message = error instanceof Error ? error.message : "Asset gateway generate failed.";
+      this.jobs.markFailed(job.jobId, message);
+      if (error instanceof LaneDurationError) {
+        return gatewayError(400, error.code, message);
+      }
+      return gatewayError(503, "ASSET_PROVIDER_UNAVAILABLE", message);
+    }
+  }
+
+  private async settleLaneFailure(
+    reservations: GatewayReservationPort,
+    reservation: GatewayReservationRecord,
+    lane: LaneRate,
+    estimatedBilledSeconds: number,
+    error: unknown,
+  ) {
+    const classified = classifyBackendFailure(error);
+    if (classified.kind === "download_after_success") {
+      const actual = actualBilledSecondsFromDurationMs(
+        classified.durationMs,
+        lane.billingGranularityS,
+        estimatedBilledSeconds,
+      );
+      await reservations.reconcile(reservation.id, {
+        actualBilledSeconds: actual.seconds,
+        reason: actual.flagged ? "DOWNLOAD_FAILURE_ACTUAL_DURATION_FALLBACK" : "DOWNLOAD_FAILURE_BILLED",
+      });
+      return;
+    }
+    if (classified.kind === "backend_failed") {
+      if (lane.failuresBillable) {
+        await reservations.reconcile(reservation.id, {
+          actualBilledSeconds: estimatedBilledSeconds,
+          reason: "FAILURE_BILLABLE",
+        });
+      } else {
+        await reservations.release(reservation.id, "FAILURE_NOT_BILLABLE");
+      }
+      return;
+    }
+    if (classified.kind === "submit_rejected") {
+      await reservations.release(reservation.id, "SUBMIT_REJECTED");
+      return;
+    }
+    await reservations.markUnreconciled(reservation.id, classified.reason);
+  }
+
+  private async runBackend(
+    jobId: string,
+    model: string,
+    request: { kind: string; role: string },
+    input: Record<string, unknown>,
+  ): Promise<{
+    bytes: Uint8Array;
+    mimeType: string;
+    durationMs?: number;
+    width?: number;
+    height?: number;
+    assetUrl: string;
+  }> {
+    let submitted;
+    try {
+      submitted = await this.backend.submit({
+        model,
+        prompt: promptFromGenerateRequest({
+          kind: request.kind,
+          role: request.role,
+          creativeHints: asRecord(input.creativeHints),
+          projectIntent: asRecord(input.projectIntent),
+          effectiveBrief: asRecord(input.effectiveBrief),
+        }),
+        extra: this.config.extraInput,
+        webhookUrl: this.config.webhookUrl,
+      });
+    } catch (error) {
+      if (isUnreconciledSignal(error)) {
+        throw new GatewayUnreconciledError(
+          error instanceof Error ? error.message : "Backend submit was aborted.",
+          "SUBMIT_ABORTED",
+        );
+      }
+      throw new GatewaySubmitRejectedError(
+        error instanceof Error ? error.message : "Backend submit was rejected.",
+      );
+    }
+    this.jobs.bindBackendRequest(jobId, submitted.backendRequestId);
+    const asset = await this.waitForAsset(jobId, model, submitted.backendRequestId);
+    try {
+      const downloaded = await downloadNormalizedAsset(asset, {
+        maxBytes: this.config.downloadMaxBytes,
+        fetchImpl: this.fetchImpl,
+      });
+      return { ...downloaded, assetUrl: asset.url };
+    } catch (error) {
+      throw new GatewayDownloadFailedError(
+        error instanceof Error ? error.message : "Asset download failed.",
+        asset.durationMs,
+      );
     }
   }
 
@@ -162,20 +391,117 @@ export class YfAssetGenerateService {
         };
       }
       if (local?.status === "failed") {
-        throw new Error(local.error ?? "Gateway job failed.");
+        const message = local.error ?? "Gateway job failed.";
+        if (isUnreconciledText(message)) {
+          throw new GatewayUnreconciledError(message, "CANCELLED");
+        }
+        throw new GatewayBackendFailedError(message);
       }
 
-      const status = await this.backend.status(model, backendRequestId);
+      let status;
+      try {
+        status = await this.backend.status(model, backendRequestId);
+      } catch (error) {
+        throw new GatewayUnreconciledError(
+          error instanceof Error ? error.message : "Backend status is unknown.",
+          "STATUS_UNKNOWN",
+        );
+      }
       if (status.status === "failed") {
-        throw new Error(status.error ?? "Backend generation failed.");
+        const message = status.error ?? "Backend generation failed.";
+        if (isUnreconciledText(message)) {
+          throw new GatewayUnreconciledError(message, "CANCELLED");
+        }
+        throw new GatewayBackendFailedError(message);
       }
       if (status.status === "succeeded") {
-        return this.backend.result(model, backendRequestId);
+        try {
+          return await this.backend.result(model, backendRequestId);
+        } catch (error) {
+          throw new GatewayUnreconciledError(
+            error instanceof Error ? error.message : "Backend result is unknown.",
+            "RESULT_UNKNOWN",
+          );
+        }
       }
       await this.sleep(this.config.pollMs);
     }
-    throw new Error("Asset gateway timed out waiting for the video backend.");
+    throw new GatewayUnreconciledError(
+      "Asset gateway timed out waiting for the video backend.",
+      "TIMEOUT",
+    );
   }
+}
+
+class GatewaySubmitRejectedError extends Error {
+  readonly kind = "submit_rejected";
+  constructor(message: string) {
+    super(message);
+    this.name = "GatewaySubmitRejectedError";
+  }
+}
+
+class GatewayBackendFailedError extends Error {
+  readonly kind = "backend_failed";
+  constructor(message: string) {
+    super(message);
+    this.name = "GatewayBackendFailedError";
+  }
+}
+
+class GatewayDownloadFailedError extends Error {
+  readonly kind = "download_after_success";
+  readonly durationMs?: number;
+  constructor(message: string, durationMs?: number) {
+    super(message);
+    this.name = "GatewayDownloadFailedError";
+    this.durationMs = durationMs;
+  }
+}
+
+class GatewayUnreconciledError extends Error {
+  readonly kind = "unreconciled";
+  readonly reason: string;
+  constructor(message: string, reason: string) {
+    super(message);
+    this.name = "GatewayUnreconciledError";
+    this.reason = reason;
+  }
+}
+
+function classifyBackendFailure(error: unknown):
+  | { kind: "download_after_success"; durationMs?: number }
+  | { kind: "backend_failed" }
+  | { kind: "submit_rejected" }
+  | { kind: "unreconciled"; reason: string } {
+  if (error instanceof GatewayDownloadFailedError) {
+    return { kind: "download_after_success", durationMs: error.durationMs };
+  }
+  if (error instanceof GatewayBackendFailedError) {
+    return { kind: "backend_failed" };
+  }
+  if (error instanceof GatewaySubmitRejectedError) {
+    return { kind: "submit_rejected" };
+  }
+  if (error instanceof GatewayUnreconciledError) {
+    return { kind: "unreconciled", reason: error.reason };
+  }
+  if (isUnreconciledSignal(error)) {
+    return { kind: "unreconciled", reason: "ABORTED" };
+  }
+  return { kind: "unreconciled", reason: "UNKNOWN" };
+}
+
+function isUnreconciledSignal(error: unknown): boolean {
+  if (error instanceof Error && error.name === "AbortError") {
+    return true;
+  }
+  const message = error instanceof Error ? error.message : "";
+  return isUnreconciledText(message);
+}
+
+function isUnreconciledText(message: string): boolean {
+  return /cancel|abort|timeout|timed out/i.test(message);
 }
 
 function resolveModel(

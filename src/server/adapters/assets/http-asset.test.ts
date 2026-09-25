@@ -128,6 +128,25 @@ describe("HttpAssetGeneratorAdapter", () => {
     expect(Buffer.from(stored!.body).toString("utf8")).toBe("gateway-mp4");
   });
 
+  it("maps gateway 429 GATEWAY_SPEND_CAP to SPEND_CAP_REACHED", async () => {
+    const adapter = new HttpAssetGeneratorAdapter(
+      storage,
+      {
+        providerKey: "http.asset",
+        baseUrl: "http://127.0.0.1:43148",
+        apiKey: "gw-key",
+        model: "research.ltx",
+      },
+      async () =>
+        new Response(JSON.stringify({ error: "cap", code: "GATEWAY_SPEND_CAP" }), { status: 429 }),
+    );
+    await expect(adapter.generate(baseInput())).rejects.toMatchObject({
+      name: "AppError",
+      code: "SPEND_CAP_REACHED",
+      status: 429,
+    });
+  });
+
   it("does not leak the API key when the gateway fails", async () => {
     const adapter = new HttpAssetGeneratorAdapter(
       storage,

@@ -106,6 +106,9 @@ export class HttpAssetGeneratorAdapter implements AssetGeneratorPort {
           status: response.status,
           body: redact(text, this.config.apiKey).slice(0, 500),
         });
+        if (response.status === 429 && gatewayErrorCode(text) === "GATEWAY_SPEND_CAP") {
+          throw AppError.spendCapReached();
+        }
         throw AppError.assetProviderUnavailable("The asset generator adapter failed.");
       }
 
@@ -220,6 +223,15 @@ function looksLikeVendorUrl(value: string) {
 function redact(text: string, secret?: string) {
   if (!secret) return text;
   return text.split(secret).join("[redacted]");
+}
+
+function gatewayErrorCode(text: string): string | undefined {
+  try {
+    const parsed = JSON.parse(text) as { code?: unknown };
+    return typeof parsed.code === "string" ? parsed.code : undefined;
+  } catch {
+    return undefined;
+  }
 }
 
 function isAppErrorLike(error: unknown): boolean {

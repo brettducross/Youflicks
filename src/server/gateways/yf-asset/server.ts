@@ -8,14 +8,17 @@ import { ReplicateVideoBackend } from "@/server/gateways/yf-asset/backends/repli
 import type { VideoBackend } from "@/server/gateways/yf-asset/backends/types";
 import {
   assertGatewaySecrets,
+  assertLiveGatewayLane,
   GatewayConfigError,
   gatewayReady,
   parseYfAssetGatewayConfig,
+  warnIfFlatRateIgnored,
   type YfAssetGatewayConfig,
 } from "@/server/gateways/yf-asset/config";
 import { YfAssetGenerateService } from "@/server/gateways/yf-asset/generate";
 import { GatewayJobStore } from "@/server/gateways/yf-asset/jobs";
 import { MemorySpendLedger, PrismaSpendLedger } from "@/server/gateways/yf-asset/ledger";
+import { PrismaGatewayReservation } from "@/server/gateways/yf-asset/reservation";
 import { SpendGuard } from "@/server/gateways/yf-asset/spend";
 import { logger } from "@/lib/logger";
 
@@ -31,19 +34,35 @@ export function createYfAssetGatewayRuntime(
   backend: VideoBackend = createBackend(config),
 ): YfAssetGatewayRuntime {
   const jobs = new GatewayJobStore();
+  if (config.backend !== "mock") {
+    config.lane = assertLiveGatewayLane(config);
+    warnIfFlatRateIgnored(config);
+  }
+  const spendLedger = createSpendLedger(config);
   const spend = new SpendGuard(
     config.maxJobs,
     config.maxSpendUsd,
     config.estimatedUsdPerJob,
-    createSpendLedger(config),
+    spendLedger.ledger,
   );
-  const generate = new YfAssetGenerateService(config, backend, jobs, spend);
+  const generate = new YfAssetGenerateService(
+    config,
+    backend,
+    jobs,
+    spend,
+    fetch,
+    (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
+    spendLedger.reservations,
+  );
   return { config, jobs, spend, generate };
 }
 
-function createSpendLedger(config: YfAssetGatewayConfig) {
+function createSpendLedger(config: YfAssetGatewayConfig): {
+  ledger: MemorySpendLedger | PrismaSpendLedger;
+  reservations?: PrismaGatewayReservation;
+} {
   if (config.backend === "mock") {
-    return new MemorySpendLedger();
+    return { ledger: new MemorySpendLedger() };
   }
   const databaseUrl = process.env.DATABASE_URL?.trim();
   if (!databaseUrl) {
@@ -54,7 +73,10 @@ function createSpendLedger(config: YfAssetGatewayConfig) {
   const prisma = new PrismaClient({
     adapter: new PrismaPg({ connectionString: databaseUrl }),
   });
-  return new PrismaSpendLedger(prisma);
+  return {
+    ledger: new PrismaSpendLedger(prisma, config.ledgerId),
+    reservations: new PrismaGatewayReservation(prisma),
+  };
 }
 
 export function createBackend(config: YfAssetGatewayConfig): VideoBackend {

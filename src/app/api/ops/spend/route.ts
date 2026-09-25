@@ -17,6 +17,10 @@ export async function GET(request: Request) {
     ledgerId: GATEWAY_SPEND_LEDGER_ID,
     jobsAccepted: row?.jobsAccepted ?? 0,
     spendUsd: row?.spendUsd ?? 0,
+    reservedUsd: row?.reservedUsd ?? 0,
+    billedSeconds: row?.billedSeconds ?? 0,
+    reservedSeconds: row?.reservedSeconds ?? 0,
+    scopeKind: row?.scopeKind ?? "GLOBAL",
     updatedAt: row?.updatedAt?.toISOString() ?? null,
   });
 }

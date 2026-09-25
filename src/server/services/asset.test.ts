@@ -650,6 +650,92 @@ describe("AssetService M3", () => {
     expect(await prisma.publication.count()).toBe(publicationsBefore);
   });
 
+  it("does not retry SPEND_CAP_REACHED and does not call another lane", async () => {
+    const previousLane = process.env.YF_GATEWAY_LANE_ID;
+    const previousSeconds = process.env.SG_BUDGET_PROJECT_MAX_SECONDS;
+    process.env.YF_GATEWAY_LANE_ID = "r1-wan27-replicate";
+    process.env.SG_BUDGET_PROJECT_MAX_SECONDS = "1";
+    const calls: string[] = [];
+    try {
+      const { assets, worker } = harness({
+        adapter: scriptedGenerator(async () => {
+          calls.push("generate");
+          throw new Error("adapter should not run after a cap denial");
+        }),
+        productionAvailable: true,
+        supportedCapabilities: [AssetCapability.IMAGE_GENERATION],
+      });
+      const queued = await assets.requestGenerate(ownerId, projectId, {
+        roles: [{ role: "intimate_portrait", storySceneId: "scene-arrive", kind: "IMAGE" }],
+      });
+      for (let attempt = 0; attempt < 5; attempt += 1) {
+        const current = await jobs.get(queued.jobId);
+        if (current?.status !== JobStatus.PENDING) break;
+        const ran = await worker.processNext();
+        if (!ran) break;
+      }
+      const job = await jobs.get(queued.jobId);
+      expect(job?.status).toBe(JobStatus.FAILED);
+      expect(job?.attempts).toBe(1);
+      expect(calls).toEqual([]);
+    } finally {
+      if (previousLane === undefined) delete process.env.YF_GATEWAY_LANE_ID;
+      else process.env.YF_GATEWAY_LANE_ID = previousLane;
+      if (previousSeconds === undefined) delete process.env.SG_BUDGET_PROJECT_MAX_SECONDS;
+      else process.env.SG_BUDGET_PROJECT_MAX_SECONDS = previousSeconds;
+      await prisma.aiVideoBudgetLedger.deleteMany({
+        where: { OR: [{ projectId }, { userId: ownerId }] },
+      });
+    }
+  });
+
+  it("releases the app reservation with CAP_DENIED when the gateway returns 429", async () => {
+    const previousLane = process.env.YF_GATEWAY_LANE_ID;
+    delete process.env.SG_BUDGET_PROJECT_MAX_SECONDS;
+    delete process.env.SG_BUDGET_PROJECT_MAX_USD;
+    delete process.env.SG_BUDGET_USER_WINDOW_MAX_SECONDS;
+    delete process.env.SG_BUDGET_USER_WINDOW_MAX_USD;
+    process.env.YF_GATEWAY_LANE_ID = "r1-wan27-replicate";
+    const calls: string[] = [];
+    try {
+      const { assets, worker } = harness({
+        adapter: scriptedGenerator(async () => {
+          calls.push("only-lane");
+          throw AppError.spendCapReached();
+        }),
+        productionAvailable: true,
+        supportedCapabilities: [AssetCapability.IMAGE_GENERATION],
+      });
+      const queued = await assets.requestGenerate(ownerId, projectId, {
+        roles: [{ role: "intimate_portrait", storySceneId: "scene-arrive", kind: "IMAGE" }],
+      });
+      for (let attempt = 0; attempt < 5; attempt += 1) {
+        const current = await jobs.get(queued.jobId);
+        if (current?.status !== JobStatus.PENDING) break;
+        const ran = await worker.processNext();
+        if (!ran) break;
+      }
+      expect(calls).toEqual(["only-lane"]);
+      const job = await jobs.get(queued.jobId);
+      expect(job?.status).toBe(JobStatus.FAILED);
+      expect(job?.attempts).toBe(1);
+      const reservation = await prisma.aiVideoBudgetReservation.findFirst({
+        where: { projectId, settleReason: "CAP_DENIED" },
+        orderBy: { createdAt: "desc" },
+      });
+      expect(reservation?.status).toBe("RELEASED");
+      expect(reservation?.settleReason).toBe("CAP_DENIED");
+      expect(reservation?.laneId).toBe("r1-wan27-replicate");
+      expect(reservation?.providerKey).toBe("replicate:wan-video/wan-2.7-i2v");
+    } finally {
+      if (previousLane === undefined) delete process.env.YF_GATEWAY_LANE_ID;
+      else process.env.YF_GATEWAY_LANE_ID = previousLane;
+      await prisma.aiVideoBudgetLedger.deleteMany({
+        where: { OR: [{ projectId }, { userId: ownerId }] },
+      });
+    }
+  });
+
   it("keeps GeneratedAsset status on the locked enum; in-progress lives on Job only", async () => {
     const rows = await prisma.generatedAsset.findMany({ where: { projectId } });
     expect(rows.length).toBeGreaterThan(0);

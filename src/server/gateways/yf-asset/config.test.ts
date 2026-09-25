@@ -114,6 +114,7 @@ describe("live gateway durable ledger", () => {
             YF_GATEWAY_BACKEND_API_KEY: "backend-key",
             YF_GATEWAY_BACKEND: "http",
             YF_GATEWAY_MODEL: "open.model",
+            YF_GATEWAY_LANE_ID: "r1-wan27-replicate",
           }),
         ),
       ).toThrow(/DATABASE_URL/);
