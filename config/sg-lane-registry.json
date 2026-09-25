@@ -1,94 +1,332 @@
 {
+  "registryVersion": "sg-lanes-v1",
+  "thresholdsVersion": "po-sg-2026-09-25",
+  "regenCeilings": {
+    "draft-cost": 3,
+    "draft-quality": 2,
+    "standard": 2,
+    "premium": 2
+  },
+  "classOrder": [
+    "draft-cost",
+    "draft-quality",
+    "standard",
+    "premium"
+  ],
   "lanes": [
     {
       "laneId": "r1-wan27-replicate",
+      "laneClass": "standard",
       "providerKey": "replicate:wan-video/wan-2.7-i2v",
+      "modelId": "wan-video/wan-2.7-i2v",
+      "gateway": {
+        "baseUrlEnv": "ASSET_HTTP_BASE_URL",
+        "apiKeyEnv": "ASSET_HTTP_API_KEY"
+      },
+      "resolutionTier": "720p",
       "usdPerSecond": 0.1,
+      "rateRef": "ESTIMATE list price; reservation config only, not a price. Economics BAKEOFF §2, Replicate VERIFIED 2026-09-25. Failures are not billed on Replicate.",
       "clipDurationS": 5,
-      "supportedDurationsS": [5],
+      "supportedDurationsS": [
+        5
+      ],
       "billingGranularityS": 1,
       "failuresBillable": false,
-      "rateRef": "ESTIMATE list price; reservation config only, not a price. Economics BAKEOFF §2, Replicate VERIFIED 2026-09-25. Failures are not billed on Replicate."
+      "audioMode": "OFF",
+      "enabled": true,
+      "designation": "LEGACY_R1",
+      "gates": {
+        "HERO": {
+          "status": "NOT_QUALIFIED"
+        },
+        "IDENTITY": {
+          "status": "NOT_QUALIFIED"
+        },
+        "NON_IDENTITY": {
+          "status": "NOT_QUALIFIED"
+        }
+      }
     },
     {
       "laneId": "boreal-720",
+      "laneClass": "draft-cost",
       "providerKey": "TBD:boreal-720",
+      "modelId": "TBD:boreal-720",
+      "gateway": {
+        "baseUrlEnv": "SG_LANE_BOREAL_720_BASE_URL",
+        "apiKeyEnv": "SG_LANE_BOREAL_720_API_KEY"
+      },
+      "resolutionTier": "720p",
       "usdPerSecond": 0.01,
+      "rateRef": "ESTIMATE list price; reservation config only, not a price. PHASE_SG §4 initial rate. Supported durations TBD; clip length used until Economics re-verifies. No verified no-bill policy.",
       "clipDurationS": 5,
-      "supportedDurationsS": [5],
+      "supportedDurationsS": [
+        5
+      ],
       "billingGranularityS": 1,
       "failuresBillable": true,
-      "rateRef": "ESTIMATE list price; reservation config only, not a price. PHASE_SG §4 initial rate. Supported durations TBD; clip length used until Economics re-verifies. No verified no-bill policy."
+      "audioMode": "OFF",
+      "enabled": false,
+      "designation": "NONE",
+      "gates": {
+        "HERO": {
+          "status": "NOT_QUALIFIED"
+        },
+        "IDENTITY": {
+          "status": "NOT_QUALIFIED"
+        },
+        "NON_IDENTITY": {
+          "status": "NOT_QUALIFIED"
+        }
+      }
     },
     {
       "laneId": "pruna-480-cost",
+      "laneClass": "draft-cost",
       "providerKey": "TBD:pruna-480-cost",
+      "modelId": "TBD:pruna-480-cost",
+      "gateway": {
+        "baseUrlEnv": "SG_LANE_PRUNA_480_COST_BASE_URL",
+        "apiKeyEnv": "SG_LANE_PRUNA_480_COST_API_KEY"
+      },
+      "resolutionTier": "480p",
       "usdPerSecond": 0.01,
+      "rateRef": "ESTIMATE list price; reservation config only, not a price. PHASE_SG §4. Pruna failure-billing policy UNVERIFIED (BAKEOFF costing §2); failuresBillable defaults true.",
       "clipDurationS": 5,
-      "supportedDurationsS": [5],
+      "supportedDurationsS": [
+        5
+      ],
       "billingGranularityS": 1,
       "failuresBillable": true,
-      "rateRef": "ESTIMATE list price; reservation config only, not a price. PHASE_SG §4. Pruna failure-billing policy UNVERIFIED (BAKEOFF costing §2); failuresBillable defaults true."
+      "audioMode": "OFF",
+      "enabled": false,
+      "designation": "NONE",
+      "gates": {
+        "HERO": {
+          "status": "NOT_QUALIFIED"
+        },
+        "IDENTITY": {
+          "status": "NOT_QUALIFIED"
+        },
+        "NON_IDENTITY": {
+          "status": "NOT_QUALIFIED"
+        }
+      }
     },
     {
       "laneId": "pruna-768-cost",
+      "laneClass": "draft-cost",
       "providerKey": "TBD:pruna-768-cost",
+      "modelId": "TBD:pruna-768-cost",
+      "gateway": {
+        "baseUrlEnv": "SG_LANE_PRUNA_768_COST_BASE_URL",
+        "apiKeyEnv": "SG_LANE_PRUNA_768_COST_API_KEY"
+      },
+      "resolutionTier": "768p",
       "usdPerSecond": 0.025,
+      "rateRef": "ESTIMATE list price; reservation config only, not a price. PHASE_SG §4. Pruna failure-billing policy UNVERIFIED; failuresBillable defaults true.",
       "clipDurationS": 5,
-      "supportedDurationsS": [5],
+      "supportedDurationsS": [
+        5
+      ],
       "billingGranularityS": 1,
       "failuresBillable": true,
-      "rateRef": "ESTIMATE list price; reservation config only, not a price. PHASE_SG §4. Pruna failure-billing policy UNVERIFIED; failuresBillable defaults true."
+      "audioMode": "OFF",
+      "enabled": false,
+      "designation": "NONE",
+      "gates": {
+        "HERO": {
+          "status": "NOT_QUALIFIED"
+        },
+        "IDENTITY": {
+          "status": "NOT_QUALIFIED"
+        },
+        "NON_IDENTITY": {
+          "status": "NOT_QUALIFIED"
+        }
+      }
     },
     {
       "laneId": "h3turbo-768",
+      "laneClass": "draft-quality",
       "providerKey": "TBD:h3turbo-768",
+      "modelId": "TBD:h3turbo-768",
+      "gateway": {
+        "baseUrlEnv": "SG_LANE_H3TURBO_768_BASE_URL",
+        "apiKeyEnv": "SG_LANE_H3TURBO_768_API_KEY"
+      },
+      "resolutionTier": "768p",
       "usdPerSecond": 0.04,
+      "rateRef": "ESTIMATE list price; reservation config only, not a price. PHASE_SG §4 LIST rate; promo excluded. No verified no-bill policy.",
       "clipDurationS": 5,
-      "supportedDurationsS": [5],
+      "supportedDurationsS": [
+        5
+      ],
       "billingGranularityS": 1,
       "failuresBillable": true,
-      "rateRef": "ESTIMATE list price; reservation config only, not a price. PHASE_SG §4 LIST rate; promo excluded. No verified no-bill policy."
+      "audioMode": "OFF",
+      "enabled": false,
+      "designation": "NONE",
+      "gates": {
+        "HERO": {
+          "status": "NOT_QUALIFIED"
+        },
+        "IDENTITY": {
+          "status": "NOT_QUALIFIED"
+        },
+        "NON_IDENTITY": {
+          "status": "NOT_QUALIFIED"
+        }
+      }
     },
     {
       "laneId": "veo31lite-720",
+      "laneClass": "draft-quality",
       "providerKey": "TBD:veo31lite-720",
+      "modelId": "TBD:veo31lite-720",
+      "gateway": {
+        "baseUrlEnv": "SG_LANE_VEO31LITE_720_BASE_URL",
+        "apiKeyEnv": "SG_LANE_VEO31LITE_720_API_KEY"
+      },
+      "resolutionTier": "720p",
       "usdPerSecond": 0.05,
+      "rateRef": "ESTIMATE list price; reservation config only, not a price. Economics priced primary $0.05/s with audio (r2 envelope), not the $0.03 fal no-audio sensitivity. Transport undecided; failuresBillable stays true.",
       "clipDurationS": 6,
-      "supportedDurationsS": [4, 6, 8],
+      "supportedDurationsS": [
+        4,
+        6,
+        8
+      ],
       "billingGranularityS": 1,
       "failuresBillable": true,
-      "rateRef": "ESTIMATE list price; reservation config only, not a price. Economics priced primary $0.05/s with audio (r2 envelope), not the $0.03 fal no-audio sensitivity. Transport undecided; failuresBillable stays true."
+      "audioMode": "OFF",
+      "enabled": false,
+      "designation": "NONE",
+      "gates": {
+        "HERO": {
+          "status": "NOT_QUALIFIED"
+        },
+        "IDENTITY": {
+          "status": "NOT_QUALIFIED"
+        },
+        "NON_IDENTITY": {
+          "status": "NOT_QUALIFIED"
+        }
+      }
     },
     {
       "laneId": "pruna-768-quality",
+      "laneClass": "draft-quality",
       "providerKey": "TBD:pruna-768-quality",
+      "modelId": "TBD:pruna-768-quality",
+      "gateway": {
+        "baseUrlEnv": "SG_LANE_PRUNA_768_QUALITY_BASE_URL",
+        "apiKeyEnv": "SG_LANE_PRUNA_768_QUALITY_API_KEY"
+      },
+      "resolutionTier": "768p",
       "usdPerSecond": 0.075,
+      "rateRef": "ESTIMATE list price; reservation config only, not a price. PHASE_SG §4. Pruna failure-billing policy UNVERIFIED; failuresBillable defaults true.",
       "clipDurationS": 5,
-      "supportedDurationsS": [5],
+      "supportedDurationsS": [
+        5
+      ],
       "billingGranularityS": 1,
       "failuresBillable": true,
-      "rateRef": "ESTIMATE list price; reservation config only, not a price. PHASE_SG §4. Pruna failure-billing policy UNVERIFIED; failuresBillable defaults true."
+      "audioMode": "OFF",
+      "enabled": false,
+      "designation": "NONE",
+      "gates": {
+        "HERO": {
+          "status": "NOT_QUALIFIED"
+        },
+        "IDENTITY": {
+          "status": "NOT_QUALIFIED"
+        },
+        "NON_IDENTITY": {
+          "status": "NOT_QUALIFIED"
+        }
+      }
     },
     {
       "laneId": "kling3-pro-audio-off",
+      "laneClass": "premium",
       "providerKey": "TBD:kling3-pro-audio-off",
+      "modelId": "TBD:kling3-pro-audio-off",
+      "gateway": {
+        "baseUrlEnv": "SG_LANE_KLING3_PRO_AUDIO_OFF_BASE_URL",
+        "apiKeyEnv": "SG_LANE_KLING3_PRO_AUDIO_OFF_API_KEY"
+      },
+      "resolutionTier": "pro",
       "usdPerSecond": 0.112,
+      "rateRef": "ESTIMATE list price; reservation config only, not a price. Economics BAKEOFF §2 Kling v3 Pro audio off. No verified no-bill policy; failuresBillable defaults true.",
       "clipDurationS": 5,
-      "supportedDurationsS": [5],
+      "supportedDurationsS": [
+        5
+      ],
       "billingGranularityS": 1,
       "failuresBillable": true,
-      "rateRef": "ESTIMATE list price; reservation config only, not a price. Economics BAKEOFF §2 Kling v3 Pro audio off. No verified no-bill policy; failuresBillable defaults true."
+      "audioMode": "OFF",
+      "enabled": false,
+      "designation": "NONE",
+      "gates": {
+        "HERO": {
+          "status": "NOT_QUALIFIED"
+        },
+        "IDENTITY": {
+          "status": "NOT_QUALIFIED"
+        },
+        "NON_IDENTITY": {
+          "status": "NOT_QUALIFIED"
+        }
+      }
     },
     {
       "laneId": "seedance2-fast-720",
+      "laneClass": "premium",
       "providerKey": "TBD:seedance2-fast-720",
+      "modelId": "TBD:seedance2-fast-720",
+      "gateway": {
+        "baseUrlEnv": "SG_LANE_SEEDANCE2_FAST_720_BASE_URL",
+        "apiKeyEnv": "SG_LANE_SEEDANCE2_FAST_720_API_KEY"
+      },
+      "resolutionTier": "720p",
       "usdPerSecond": 0.2419,
+      "rateRef": "ESTIMATE list price; reservation config only, not a price. Economics BAKEOFF §2 Seedance 2.0 Fast; audio always billed. No verified no-bill policy.",
       "clipDurationS": 5,
-      "supportedDurationsS": [5],
+      "supportedDurationsS": [
+        5
+      ],
       "billingGranularityS": 1,
       "failuresBillable": true,
-      "rateRef": "ESTIMATE list price; reservation config only, not a price. Economics BAKEOFF §2 Seedance 2.0 Fast; audio always billed. No verified no-bill policy."
+      "audioMode": "OFF",
+      "enabled": false,
+      "designation": "NONE",
+      "gates": {
+        "HERO": {
+          "status": "NOT_QUALIFIED"
+        },
+        "IDENTITY": {
+          "status": "NOT_QUALIFIED"
+        },
+        "NON_IDENTITY": {
+          "status": "NOT_QUALIFIED"
+        }
+      }
+    }
+  ],
+  "processors": [
+    {
+      "laneId": "yf.kenburns.v1",
+      "laneClass": "processor",
+      "providerKey": "yf.kenburns.v1",
+      "modelId": "yf.kenburns.v1",
+      "resolutionTier": "output-profile",
+      "usdPerSecond": 0,
+      "rateRef": "ESTIMATE compute only; reservation config only, not a price. PHASE_SG §4 non-generative processor. Duration is slot-derived. Not a generation lane; PR-9 owns availability.",
+      "duration": "slot-derived",
+      "audioMode": "OFF",
+      "enabled": false,
+      "generative": false
     }
   ]
 }

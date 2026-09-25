@@ -94,7 +94,25 @@ describe("lane-priced estimate fixtures", () => {
   it("loads the committed registry without secrets and matches the Wan and Kling fixtures", () => {
     const filePath = path.join(process.cwd(), "config/sg-lane-registry.json");
     const text = readFileSync(filePath, "utf8");
-    expect(text).not.toMatch(/sk-|r8_|api[_-]?key|secret|BEGIN PRIVATE/i);
+    expect(text).not.toMatch(/sk-|r8_|BEGIN PRIVATE/i);
+    const values: string[] = [];
+    const walk = (value: unknown) => {
+      if (typeof value === "string") {
+        values.push(value);
+        return;
+      }
+      if (Array.isArray(value)) {
+        value.forEach(walk);
+        return;
+      }
+      if (value && typeof value === "object") {
+        Object.values(value).forEach(walk);
+      }
+    };
+    walk(JSON.parse(text) as unknown);
+    for (const value of values) {
+      expect(value).not.toMatch(/sk-|r8_|BEGIN PRIVATE/i);
+    }
     const lanes = loadLaneRegistry(filePath);
     const wan = lanes.find((item) => item.laneId === "r1-wan27-replicate");
     const kling = lanes.find((item) => item.laneId === "kling3-pro-audio-off");
@@ -115,6 +133,43 @@ describe("lane-priced estimate fixtures", () => {
   });
 });
 
+function rateProbeRegistry(laneId: string, usdPerSecond: number) {
+  return {
+    registryVersion: "sg-lanes-v1",
+    thresholdsVersion: "po-sg-2026-09-25",
+    regenCeilings: { "draft-cost": 3, "draft-quality": 2, standard: 2, premium: 2 },
+    classOrder: ["draft-cost", "draft-quality", "standard", "premium"],
+    processors: [],
+    lanes: [
+      {
+        laneId,
+        laneClass: "standard",
+        providerKey: `TBD:${laneId}`,
+        modelId: `TBD:${laneId}`,
+        gateway: {
+          baseUrlEnv: "SG_LANE_PROBE_BASE_URL",
+          apiKeyEnv: "SG_LANE_PROBE_API_KEY",
+        },
+        resolutionTier: "720p",
+        usdPerSecond,
+        rateRef: "fixture",
+        clipDurationS: 5,
+        supportedDurationsS: [5],
+        billingGranularityS: 1,
+        failuresBillable: true,
+        audioMode: "OFF",
+        enabled: false,
+        designation: "NONE",
+        gates: {
+          HERO: { status: "NOT_QUALIFIED" },
+          IDENTITY: { status: "NOT_QUALIFIED" },
+          NON_IDENTITY: { status: "NOT_QUALIFIED" },
+        },
+      },
+    ],
+  };
+}
+
 describe("lane registry fail-closed", () => {
   let dir = "";
 
@@ -132,24 +187,7 @@ describe("lane registry fail-closed", () => {
   it("rejects an unknown lane and a non-positive rate", async () => {
     dir = dir || (await mkdtemp(path.join(tmpdir(), "youflicks-lane-registry-")));
     const file = path.join(dir, "zero.json");
-    await writeFile(
-      file,
-      JSON.stringify({
-        lanes: [
-          {
-            laneId: "free",
-            providerKey: "TBD:free",
-            usdPerSecond: 0,
-            clipDurationS: 5,
-            supportedDurationsS: [5],
-            billingGranularityS: 1,
-            failuresBillable: true,
-            rateRef: "fixture",
-          },
-        ],
-      }),
-      "utf8",
-    );
+    await writeFile(file, JSON.stringify(rateProbeRegistry("free", 0)), "utf8");
     expect(() => requireLaneRate("missing", file)).toThrow(/not in the registry/);
     expect(() => requireLaneRate("free", file)).toThrow(/usdPerSecond/);
   });

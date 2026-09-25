@@ -1,4 +1,6 @@
-import { mkdtemp, rm } from "node:fs/promises";
+import { createHash } from "node:crypto";
+import { readFileSync } from "node:fs";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
@@ -796,6 +798,68 @@ describe("AssetService M3", () => {
     } finally {
       if (previousLane === undefined) delete process.env.YF_GATEWAY_LANE_ID;
       else process.env.YF_GATEWAY_LANE_ID = previousLane;
+      await prisma.aiVideoBudgetLedger.deleteMany({
+        where: { OR: [{ projectId }, { userId: ownerId }] },
+      });
+    }
+  });
+
+  it("records the registry laneClass, version, and sha on a priced attempt", async () => {
+    const previousLane = process.env.YF_GATEWAY_LANE_ID;
+    const previousRegistry = process.env.SG_LANE_REGISTRY_PATH;
+    delete process.env.SG_BUDGET_PROJECT_MAX_SECONDS;
+    delete process.env.SG_BUDGET_PROJECT_MAX_USD;
+    delete process.env.SG_BUDGET_USER_WINDOW_MAX_SECONDS;
+    delete process.env.SG_BUDGET_USER_WINDOW_MAX_USD;
+    const dir = await mkdtemp(path.join(tmpdir(), "youflicks-asset-lane-class-"));
+    const sourcePath = path.join(process.cwd(), "config/sg-lane-registry.json");
+    const doc = JSON.parse(readFileSync(sourcePath, "utf8")) as {
+      registryVersion: string;
+      lanes: Array<{ laneId: string; laneClass: string }>;
+    };
+    const row = doc.lanes.find((item) => item.laneId === "r1-wan27-replicate");
+    expect(row).toBeTruthy();
+    row!.laneClass = "premium";
+    const file = path.join(dir, "registry.json");
+    await writeFile(file, JSON.stringify(doc), "utf8");
+    process.env.SG_LANE_REGISTRY_PATH = file;
+    process.env.YF_GATEWAY_LANE_ID = "r1-wan27-replicate";
+    try {
+      const { assets, worker } = harness({
+        adapter: scriptedGenerator(async () => {
+          throw AppError.spendCapReached();
+        }),
+        productionAvailable: true,
+        supportedCapabilities: [AssetCapability.IMAGE_GENERATION],
+      });
+      const queued = await assets.requestGenerate(ownerId, projectId, {
+        roles: [{ role: "intimate_portrait", storySceneId: "scene-registry-class", kind: "IMAGE" }],
+      });
+      for (let attempt = 0; attempt < 5; attempt += 1) {
+        const current = await jobs.get(queued.jobId);
+        if (current?.status !== JobStatus.PENDING) break;
+        const ran = await worker.processNext();
+        if (!ran) break;
+      }
+      const attempt = await prisma.shotFulfillmentAttempt.findFirst({
+        where: { jobId: queued.jobId },
+      });
+      expect(attempt?.laneClass).toBe("premium");
+      expect(attempt?.laneId).toBe("r1-wan27-replicate");
+      const slot = await prisma.shotFulfillment.findFirst({
+        where: { id: attempt?.shotFulfillmentId },
+      });
+      const bytes = readFileSync(file);
+      expect(slot?.registryVersion).toBe(doc.registryVersion);
+      expect(slot?.registryVersion).not.toBe("v0");
+      expect(slot?.registrySha256).toBe(createHash("sha256").update(bytes).digest("hex"));
+      expect(slot?.registrySha256).not.toBe("unavailable");
+    } finally {
+      if (previousLane === undefined) delete process.env.YF_GATEWAY_LANE_ID;
+      else process.env.YF_GATEWAY_LANE_ID = previousLane;
+      if (previousRegistry === undefined) delete process.env.SG_LANE_REGISTRY_PATH;
+      else process.env.SG_LANE_REGISTRY_PATH = previousRegistry;
+      await rm(dir, { recursive: true, force: true });
       await prisma.aiVideoBudgetLedger.deleteMany({
         where: { OR: [{ projectId }, { userId: ownerId }] },
       });

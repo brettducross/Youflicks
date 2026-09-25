@@ -473,16 +473,36 @@ describe("gateway boot fail-closed", () => {
     await writeFile(
       zeroFile,
       JSON.stringify({
+        registryVersion: "sg-lanes-v1",
+        thresholdsVersion: "po-sg-2026-09-25",
+        regenCeilings: { "draft-cost": 3, "draft-quality": 2, standard: 2, premium: 2 },
+        classOrder: ["draft-cost", "draft-quality", "standard", "premium"],
+        processors: [],
         lanes: [
           {
             laneId: "zero-rate",
+            laneClass: "standard",
             providerKey: "TBD:zero-rate",
+            modelId: "TBD:zero-rate",
+            gateway: {
+              baseUrlEnv: "SG_LANE_ZERO_RATE_BASE_URL",
+              apiKeyEnv: "SG_LANE_ZERO_RATE_API_KEY",
+            },
+            resolutionTier: "720p",
             usdPerSecond: 0,
+            rateRef: "fixture",
             clipDurationS: 5,
             supportedDurationsS: [5],
             billingGranularityS: 1,
             failuresBillable: true,
-            rateRef: "fixture",
+            audioMode: "OFF",
+            enabled: false,
+            designation: "NONE",
+            gates: {
+              HERO: { status: "NOT_QUALIFIED" },
+              IDENTITY: { status: "NOT_QUALIFIED" },
+              NON_IDENTITY: { status: "NOT_QUALIFIED" },
+            },
           },
         ],
       }),

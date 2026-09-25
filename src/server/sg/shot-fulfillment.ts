@@ -1,4 +1,3 @@
-import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import type { Prisma, PrismaClient } from "@/generated/prisma/client";
 import { prisma } from "@/server/db";
@@ -8,6 +7,7 @@ import {
 } from "@/server/sg/constants";
 import { assertIdentityEvidence, IdentityEvidenceError } from "@/server/sg/identity-evidence";
 import { PrismaAiVideoBudget } from "@/server/sg/ai-video-budget";
+import { loadSgLaneRegistry, stampRegistryBytes, type RegistryStamp } from "@/server/sg/lane-registry";
 import { DEFAULT_SG_LANE_REGISTRY_PATH, roundMeasure } from "@/server/sg/lane-rate";
 
 /**
@@ -17,30 +17,29 @@ import { DEFAULT_SG_LANE_REGISTRY_PATH, roundMeasure } from "@/server/sg/lane-ra
 export const LEGACY_DECISION_REASON =
   "LEGACY records the existing single-lane path. Routing and regen ceilings are not applied.";
 
-/** PR-1 registry file generation. PR-4 owns a version field inside the file. */
-export const SG_LANE_REGISTRY_VERSION_V0 = "v0";
-
 /**
- * Recording labels copied from lock §4 so classAttemptNo has a stable class.
- * Not eligibility, not a registry lookup, and not a routing decision.
- * Unknown lane ids stay unclassified so they are not counted as draft-cost or standard.
+ * Attempt label when the registry cannot be read or has no such lane.
+ * A priced attempt never uses this: requireLaneRate fails closed first.
  */
-const RECORDED_LANE_CLASS_BY_ID: Readonly<Record<string, string>> = {
-  "r1-wan27-replicate": "standard",
-  "boreal-720": "draft-cost",
-  "pruna-480-cost": "draft-cost",
-  "pruna-768-cost": "draft-cost",
-  "h3turbo-768": "draft-quality",
-  "veo31lite-720": "draft-quality",
-  "pruna-768-quality": "draft-quality",
-  "kling3-pro-audio-off": "premium",
-  "seedance2-fast-720": "premium",
-};
-
 export const UNCLASSIFIED_LANE_CLASS = "unclassified";
 
-export function recordedLaneClass(laneId: string): string {
-  return RECORDED_LANE_CLASS_BY_ID[laneId] ?? UNCLASSIFIED_LANE_CLASS;
+/** Lane class for an attempt, read from the registry. Not a hard-coded map. */
+export function recordedLaneClass(laneId: string, path?: string): string {
+  const file = path && path.length > 0 ? path : registryPathFromEnv();
+  try {
+    const registry = loadSgLaneRegistry(file);
+    const lane = registry.lanes.find((item) => item.laneId === laneId);
+    if (lane) {
+      return lane.laneClass;
+    }
+    const processor = registry.processors.find((item) => item.laneId === laneId);
+    if (processor) {
+      return processor.laneClass;
+    }
+    return UNCLASSIFIED_LANE_CLASS;
+  } catch {
+    return UNCLASSIFIED_LANE_CLASS;
+  }
 }
 
 export function fulfillmentSlotKey(input: {
@@ -54,21 +53,15 @@ export function fulfillmentSlotKey(input: {
   return `${input.timelineId}:${input.timelineVersion}:${input.role}:${scene}`;
 }
 
-export type RegistryStamp = {
-  registryVersion: string;
-  registrySha256: string;
-};
+export type { RegistryStamp };
 
+/** Decision stamp: in-file registryVersion and the sha256 of the file bytes. */
 export function readRegistryStamp(path?: string): RegistryStamp {
   const file = path && path.length > 0 ? path : registryPathFromEnv();
   try {
-    const raw = readFileSync(file);
-    return {
-      registryVersion: SG_LANE_REGISTRY_VERSION_V0,
-      registrySha256: createHash("sha256").update(raw).digest("hex"),
-    };
+    return stampRegistryBytes(readFileSync(file));
   } catch {
-    return { registryVersion: "unavailable", registrySha256: "unavailable" };
+    return { registryVersion: "", registrySha256: "" };
   }
 }
 

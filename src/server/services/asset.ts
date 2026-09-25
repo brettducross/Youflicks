@@ -53,7 +53,6 @@ import {
 } from "@/server/sg/lane-rate";
 import {
   PrismaShotFulfillment,
-  recordedLaneClass,
   UNCLASSIFIED_LANE_CLASS,
 } from "@/server/sg/shot-fulfillment";
 
@@ -896,7 +895,7 @@ export class AssetService {
     const charge = estimateLaneCharge(lane);
     return {
       laneId: lane.laneId,
-      laneClass: recordedLaneClass(lane.laneId),
+      laneClass: lane.laneClass,
       providerKey: lane.providerKey,
       modelId,
       estimatedBilledSeconds: charge.estimatedBilledSeconds,
