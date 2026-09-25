@@ -47,12 +47,48 @@ export const PROCESSOR_LANE_CLASS = "processor" as const;
 
 const ENV_VAR_NAME = /^[A-Z][A-Z0-9_]*$/;
 const LANE_ID_PATTERN = /^[a-z0-9][a-z0-9.-]*$/;
-const SECRET_LIKE = /sk-|r8_|begin private|akia[0-9a-z]{16}/i;
+/**
+ * Word-bounded, minimum-length secret shapes.
+ * A bare "sk-" substring also matches "risk-" and "task-", which must stay legal in rateRef prose.
+ */
+const SECRET_LIKE =
+  /\bsk-[A-Za-z0-9_-]{16,}|\br8_[A-Za-z0-9]{16,}|begin private|\bakia[0-9a-z]{16}\b/i;
+const HEX_SHA = /^[a-f0-9]{40}$|^[a-f0-9]{64}$/;
+/** Printable provider labels only. Rejects whitespace, zero-width, and other non-ASCII. */
+export const PROVIDER_KEY_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._:/@-]*$/;
+const ZERO_WIDTH = /[\u200B-\u200D\uFEFF\u2060\u00AD]/g;
+const TBD_PREFIX = /^tbd\s*:/i;
 
-/** TBD prefix, including leading whitespace and any letter case. */
-export function isTbdProviderKey(providerKey: string): boolean {
-  return /^\s*tbd:/i.test(providerKey);
+/**
+ * Drop zero-width characters and trim. Interior spaces stay so "TBD :x" still matches the TBD prefix.
+ * Shared by the registry schema and requireLiveLane.
+ */
+export function normalizeProviderKey(providerKey: string): string {
+  return providerKey.replace(ZERO_WIDTH, "").trim();
 }
+
+/** True when the key is a TBD transport label, including "TBD :x" and a zero-width prefix. */
+export function isTbdProviderKey(providerKey: string): boolean {
+  return TBD_PREFIX.test(normalizeProviderKey(providerKey));
+}
+
+/** The lane id after a TBD prefix, or null when the key is not TBD. */
+export function tbdProviderKeyRemainder(providerKey: string): string | null {
+  const normalized = normalizeProviderKey(providerKey);
+  const match = TBD_PREFIX.exec(normalized);
+  if (!match) {
+    return null;
+  }
+  return normalized.slice(match[0].length);
+}
+
+const providerKeySchema = z
+  .string()
+  .min(1)
+  .regex(
+    PROVIDER_KEY_PATTERN,
+    "providerKey must not contain whitespace, zero-width characters, or characters outside [A-Za-z0-9._:/@-]",
+  );
 
 const laneIdSchema = z
   .string()
@@ -63,6 +99,15 @@ const envNameSchema = z
   .regex(ENV_VAR_NAME, "gateway env fields must be env var names, not values")
   .refine((name) => !SECRET_LIKE.test(name), "gateway env fields must be env var names, not values");
 
+function isHexSha(token: string): boolean {
+  return HEX_SHA.test(token);
+}
+
+/** 40-character uppercase-plus-digits token. Not exempted as an env var name. */
+function isUpperDigitSecret(token: string): boolean {
+  return /^[A-Z0-9]{40}$/.test(token) && /[A-Z]/.test(token) && /[0-9]/.test(token);
+}
+
 function valueLooksSecret(value: string, field: string | number | undefined): boolean {
   if (SECRET_LIKE.test(value)) {
     return true;
@@ -70,15 +115,24 @@ function valueLooksSecret(value: string, field: string | number | undefined): bo
   if (field === "evidenceSha256" && /^[a-f0-9]{64}$/.test(value)) {
     return false;
   }
+  if (isHexSha(value)) {
+    return false;
+  }
+  if (isUpperDigitSecret(value)) {
+    return true;
+  }
   if (ENV_VAR_NAME.test(value)) {
     return false;
   }
   const tokens = value.match(/[A-Za-z0-9]{24,}/g) ?? [];
   return tokens.some((token) => {
-    if (ENV_VAR_NAME.test(token)) {
+    if (isHexSha(token)) {
       return false;
     }
-    if (/^[a-f0-9]{64}$/.test(token)) {
+    if (isUpperDigitSecret(token)) {
+      return true;
+    }
+    if (ENV_VAR_NAME.test(token)) {
       return false;
     }
     return /[0-9]/.test(token) && /[A-Za-z]/.test(token);
@@ -173,10 +227,7 @@ export const generativeLaneSchema = z
   .object({
     laneId: laneIdSchema,
     laneClass: laneClassSchema,
-    providerKey: z
-      .string()
-      .min(1)
-      .refine((value) => value === value.trim(), "providerKey must not have leading or trailing whitespace"),
+    providerKey: providerKeySchema,
     modelId: z.string().min(1),
     gateway: z
       .object({
@@ -206,7 +257,7 @@ export const generativeLaneSchema = z
           path: ["providerKey"],
         });
       }
-      const remainder = lane.providerKey.replace(/^\s*tbd:/i, "");
+      const remainder = tbdProviderKeyRemainder(lane.providerKey);
       if (remainder !== lane.laneId) {
         ctx.addIssue({
           code: "custom",
@@ -248,10 +299,7 @@ const processorSchema = z
   .object({
     laneId: laneIdSchema,
     laneClass: z.literal(PROCESSOR_LANE_CLASS),
-    providerKey: z
-      .string()
-      .min(1)
-      .refine((value) => value === value.trim(), "providerKey must not have leading or trailing whitespace"),
+    providerKey: providerKeySchema,
     modelId: z.string().min(1),
     resolutionTier: z.literal("output-profile"),
     usdPerSecond: z.literal(0),
