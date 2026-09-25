@@ -1,6 +1,6 @@
 # Phase SG Implementation Lock — Selective Generation Foundation
 
-**Status:** DRAFT for docs-lock PR; Architect-authored; PO-approved scope per `PO_SG_FOUNDATION_DECISION_2026-09-25.md` (sha256 `d15179548865da69b2afcfcdfbe45b1083fc9d9a5333581bc5ad1dc5d21971e1`).  
+**Status:** DRAFT r2 for docs-lock PR; Architect-authored; PO-approved scope per `PO_SG_FOUNDATION_DECISION_2026-09-25.md` (sha256 `d15179548865da69b2afcfcdfbe45b1083fc9d9a5333581bc5ad1dc5d21971e1`).  
 **Lock type:** **Non-Constitution implementation lock.** This document does **not** amend the Product Constitution, PHASE_2F, PHASE_M1–M8 (incl. M8.5 / M8.6), the R1 motion recipe lock, or LAUNCH_GATE. The PO decision calls the regen ceilings and provisional gates "initial policy values, not permanent Constitution locks"; this lock encodes them as **config values**.  
 **Milestone name:** SG — Selective Generation foundation (fulfillment-side routing, lane registry, lane-priced reservation, budget/regen accounting, quality-gate telemetry, Ken Burns/static fallback, honest messaging, multi-lane resolver).  
 **Basis:**
@@ -848,7 +848,12 @@ Justification:
 
 **Pricing inputs:**
 - Economics prices Kling at $0.112/s (audio off).
-- The Veo rate depends on the transport's audio mode ($0.03/s no-audio on fal vs $0.05/s with audio). Economics picks it; this lock selects no transport.
+- The Veo rate depends on the transport's audio mode ($0.03/s no-audio on fal vs $0.05/s with audio). This lock selects no transport or vendor.
+- **Protocol rule for audio-capable lanes (r2):** audio OFF is the evaluation condition, not a transport requirement.
+  - If the transport used exposes a **verified** audio-off request parameter, audio is requested off and the lane is priced at its no-audio rate.
+  - If it does not (no flag, or audio-off UNVERIFIED), the lane is treated exactly like Seedance: audio is generated and billed, then **stripped before rating**, and the lane is priced at its with-audio rate.
+  - **Envelope pricing basis:** the with-audio rate (Veo $0.05/s), because it is the conservative bound and audio-off on the RATES-key transport is UNVERIFIED. The no-audio rate ($0.03/s) is a sensitivity row only.
+  - The transport actually used is fixed at spend authorization (PO, with Economics input), recorded per clip (`audio_requested`, `audio_generated`, `audio_billed_hint`, plus the transport in the sealed lane key), and is **not** a vendor selection or routing default.
 
 ### 6.4 Inputs and pairing
 
@@ -867,6 +872,7 @@ Justification:
 - **Rounds 2 and 3:** re-attempts for rejected or failed slots only, with the same inputs and a new seed, up to the ceiling:
   - draft-cost: 3 attempts;
   - every other class (including the control and premium): 2 attempts.
+- **Ceiling rule (r2 clarification):** the bake-off protocol ceilings **are** the PO production ceilings (D6); this lock sets no separate bake-off ceiling. The PO text is "draft-cost lanes 3 attempts; other lanes 2 attempts". The **draft-quality** class (H3 Turbo 768p, Pruna 768p QUALITY, Veo 3.1 Lite; cells C11–C13, C16–C18, C21–C23) is an "other" class, so its ceiling is **2**, not 3. Only draft-cost cells (C04–C06, C14, C15, C19, C20) use 3. Any costing that applies R=3 to draft-quality overstates the protocol bound.
 - **Metrics:**
   - **First-attempt keep** = slots KEPT on attempt 1 ÷ 50. This is the gated metric.
   - **Kept-within-ceiling** = slots KEPT by the ceiling ÷ 50 (diagnostic).
@@ -939,7 +945,8 @@ Economics: every scenario exceeds the beta cap of 10 jobs / $8, and **the job ca
 | Ledger scope | `GatewaySpendLedger` rows `bakeoff:<runId>` (envelope, `scopeKind=BAKEOFF`) and `bakeoff:<runId>:cell:<cellId>` (`BAKEOFF_CELL`), selected via `YF_GATEWAY_LEDGER_ID` (PR-1). The run uses dedicated gateway processes and keys. The beta ledger `yf-asset` and all user/project `AiVideoBudget*` rows are untouched. A dedicated eval project is owned by the team account. |
 | Envelope job cap | **TBD** (PO). Reference: core worst case = 1,150 attempts (§6.11). |
 | Envelope $ cap | **TBD** (PO). Economics prices the cell list. |
-| Per-cell caps | Job cap = `n_clips × ceiling` (150 for draft-cost, 100 otherwise). $ cap = **TBD** (≈ worst-case billed seconds × lane rate). |
+| Per-cell caps | Job cap = `n_clips × ceiling` (150 for draft-cost, 100 otherwise). $ cap = **TBD** (≈ worst-case billed seconds × lane rate, i.e. the ceiling bound with F = 0). Failures consume ceiling attempts (§6.5), so the per-cell job cap is the reachable protocol maximum. |
+| Failure/outage reserve (r2) | A **separate envelope-level pool, outside all per-cell caps**, default **0 available** until released. Size **TBD** (PO); Economics' reference is 20% of protocol jobs (CORE 230 jobs / $107.53 on top of $537.65). Released **only** by a logged operator action against the spend authorization id, and only to **replace attempts invalidated by a verified provider-side fault** (outage, timeout storm, corrupt returns) during or after an outage-guard pause. A replacement attempt does **not** consume the slot's ceiling; the invalidated attempt stays recorded as a failure and still counts toward the ≤ 5% failure gate. Never used for quality re-rolls, never auto-released, and a cap hit on the pool stops the run. |
 | Stop rules | Stop a cell at its cap. Stop the run at the envelope cap. **Pause** a cell after 5 consecutive failures, or when the failure rate exceeds 20% over ≥ 20 attempts (outage guard; human review). Pause everything on any `UNRECONCILED` reservation, or when reconciled actual exceeds reserved beyond a tolerance (**TBD**), until ops reconcile. Kill switch: stop all bake-off gateway processes. |
 | Retry policy | **No automatic retry on any cap hit.** Resuming requires an explicit operator action logged against the spend authorization id. Protocol re-attempts (§6.5) are planned attempts within the per-cell job cap, not retries. |
 | Reservation | PR-1 lane-priced reservation must be live before any run. The flat $0.50 must never be used (§2.1). |
@@ -993,6 +1000,10 @@ The registry PR (§4) cites this file's sha256.
 
 Billed seconds exceed evaluated seconds only in the Veo cells (C13, C18, C23): 300 billed vs 250 evaluated per cell in the best case, 600 in the worst.
 
+**P-7 set (r2):** the shared HERO∩IDENTITY variant is exactly CORE **minus C03, C08 and C10**, i.e. C01, C02, C04, C05, C06, C07, C09 (the HERO cells then serve both scopes). The CSV marks it in column `in_p7_shared_core`.
+
+**Economics cross-check (r2, `BAKEOFF_FORMAL_CELLS_COSTING_2026-09-25.md`, ESTIMATEs):** at the protocol ceilings, CORE is $263.20 best / $537.65 ceiling (F = 0), plus an optional 20% reserve ($645.18 total); P-7 is $149.73 / $310.70 (reserve total $372.84); FULL is $411.95 / $852.65 (reserve total $1,023.18). FULL figures of $983.90 / $1,180.68 apply R=3 to draft-quality and exceed the protocol bound.
+
 ### 6.12 Machine-readable cell list (also `PHASE_SG_BAKEOFF_CELLS_2026-09-25.csv`)
 
 - `lane_id` values match the `RATES` keys in `bakeoff_reprice.py`.
@@ -1040,7 +1051,7 @@ The CoS summary of what remains is confirmed, with additions:
 | --- | --- | --- | --- |
 | **E4** | Premium candidates for the HERO/IDENTITY cells (Kling v3 Pro audio-off, Seedance 2.0 Fast, others?) | PO (CoS) | Final core cell list (C07–C10); bake-off pricing |
 | **E6** | Authorize the Creative Director keep evaluation | PO | Any bake-off rating → any QUALIFIED lane → ENFORCED routing doing any generation |
-| **Bake-off spend** | Authorize spend **and** set the §6.9 envelope numbers (job cap, $ cap, per-cell $ caps, overrun tolerance); needs Economics pricing of the cell list | PO (Economics input) | Bake-off execution |
+| **Bake-off spend** | Authorize spend **and** set the §6.9 envelope numbers (job cap, $ cap, per-cell $ caps, failure/outage reserve size, overrun tolerance) and fix the Veo transport/audio mode for the run (§6.3); needs Economics pricing of the cell list | PO (Economics input) | Bake-off execution |
 | **E9** | Per-plan AI-video budgets (FREE/PLUS/FAMILY) and beta cap sizing (global 10 jobs / $8) | PO | Enforcement values for the PR-1 budget scopes; later plan wiring via EntitlementService |
 | **E11** | Consent/DPA for face-embedding evaluation (bake-off IDENTITY inputs and references) and any production face-similarity telemetry | PO + legal | IDENTITY cells (C03, C08, C10, C19–C23); face-sim in the SG.8 production proxy |
 | **E12** | Dialogue close-up rule (is generative mouth motion allowed?) | PO | Lifting the PR-6 interim non-generation treatment |
@@ -1111,6 +1122,7 @@ The CoS summary of what remains is confirmed, with additions:
 | --- | --- | --- | --- |
 | Brett (PO) | SG foundation decision (items 1–11; D3–D8 policy) | 2026-09-25 07:09 PT | **APPROVED** (scope) |
 | Architect | Drafted this lock against main `d0bf0d8`; incorporated the Economics addendum (Veo durations, reservation evidence, audio condition, bake-off envelope) | 2026-09-25 PT | **DRAFT for docs-lock PR** |
+| Architect | r2 reconciliation with Economics formal-cells costing: ceiling rule clarified (draft-quality = 2), failure/outage reserve defined outside per-cell caps, P-7 set confirmed + CSV column, audio-capable lane transport rule (Veo) | 2026-09-25 PT | **DRAFT r2 for docs-lock PR** |
 | Chief of Staff | Docs-lock PR + Engineer gate | — | **PENDING** |
 
 ## Document control
