@@ -387,8 +387,9 @@ export class AppError extends Error {
    */
   static spendCapReached(
     message = "Clip generation is paused because a usage limit was reached. We did not retry automatically.",
+    details?: Record<string, unknown>,
   ) {
-    return new AppError(ErrorCodes.SPEND_CAP_REACHED, message, 429);
+    return new AppError(ErrorCodes.SPEND_CAP_REACHED, message, 429, details);
   }
 }
 

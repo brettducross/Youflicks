@@ -30,6 +30,7 @@ import {
   LaneDurationError,
   numericExtraDuration,
   requireLaneRate,
+  roundMeasure,
   type LaneRate,
 } from "@/server/sg/lane-rate";
 
@@ -257,6 +258,9 @@ export class YfAssetGenerateService {
           width: outcome.width,
           height: outcome.height,
           jobId: job.jobId,
+          gatewayReservationId: reservation.id,
+          actualBilledSeconds: actual.seconds,
+          actualUsd: roundMeasure(actual.seconds * lane.usdPerSecond),
         },
       };
     } catch (error) {
@@ -271,9 +275,13 @@ export class YfAssetGenerateService {
       this.jobs.markFailed(job.jobId, message);
       const extra = {
         settlement: settled.settlement,
+        settleReason: settled.settleReason,
+        gatewayReservationId: reservation.id,
+        gatewayJobId: job.jobId,
         ...(settled.actualBilledSeconds !== undefined
           ? { actualBilledSeconds: settled.actualBilledSeconds }
           : {}),
+        ...(settled.actualUsd !== undefined ? { actualUsd: settled.actualUsd } : {}),
       };
       if (error instanceof LaneDurationError) {
         return gatewayError(400, error.code, message, extra);
@@ -288,7 +296,12 @@ export class YfAssetGenerateService {
     lane: LaneRate,
     estimatedBilledSeconds: number,
     error: unknown,
-  ): Promise<{ settlement: GatewaySettlement; actualBilledSeconds?: number }> {
+  ): Promise<{
+    settlement: GatewaySettlement;
+    settleReason: string;
+    actualBilledSeconds?: number;
+    actualUsd?: number;
+  }> {
     const classified = classifyBackendFailure(error);
     if (classified.kind === "download_after_success") {
       const actual = actualBilledSecondsFromDurationMs(
@@ -296,11 +309,19 @@ export class YfAssetGenerateService {
         lane.billingGranularityS,
         estimatedBilledSeconds,
       );
+      const reason = actual.flagged
+        ? "DOWNLOAD_FAILURE_ACTUAL_DURATION_FALLBACK"
+        : "DOWNLOAD_FAILURE_BILLED";
       await reservations.reconcile(reservation.id, {
         actualBilledSeconds: actual.seconds,
-        reason: actual.flagged ? "DOWNLOAD_FAILURE_ACTUAL_DURATION_FALLBACK" : "DOWNLOAD_FAILURE_BILLED",
+        reason,
       });
-      return { settlement: "RECONCILED", actualBilledSeconds: actual.seconds };
+      return {
+        settlement: "RECONCILED",
+        settleReason: reason,
+        actualBilledSeconds: actual.seconds,
+        actualUsd: roundMeasure(actual.seconds * lane.usdPerSecond),
+      };
     }
     if (classified.kind === "backend_failed") {
       if (lane.failuresBillable) {
@@ -308,17 +329,22 @@ export class YfAssetGenerateService {
           actualBilledSeconds: estimatedBilledSeconds,
           reason: "FAILURE_BILLABLE",
         });
-        return { settlement: "RECONCILED", actualBilledSeconds: estimatedBilledSeconds };
+        return {
+          settlement: "RECONCILED",
+          settleReason: "FAILURE_BILLABLE",
+          actualBilledSeconds: estimatedBilledSeconds,
+          actualUsd: roundMeasure(estimatedBilledSeconds * lane.usdPerSecond),
+        };
       }
       await reservations.release(reservation.id, "FAILURE_NOT_BILLABLE");
-      return { settlement: "RELEASED" };
+      return { settlement: "RELEASED", settleReason: "FAILURE_NOT_BILLABLE" };
     }
     if (classified.kind === "submit_rejected") {
       await reservations.release(reservation.id, "SUBMIT_REJECTED");
-      return { settlement: "RELEASED" };
+      return { settlement: "RELEASED", settleReason: "SUBMIT_REJECTED" };
     }
     await reservations.markUnreconciled(reservation.id, classified.reason);
-    return { settlement: "UNRECONCILED" };
+    return { settlement: "UNRECONCILED", settleReason: classified.reason };
   }
 
   private async runBackend(

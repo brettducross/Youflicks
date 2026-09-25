@@ -15,6 +15,8 @@ export type WipeResult = {
 /**
  * M8.8-lite project / account delete + StoragePort GC.
  * Not a full PrivacyLifecyclePort.
+ * Project delete cascades shot_fulfillment and shot_fulfillment_attempt.
+ * AiVideoBudgetLedger rows are not foreign-keyed, so they are purged explicitly.
  */
 export class WipeService {
   constructor(

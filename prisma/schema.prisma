@@ -126,6 +126,8 @@ model Project {
   sponsorPlacements SponsorPlacement[]
   /// Virtual back-relation only. No column is added to `project`.
   aiVideoBudgetReservations AiVideoBudgetReservation[]
+  /// Virtual back-relation only. No column is added to `project`.
+  shotFulfillments          ShotFulfillment[]
 
   @@index([ownerId, updatedAt])
   @@map("project")
@@ -1085,4 +1087,108 @@ model AiVideoBudgetReservation {
   @@index([userId, createdAt])
   @@index([status])
   @@map("ai_video_budget_reservation")
+}
+
+/// SG.0 fulfillment-side per-shot record. Not CreativePlan, Story, or Timeline.
+/// Status, scope, treatment, and routingMode are open strings (D9), not Prisma enums.
+/// timelineId and generatedAssetId are plain ids: no FK to Timeline or GeneratedAsset.
+model ShotFulfillment {
+  id                 String   @id @default(cuid())
+  projectId          String
+  project            Project  @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  /// Plain id. No FK — M2 Timeline is untouched.
+  timelineId         String
+  timelineVersion    Int
+  role               String
+  storySceneId       String?
+  /// "<timelineId>:<timelineVersion>:<role>:<storySceneId|->"
+  slotKey            String
+  /// HERO | IDENTITY | NON_IDENTITY. Primary scope. UNKNOWN identity records IDENTITY.
+  scope              String
+  /// Subset of {HERO, IDENTITY, NON_IDENTITY}.
+  requiredScopes     String[]
+  /// Cue: hero | establishing | insert | transition | dialogue-closeup | other. PR-6.
+  shotRole           String?
+  /// PRESENT | ABSENT | UNKNOWN. UNKNOWN counts as IDENTITY (D3).
+  identityState      String   @default("UNKNOWN")
+  /// Counts and booleans only. Never embeddings, face crops, or biometric data.
+  identityEvidence   Json?
+  /// none | low | high
+  motionNeed         String?
+  slotDurationMs     Int?
+  /// ORIGINAL | KEN_BURNS | STATIC | REUSE | GENERATE | DEFER | FAIL_HONEST
+  treatment          String
+  /// PLANNED | IN_PROGRESS | FULFILLED | FALLBACK | DEFERRED | FAILED | SUPERSEDED
+  status             String   @default("PLANNED")
+  /// LEGACY | ENFORCED (D12). PR-2 records LEGACY; it does not route.
+  routingMode        String
+  /// What ENFORCED would have decided while running in LEGACY. Null until PR-8.
+  shadowDecision     Json?
+  currentLaneClass   String?
+  currentLaneId      String?
+  currentProviderKey String?
+  attemptsTotal      Int      @default(0)
+  decisionReason     String
+  /// SG.6 message key. Null until PR-10.
+  userMessageKey     String?
+  registryVersion    String
+  registrySha256     String
+  /// Ken Burns params and other treatment inputs. PR-9.
+  treatmentParams    Json?
+  /// Plain id. No relation — GeneratedAsset is untouched (D10).
+  generatedAssetId   String?
+  sourceMediaAssetId String?
+  createdAt          DateTime @default(now())
+  updatedAt          DateTime @updatedAt
+  attempts           ShotFulfillmentAttempt[]
+
+  @@unique([projectId, slotKey])
+  @@index([projectId, createdAt])
+  @@index([timelineId, role])
+  @@index([status])
+  @@map("shot_fulfillment")
+}
+
+/// One generation try against a ShotFulfillment slot.
+/// outcome is an open string, not a Prisma enum (D9).
+model ShotFulfillmentAttempt {
+  id                     String          @id @default(cuid())
+  shotFulfillmentId      String
+  shot                   ShotFulfillment @relation(fields: [shotFulfillmentId], references: [id], onDelete: Cascade)
+  /// 1-based across the slot.
+  attemptNo              Int
+  /// 1-based within laneClass. Ceiling enforcement is PR-8; this only records.
+  classAttemptNo         Int
+  laneClass              String
+  laneId                 String
+  /// Open provenance string. Never a Prisma enum.
+  providerKey            String
+  modelId                String?
+  requiredScopes         String[]
+  /// AI_ASSET Job id.
+  jobId                  String?
+  gatewayJobId           String?
+  budgetReservationId    String?
+  gatewayReservationId   String?
+  estimatedBilledSeconds Float
+  actualBilledSeconds    Float?
+  usdPerSecond           Float
+  estimatedUsd           Float
+  actualUsd              Float?
+  /// PENDING | SUCCEEDED | FAILED | CAP_DENIED | TIMEOUT_UNRECONCILED | CANCELLED | REJECTED_TECHNICAL
+  outcome                String          @default("PENDING")
+  failureCode            String?
+  /// KEPT | REJECTED_BY_USER | null. No automated keep.
+  keepSignal             String?
+  outputWidth            Int?
+  outputHeight           Int?
+  generatedAssetId       String?
+  startedAt              DateTime        @default(now())
+  finishedAt             DateTime?
+
+  @@unique([shotFulfillmentId, attemptNo])
+  @@index([laneId, startedAt])
+  @@index([providerKey])
+  @@index([jobId])
+  @@map("shot_fulfillment_attempt")
 }

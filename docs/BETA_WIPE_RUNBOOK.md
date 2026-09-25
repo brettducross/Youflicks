@@ -32,6 +32,7 @@ Both collect opaque StoragePort keys (media, generated assets, render outputs, l
 4. Delete objects in the configured store (`STORAGE_DRIVER=local` path, or R2/S3 bucket) using those opaque keys. Never treat vendor CDN URLs as truth.
 5. Delete AI-video budget ledgers, then the user (cascade) or the project.
    Project delete cascades `ai_video_budget_reservation` rows. Ledger rows are not foreign-keyed, so purge them explicitly. User-window rows are keyed by `userId`.
+   Project delete also cascades `shot_fulfillment` rows, and those cascade `shot_fulfillment_attempt` rows. There is no user-keyed fulfillment table to purge separately.
    ```sql
    DELETE FROM ai_video_budget_ledger WHERE "projectId" = '<projectId>';
    DELETE FROM project WHERE id = '<projectId>';
@@ -40,10 +41,10 @@ Both collect opaque StoragePort keys (media, generated assets, render outputs, l
    DELETE FROM ai_video_budget_ledger WHERE "projectId" IN ('<projectId>', ...);
    DELETE FROM "user" WHERE id = '<userId>';
    ```
-6. Verify: no remaining rows for that user/project (including `ai_video_budget_ledger`), and no leftover objects under `projects/<projectId>/`.
+6. Verify: no remaining rows for that user/project (including `ai_video_budget_ledger`, `shot_fulfillment`, and `shot_fulfillment_attempt`), and no leftover objects under `projects/<projectId>/`.
 
 ## Confirm
 
-- [ ] Account or project is gone from Postgres
+- [ ] Account or project is gone from Postgres, including `shot_fulfillment` and `shot_fulfillment_attempt`
 - [ ] Object-store prefixes for those projects are empty
 - [ ] Record the request time and completion time (SLA ≤ 24h)

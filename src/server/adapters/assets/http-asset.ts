@@ -12,6 +12,7 @@ import { generatedAssetDocumentSchema } from "@/server/assets/schema";
 import { AssetCapability, type AssetCapabilityValue } from "@/server/ports/capabilities";
 import type { AssetGeneratorPort } from "@/server/ports/asset-generator";
 import type { StoragePort } from "@/server/ports/storage";
+import { rememberGatewayTrace } from "@/server/assets/gateway-trace";
 
 export type HttpAssetGeneratorConfig = {
   providerKey: string;
@@ -107,12 +108,16 @@ export class HttpAssetGeneratorAdapter implements AssetGeneratorPort {
           body: redact(text, this.config.apiKey).slice(0, 500),
         });
         const gatewayError = parseGatewayError(text);
+        const details = gatewaySettlementDetails(gatewayError, response.status);
         if (response.status === 429 && gatewayError.code === "GATEWAY_SPEND_CAP") {
-          throw AppError.spendCapReached();
+          throw AppError.spendCapReached(undefined, {
+            ...details,
+            settleReason: "CAP_DENIED",
+          });
         }
         throw AppError.assetProviderUnavailable(
           "The asset generator adapter failed.",
-          gatewaySettlementDetails(gatewayError),
+          details,
         );
       }
 
@@ -124,6 +129,9 @@ export class HttpAssetGeneratorAdapter implements AssetGeneratorPort {
         height?: number;
         document?: unknown;
         jobId?: string;
+        gatewayReservationId?: string;
+        actualBilledSeconds?: number;
+        actualUsd?: number;
       };
 
       if (typeof payload.jobId === "string" && payload.jobId.length > 0) {
@@ -148,6 +156,7 @@ export class HttpAssetGeneratorAdapter implements AssetGeneratorPort {
             "The asset generator adapter returned a vendor URL as storageKey.",
           );
         }
+        rememberGatewayTrace(parsed.data, traceFromPayload(payload));
         return parsed.data;
       }
 
@@ -170,7 +179,7 @@ export class HttpAssetGeneratorAdapter implements AssetGeneratorPort {
         contentType: payload.mimeType,
       });
 
-      return {
+      const document = {
         schemaVersion: GENERATED_ASSET_DOCUMENT_SCHEMA_VERSION,
         kind: input.kind,
         role: input.role,
@@ -194,6 +203,8 @@ export class HttpAssetGeneratorAdapter implements AssetGeneratorPort {
           briefFingerprint: input.briefFingerprint,
         },
       };
+      rememberGatewayTrace(document, traceFromPayload(payload));
+      return document;
     } catch (error) {
       if (isAppErrorLike(error)) {
         throw error;
@@ -229,17 +240,19 @@ function redact(text: string, secret?: string) {
   return text.split(secret).join("[redacted]");
 }
 
-function parseGatewayError(text: string): {
+type ParsedGatewayError = {
   code?: string;
   settlement?: "RELEASED" | "RECONCILED" | "UNRECONCILED" | "NONE";
   actualBilledSeconds?: number;
-} {
+  actualUsd?: number;
+  settleReason?: string;
+  gatewayReservationId?: string;
+  gatewayJobId?: string;
+};
+
+function parseGatewayError(text: string): ParsedGatewayError {
   try {
-    const parsed = JSON.parse(text) as {
-      code?: unknown;
-      settlement?: unknown;
-      actualBilledSeconds?: unknown;
-    };
+    const parsed = JSON.parse(text) as Record<string, unknown>;
     const settlement =
       parsed.settlement === "RELEASED" ||
       parsed.settlement === "RECONCILED" ||
@@ -247,33 +260,55 @@ function parseGatewayError(text: string): {
       parsed.settlement === "NONE"
         ? parsed.settlement
         : undefined;
-    const actualBilledSeconds =
-      typeof parsed.actualBilledSeconds === "number" && Number.isFinite(parsed.actualBilledSeconds)
-        ? parsed.actualBilledSeconds
-        : undefined;
     return {
       code: typeof parsed.code === "string" ? parsed.code : undefined,
       settlement,
-      actualBilledSeconds,
+      actualBilledSeconds: finiteNumber(parsed.actualBilledSeconds),
+      actualUsd: finiteNumber(parsed.actualUsd),
+      settleReason: typeof parsed.settleReason === "string" ? parsed.settleReason : undefined,
+      gatewayReservationId:
+        typeof parsed.gatewayReservationId === "string" ? parsed.gatewayReservationId : undefined,
+      gatewayJobId: typeof parsed.gatewayJobId === "string" ? parsed.gatewayJobId : undefined,
     };
   } catch {
     return {};
   }
 }
 
-function gatewaySettlementDetails(parsed: {
-  settlement?: "RELEASED" | "RECONCILED" | "UNRECONCILED" | "NONE";
+function gatewaySettlementDetails(
+  parsed: ParsedGatewayError,
+  gatewayStatus: number,
+): Record<string, unknown> | undefined {
+  const details: Record<string, unknown> = { gatewayStatus };
+  if (parsed.code) details.gatewayCode = parsed.code;
+  if (parsed.settlement) details.settlement = parsed.settlement;
+  if (parsed.actualBilledSeconds !== undefined) details.actualBilledSeconds = parsed.actualBilledSeconds;
+  if (parsed.actualUsd !== undefined) details.actualUsd = parsed.actualUsd;
+  if (parsed.settleReason) details.settleReason = parsed.settleReason;
+  if (parsed.gatewayReservationId) details.gatewayReservationId = parsed.gatewayReservationId;
+  if (parsed.gatewayJobId) details.gatewayJobId = parsed.gatewayJobId;
+  return details;
+}
+
+function traceFromPayload(payload: {
+  jobId?: string;
+  gatewayReservationId?: string;
   actualBilledSeconds?: number;
-}): Record<string, unknown> | undefined {
-  if (!parsed.settlement) {
-    return undefined;
-  }
+  actualUsd?: number;
+}) {
   return {
-    settlement: parsed.settlement,
-    ...(parsed.actualBilledSeconds !== undefined
-      ? { actualBilledSeconds: parsed.actualBilledSeconds }
-      : {}),
+    gatewayJobId: typeof payload.jobId === "string" && payload.jobId.length > 0 ? payload.jobId : null,
+    gatewayReservationId:
+      typeof payload.gatewayReservationId === "string" && payload.gatewayReservationId.length > 0
+        ? payload.gatewayReservationId
+        : null,
+    actualBilledSeconds: finiteNumber(payload.actualBilledSeconds) ?? null,
+    actualUsd: finiteNumber(payload.actualUsd) ?? null,
   };
+}
+
+function finiteNumber(value: unknown): number | undefined {
+  return typeof value === "number" && Number.isFinite(value) ? value : undefined;
 }
 
 function isAppErrorLike(error: unknown): boolean {

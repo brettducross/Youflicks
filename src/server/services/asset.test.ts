@@ -358,6 +358,38 @@ describe("AssetService M3", () => {
     expect(mediaCount).toBe(1);
     expect(ready[0]?.id).not.toBe(mediaAssetId);
 
+    const jobAssets = await prisma.generatedAsset.findMany({
+      where: { jobId: queued.jobId, status: GeneratedAssetStatus.READY },
+    });
+    const attempts = await prisma.shotFulfillmentAttempt.findMany({
+      where: { jobId: queued.jobId },
+      orderBy: { attemptNo: "asc" },
+    });
+    expect(attempts).toHaveLength(jobAssets.length);
+    const slots = await prisma.shotFulfillment.findMany({
+      where: { id: { in: attempts.map((row) => row.shotFulfillmentId) } },
+    });
+    expect(slots).toHaveLength(jobAssets.length);
+    for (const slot of slots) {
+      expect(slot.routingMode).toBe("LEGACY");
+      expect(slot.shadowDecision).toBeNull();
+      expect(slot.scope).toBe("IDENTITY");
+      expect(slot.identityState).toBe("UNKNOWN");
+      expect(slot.requiredScopes).toEqual(["IDENTITY"]);
+      expect(slot.status).toBe("FULFILLED");
+      expect(slot.generatedAssetId).toBeTruthy();
+    }
+    for (const attempt of attempts) {
+      expect(attempt.outcome).toBe("SUCCEEDED");
+      expect(attempt.attemptNo).toBeGreaterThanOrEqual(1);
+      expect(attempt.classAttemptNo).toBeGreaterThanOrEqual(1);
+      expect(attempt.laneClass).toBe("unclassified");
+      expect(attempt.actualBilledSeconds).toBeNull();
+      expect(attempt.gatewayReservationId).toBeNull();
+      expect(attempt.budgetReservationId).toBeNull();
+    }
+    expect(new Set(slots.map((slot) => slot.slotKey)).size).toBe(slots.length);
+
     const status = await assets.getJobStatus(ownerId, projectId, queued.jobId);
     expect(status.status).toBe(JobStatus.SUCCEEDED);
 
@@ -685,6 +717,18 @@ describe("AssetService M3", () => {
       expect(job?.status).toBe(JobStatus.FAILED);
       expect(job?.attempts).toBe(1);
       expect(calls).toEqual([]);
+      const reservation = await prisma.aiVideoBudgetReservation.findFirst({
+        where: { projectId, idempotencyKey: { startsWith: `asset:${queued.jobId}:` } },
+      });
+      expect(reservation).toBeNull();
+      const attempt = await prisma.shotFulfillmentAttempt.findFirst({
+        where: { jobId: queued.jobId },
+      });
+      expect(attempt?.outcome).toBe("CAP_DENIED");
+      expect(attempt?.failureCode).toBe("CAP_DENIED");
+      expect(attempt?.budgetReservationId).toBeNull();
+      expect(attempt?.gatewayReservationId).toBeNull();
+      expect(attempt?.attemptNo).toBeGreaterThanOrEqual(1);
     } finally {
       if (previousLane === undefined) delete process.env.YF_GATEWAY_LANE_ID;
       else process.env.YF_GATEWAY_LANE_ID = previousLane;
@@ -734,6 +778,16 @@ describe("AssetService M3", () => {
       expect(reservation?.settleReason).toBe("CAP_DENIED");
       expect(reservation?.laneId).toBe("r1-wan27-replicate");
       expect(reservation?.providerKey).toBe("replicate:wan-video/wan-2.7-i2v");
+      const attempt = await prisma.shotFulfillmentAttempt.findFirst({
+        where: { jobId: queued.jobId },
+      });
+      expect(attempt?.outcome).toBe("CAP_DENIED");
+      expect(attempt?.budgetReservationId).toBe(reservation?.id);
+      expect(attempt?.gatewayReservationId).toBeNull();
+      expect(attempt?.laneId).toBe("r1-wan27-replicate");
+      expect(attempt?.laneClass).toBe("standard");
+      expect(attempt?.providerKey).toBe("replicate:wan-video/wan-2.7-i2v");
+      expect(attempt?.classAttemptNo).toBeGreaterThanOrEqual(1);
     } finally {
       if (previousLane === undefined) delete process.env.YF_GATEWAY_LANE_ID;
       else process.env.YF_GATEWAY_LANE_ID = previousLane;
@@ -824,6 +878,80 @@ describe("AssetService M3", () => {
     }
   }
 
+  it("records CAP_DENIED when the gateway returns 429 and creates no gateway reservation", async () => {
+    let submits = 0;
+    const blocked: VideoBackend = {
+      kind: "http",
+      async submit() {
+        submits += 1;
+        return { backendRequestId: "should-not-submit" };
+      },
+      async status() {
+        return { status: "queued" };
+      },
+      async result() {
+        throw new Error("no result");
+      },
+    };
+    const { reservation, gatewayRow } = await settleThroughGateway(
+      blocked,
+      async () => new Response("no"),
+      { YF_GATEWAY_MAX_SPEND_USD: "0.01" },
+    );
+    expect(submits).toBe(0);
+    expect(gatewayRow).toBeUndefined();
+    expect(reservation?.status).toBe("RELEASED");
+    expect(reservation?.settleReason).toBe("CAP_DENIED");
+    const attempt = await prisma.shotFulfillmentAttempt.findFirst({
+      where: { budgetReservationId: reservation?.id },
+    });
+    expect(attempt?.outcome).toBe("CAP_DENIED");
+    expect(attempt?.failureCode).toBe("CAP_DENIED");
+    expect(attempt?.budgetReservationId).toBe(reservation?.id);
+    expect(attempt?.gatewayReservationId).toBeNull();
+  });
+
+  it("records SUCCEEDED with reconciled seconds and the gateway reservation id", async () => {
+    const ready: VideoBackend = {
+      kind: "http",
+      async submit() {
+        return { backendRequestId: "ok_success" };
+      },
+      async status() {
+        return { status: "succeeded" };
+      },
+      async result() {
+        return {
+          url: "https://example.test/clip.png",
+          mimeType: "image/png",
+          durationMs: 5000,
+          width: 2,
+          height: 2,
+        };
+      },
+    };
+    const { reservation, gatewayRow } = await settleThroughGateway(ready, async () => {
+      return new Response(PNG_1X1);
+    });
+    expect(reservation?.status).toBe("RECONCILED");
+    expect(gatewayRow?.status).toBe("RECONCILED");
+    const attempt = await prisma.shotFulfillmentAttempt.findFirst({
+      where: { budgetReservationId: reservation?.id },
+    });
+    expect(attempt?.outcome).toBe("SUCCEEDED");
+    expect(attempt?.actualBilledSeconds).toBe(5);
+    expect(attempt?.actualUsd).toBeCloseTo(0.5, 5);
+    expect(attempt?.gatewayReservationId).toBe(gatewayRow?.id);
+    expect(attempt?.gatewayJobId).toBeTruthy();
+    expect(attempt?.generatedAssetId).toBeTruthy();
+    const slot = await prisma.shotFulfillment.findUniqueOrThrow({
+      where: { id: attempt?.shotFulfillmentId },
+    });
+    expect(slot.routingMode).toBe("LEGACY");
+    expect(slot.shadowDecision).toBeNull();
+    expect(slot.generatedAssetId).toBe(attempt?.generatedAssetId);
+  });
+
   it("keeps the app budget UNRECONCILED when the gateway times out", async () => {
     const hung: VideoBackend = {
       kind: "http",
@@ -842,6 +970,13 @@ describe("AssetService M3", () => {
     expect(gatewayRow?.settleReason).toBe("TIMEOUT");
     expect(reservation?.status).toBe("UNRECONCILED");
     expect(reservation?.settleReason).toBe("GATEWAY_UNRECONCILED");
+    const attempt = await prisma.shotFulfillmentAttempt.findFirst({
+      where: { budgetReservationId: reservation?.id },
+    });
+    expect(attempt?.outcome).toBe("TIMEOUT_UNRECONCILED");
+    expect(attempt?.failureCode).toBe("TIMEOUT");
+    expect(attempt?.gatewayReservationId).toBe(gatewayRow?.id);
+    expect(attempt?.actualBilledSeconds).toBeNull();
   });
 
   it("reconciles the app budget when download fails after a billed success", async () => {
@@ -869,6 +1004,14 @@ describe("AssetService M3", () => {
     expect(reservation?.status).toBe("RECONCILED");
     expect(reservation?.settleReason).toBe("GATEWAY_RECONCILED");
     expect(reservation?.actualBilledSeconds).toBe(5);
+    const attempt = await prisma.shotFulfillmentAttempt.findFirst({
+      where: { budgetReservationId: reservation?.id },
+    });
+    expect(attempt?.outcome).toBe("FAILED");
+    expect(attempt?.failureCode).toBe("DOWNLOAD_FAILURE_BILLED");
+    expect(attempt?.actualBilledSeconds).toBe(5);
+    expect(attempt?.actualUsd).toBeCloseTo(0.5, 5);
+    expect(attempt?.gatewayReservationId).toBe(gatewayRow?.id);
   });
 
   it("releases the app budget when submit returns 422", async () => {
@@ -888,6 +1031,13 @@ describe("AssetService M3", () => {
     expect(gatewayRow?.status).toBe("RELEASED");
     expect(reservation?.status).toBe("RELEASED");
     expect(reservation?.settleReason).toBe("GATEWAY_RELEASED");
+    const attempt = await prisma.shotFulfillmentAttempt.findFirst({
+      where: { budgetReservationId: reservation?.id },
+    });
+    expect(attempt?.outcome).toBe("REJECTED_TECHNICAL");
+    expect(attempt?.failureCode).toBe("SUBMIT_REJECTED");
+    expect(attempt?.gatewayReservationId).toBe(gatewayRow?.id);
+    expect(attempt?.actualBilledSeconds).toBeNull();
   });
 
   it("releases the app budget when the gateway errors before reserving", async () => {

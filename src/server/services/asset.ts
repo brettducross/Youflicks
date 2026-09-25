@@ -44,11 +44,18 @@ import {
   AiVideoBudgetSource,
   hasAnyBudgetCap,
 } from "@/server/sg/budget-source";
+import { gatewayTraceFor } from "@/server/assets/gateway-trace";
+import { attemptOutcomeFromSettlement } from "@/server/sg/attempt-outcome";
 import {
   actualBilledSecondsFromDurationMs,
   estimateLaneCharge,
   requireLaneRate,
 } from "@/server/sg/lane-rate";
+import {
+  PrismaShotFulfillment,
+  recordedLaneClass,
+  UNCLASSIFIED_LANE_CLASS,
+} from "@/server/sg/shot-fulfillment";
 
 export type GeneratedAssetView = {
   id: string;
@@ -125,6 +132,7 @@ export class AssetService {
     private readonly usage: UsageMeterPort = new UsageMeterService(),
     private readonly entitlements: EntitlementService = new EntitlementService(),
     private readonly budgets: AiVideoBudgetPort = new PrismaAiVideoBudget(prisma),
+    private readonly fulfillments: PrismaShotFulfillment = new PrismaShotFulfillment(prisma),
   ) {}
 
   getAvailability(): AssetAvailability {
@@ -303,6 +311,15 @@ export class AssetService {
         return { cancelled: true, assetIds };
       }
 
+      const slot = await this.fulfillments.ensureSlot({
+        projectId,
+        timelineId: timeline.id,
+        timelineVersion: timeline.version,
+        role: role.role,
+        storySceneId: role.storySceneId,
+        sourceMediaAssetId: role.sourceMediaAssetId,
+      });
+
       const alreadyReady = await prisma.generatedAsset.findFirst({
         where: {
           projectId,
@@ -313,6 +330,11 @@ export class AssetService {
         },
       });
       if (alreadyReady) {
+        await this.fulfillments.attachReadyAsset({
+          shotFulfillmentId: slot.id,
+          generatedAssetId: alreadyReady.id,
+          jobId: job.id,
+        });
         assetIds.push(alreadyReady.id);
         continue;
       }
@@ -320,7 +342,7 @@ export class AssetService {
       const kind = role.kind ?? inferKindFromRole(role.role);
       const capability = capabilityForKind(kind);
       if (!resolved.supportedCapabilities.includes(capability)) {
-        await this.persistFailed({
+        const failed = await this.persistFailed({
           projectId,
           jobId: job.id,
           role,
@@ -329,6 +351,7 @@ export class AssetService {
           capability,
           error: `No ready adapter can perform ${capability}.`,
         });
+        await this.fulfillments.markUnattemptedFailure(slot.id, failed.id);
         throw AppError.assetCapabilityUnavailable(capability);
       }
 
@@ -338,23 +361,66 @@ export class AssetService {
       logger.info("asset.started", { projectId, jobId: job.id, role: role.role, kind });
 
       const attribution = resolved.attributionFor(capability);
-      const budgetHold = await this.reserveProductionBudget({
-        userId,
-        projectId,
-        job,
-        role: role.role,
-        storySceneId: role.storySceneId,
+      let quote;
+      try {
+        quote = this.legacyAttemptQuote(attribution.providerKey, attribution.modelId);
+      } catch (error) {
+        const unavailable = AppError.assetProviderUnavailable(
+          error instanceof Error ? error.message : "AI video lane registry failed closed.",
+        );
+        await this.recordClosedAttempt(
+          slot.id,
+          unpricedQuote(attribution.providerKey, "unconfigured", attribution.modelId),
+          job.id,
+          unavailable,
+          null,
+        );
+        throw unavailable;
+      }
+      let budgetHold: AiVideoBudgetReservationRecord | null = null;
+      try {
+        budgetHold = await this.reserveProductionBudget({
+          userId,
+          projectId,
+          job,
+          role: role.role,
+          storySceneId: role.storySceneId,
+        });
+      } catch (error) {
+        await this.recordClosedAttempt(slot.id, quote, job.id, error, null);
+        throw error;
+      }
+
+      await this.fulfillments.abandonPendingAttempts({
+        shotFulfillmentId: slot.id,
+        jobId: job.id,
       });
+      const attempt = await this.fulfillments.beginAttempt({
+        shotFulfillmentId: slot.id,
+        laneClass: quote.laneClass,
+        laneId: quote.laneId,
+        providerKey: quote.providerKey,
+        modelId: quote.modelId,
+        requiredScopes: slot.requiredScopes,
+        jobId: job.id,
+        budgetReservationId: budgetHold?.id ?? null,
+        estimatedBilledSeconds: quote.estimatedBilledSeconds,
+        usdPerSecond: quote.usdPerSecond,
+        estimatedUsd: quote.estimatedUsd,
+      });
+
       let rawDocument;
+      let reconciled: AiVideoBudgetReservationRecord | null = null;
       try {
         rawDocument = await resolved.adapter.generate(input);
         if (budgetHold) {
-          await this.reconcileBudget(budgetHold, rawDocument.durationMs);
+          reconciled = await this.reconcileBudget(budgetHold, rawDocument.durationMs);
         }
       } catch (error) {
         if (budgetHold) {
           await this.settleBudgetFailure(budgetHold, error);
         }
+        await this.recordAttemptFailure(attempt.id, error);
         await this.usage.recordJobUsage({
           userId,
           projectId,
@@ -377,8 +443,25 @@ export class AssetService {
         providerKey: attribution.providerKey,
         capability: attribution.capability,
       });
-      const document = this.contract.validateDocument(input, rawDocument);
-      await this.assertStoredBytes(document);
+      const trace = gatewayTraceFor(rawDocument);
+      let document;
+      let stored;
+      try {
+        document = this.contract.validateDocument(input, rawDocument);
+        await this.assertStoredBytes(document);
+      } catch (error) {
+        await this.fulfillments.finishAttempt({
+          attemptId: attempt.id,
+          outcome: "FAILED",
+          failureCode: isAppError(error) ? error.code : "PERSIST_FAILED",
+          budgetReservationId: budgetHold?.id ?? null,
+          gatewayJobId: trace?.gatewayJobId ?? null,
+          gatewayReservationId: trace?.gatewayReservationId ?? null,
+          actualBilledSeconds: reconciled?.actualBilledSeconds ?? trace?.actualBilledSeconds ?? null,
+          actualUsd: reconciled?.actualUsd ?? trace?.actualUsd ?? null,
+        });
+        throw error;
+      }
 
       const priorReady = await prisma.generatedAsset.findFirst({
         where: {
@@ -391,44 +474,84 @@ export class AssetService {
         orderBy: { createdAt: "desc" },
       });
 
-      const stored = await prisma.$transaction(async (tx) => {
-        if (priorReady) {
-          await tx.generatedAsset.update({
-            where: { id: priorReady.id },
-            data: { status: GeneratedAssetStatus.SUPERSEDED },
+      try {
+        stored = await prisma.$transaction(async (tx) => {
+          if (priorReady) {
+            await tx.generatedAsset.update({
+              where: { id: priorReady.id },
+              data: { status: GeneratedAssetStatus.SUPERSEDED },
+            });
+          }
+          return tx.generatedAsset.create({
+            data: {
+              projectId,
+              status: GeneratedAssetStatus.READY,
+              kind: document.kind,
+              origin: document.origin,
+              role: document.role,
+              mimeType: document.mimeType,
+              byteSize: BigInt((await this.storage.get(document.storageKey))?.body.byteLength ?? 0),
+              storageKey: document.storageKey,
+              previewKey: document.previewKey ?? null,
+              durationMs: document.durationMs ?? null,
+              width: document.width ?? null,
+              height: document.height ?? null,
+              checksum: document.checksum ?? null,
+              payload: document as Prisma.InputJsonValue,
+              jobId: job.id,
+              inputFingerprint,
+              providerKey: attribution.providerKey,
+              capability: attribution.capability,
+              modelId: attribution.modelId,
+              modelVersion: attribution.modelVersion,
+              timelineId: timeline.id,
+              timelineVersion: timeline.version,
+              storySceneId: document.fulfillment.storySceneId ?? role.storySceneId ?? null,
+              storyStructureId: input.storyStructureId ?? null,
+              storyStructureVersion: input.storyStructureVersion ?? null,
+              sourceMediaAssetId: document.sourceMediaAssetId ?? null,
+              replacesAssetId: priorReady?.id ?? null,
+            },
           });
-        }
-        return tx.generatedAsset.create({
-          data: {
-            projectId,
-            status: GeneratedAssetStatus.READY,
-            kind: document.kind,
-            origin: document.origin,
-            role: document.role,
-            mimeType: document.mimeType,
-            byteSize: BigInt((await this.storage.get(document.storageKey))?.body.byteLength ?? 0),
-            storageKey: document.storageKey,
-            previewKey: document.previewKey ?? null,
-            durationMs: document.durationMs ?? null,
-            width: document.width ?? null,
-            height: document.height ?? null,
-            checksum: document.checksum ?? null,
-            payload: document as Prisma.InputJsonValue,
-            jobId: job.id,
-            inputFingerprint,
-            providerKey: attribution.providerKey,
-            capability: attribution.capability,
-            modelId: attribution.modelId,
-            modelVersion: attribution.modelVersion,
-            timelineId: timeline.id,
-            timelineVersion: timeline.version,
-            storySceneId: document.fulfillment.storySceneId ?? role.storySceneId ?? null,
-            storyStructureId: input.storyStructureId ?? null,
-            storyStructureVersion: input.storyStructureVersion ?? null,
-            sourceMediaAssetId: document.sourceMediaAssetId ?? null,
-            replacesAssetId: priorReady?.id ?? null,
-          },
         });
+      } catch (error) {
+        await this.fulfillments.finishAttempt({
+          attemptId: attempt.id,
+          outcome: "FAILED",
+          failureCode: isAppError(error) ? error.code : "PERSIST_FAILED",
+          budgetReservationId: budgetHold?.id ?? null,
+          gatewayJobId: trace?.gatewayJobId ?? null,
+          gatewayReservationId: trace?.gatewayReservationId ?? null,
+          actualBilledSeconds: reconciled?.actualBilledSeconds ?? trace?.actualBilledSeconds ?? null,
+          actualUsd: reconciled?.actualUsd ?? trace?.actualUsd ?? null,
+        });
+        throw error;
+      }
+
+      await this.fulfillments.finishAttempt({
+        attemptId: attempt.id,
+        outcome: "SUCCEEDED",
+        failureCode: null,
+        budgetReservationId: budgetHold?.id ?? null,
+        gatewayJobId: trace?.gatewayJobId ?? null,
+        gatewayReservationId: trace?.gatewayReservationId ?? null,
+        actualBilledSeconds: reconciled?.actualBilledSeconds ?? trace?.actualBilledSeconds ?? null,
+        actualUsd: reconciled?.actualUsd ?? trace?.actualUsd ?? null,
+        generatedAssetId: stored.id,
+        outputWidth: stored.width,
+        outputHeight: stored.height,
+      });
+      logger.info("asset.fulfillment_attempt", {
+        projectId,
+        jobId: job.id,
+        slotKey: slot.slotKey,
+        attemptNo: attempt.attemptNo,
+        classAttemptNo: attempt.classAttemptNo,
+        outcome: "SUCCEEDED",
+        laneId: quote.laneId,
+        providerKey: quote.providerKey,
+        budgetReservationId: budgetHold?.id ?? null,
+        gatewayReservationId: trace?.gatewayReservationId ?? null,
       });
 
       await this.attribution.record({
@@ -671,7 +794,7 @@ export class AssetService {
       lane.billingGranularityS,
       hold.estimatedBilledSeconds,
     );
-    await this.budgets.reconcile(hold.id, {
+    return this.budgets.reconcile(hold.id, {
       actualBilledSeconds: actual.seconds,
       reason: actual.flagged ? "ACTUAL_DURATION_FALLBACK" : "SUCCEEDED",
     });
@@ -721,6 +844,83 @@ export class AssetService {
     );
   }
 
+  /**
+   * Price label for the existing single-lane path. Local and unconfigured
+   * runs record zeros and an unclassified class so they are not ceiling counts.
+   */
+  private legacyAttemptQuote(providerKey: string, modelId: string | null) {
+    if (!this.availability().productionAvailable) {
+      return unpricedQuote(providerKey, providerKey, modelId);
+    }
+    const laneId = process.env.YF_GATEWAY_LANE_ID?.trim();
+    if (!laneId) {
+      return unpricedQuote("unconfigured", "unconfigured", modelId);
+    }
+    const lane = requireLaneRate(laneId, registryPathFromEnv());
+    const charge = estimateLaneCharge(lane);
+    return {
+      laneId: lane.laneId,
+      laneClass: recordedLaneClass(lane.laneId),
+      providerKey: lane.providerKey,
+      modelId,
+      estimatedBilledSeconds: charge.estimatedBilledSeconds,
+      usdPerSecond: lane.usdPerSecond,
+      estimatedUsd: charge.reservedUsd,
+    };
+  }
+
+  private async recordClosedAttempt(
+    shotFulfillmentId: string,
+    quote: ReturnType<AssetService["legacyAttemptQuote"]>,
+    jobId: string,
+    error: unknown,
+    budgetReservationId: string | null,
+  ) {
+    const slot = await prisma.shotFulfillment.findUniqueOrThrow({
+      where: { id: shotFulfillmentId },
+      select: { requiredScopes: true, projectId: true },
+    });
+    await this.fulfillments.abandonPendingAttempts({ shotFulfillmentId, jobId });
+    const attempt = await this.fulfillments.beginAttempt({
+      shotFulfillmentId,
+      laneClass: quote.laneClass,
+      laneId: quote.laneId,
+      providerKey: quote.providerKey,
+      modelId: quote.modelId,
+      requiredScopes: slot.requiredScopes,
+      jobId,
+      budgetReservationId,
+      estimatedBilledSeconds: quote.estimatedBilledSeconds,
+      usdPerSecond: quote.usdPerSecond,
+      estimatedUsd: quote.estimatedUsd,
+    });
+    await this.recordAttemptFailure(attempt.id, error);
+    logger.info("asset.fulfillment_attempt", {
+      projectId: slot.projectId,
+      jobId,
+      attemptNo: attempt.attemptNo,
+      classAttemptNo: attempt.classAttemptNo,
+      outcome: attemptOutcomeFor(error).outcome,
+      laneId: quote.laneId,
+      providerKey: quote.providerKey,
+      budgetReservationId,
+      gatewayReservationId: null,
+    });
+  }
+
+  private async recordAttemptFailure(attemptId: string, error: unknown) {
+    const mapped = attemptOutcomeFor(error);
+    await this.fulfillments.finishAttempt({
+      attemptId,
+      outcome: mapped.outcome,
+      failureCode: mapped.failureCode,
+      gatewayJobId: mapped.gatewayJobId,
+      gatewayReservationId: mapped.gatewayReservationId,
+      actualBilledSeconds: mapped.actualBilledSeconds,
+      actualUsd: mapped.actualUsd,
+    });
+  }
+
   private async persistFailed(input: {
     projectId: string;
     jobId: string;
@@ -730,7 +930,7 @@ export class AssetService {
     capability: AssetCapabilityValue;
     error: string;
   }) {
-    await prisma.generatedAsset.create({
+    return prisma.generatedAsset.create({
       data: {
         projectId: input.projectId,
         status: GeneratedAssetStatus.FAILED,
@@ -786,6 +986,45 @@ export class AssetService {
       finishedAt: job.finishedAt?.toISOString() ?? null,
     };
   }
+}
+
+function unpricedQuote(laneId: string, providerKey: string, modelId: string | null) {
+  return {
+    laneId,
+    laneClass: UNCLASSIFIED_LANE_CLASS,
+    providerKey,
+    modelId,
+    estimatedBilledSeconds: 0,
+    usdPerSecond: 0,
+    estimatedUsd: 0,
+  };
+}
+
+function attemptOutcomeFor(error: unknown) {
+  const details = isAppError(error) ? error.details : undefined;
+  const settlement = appSettlementFor(error);
+  const settleReason = typeof details?.settleReason === "string" ? details.settleReason : null;
+  const gatewayStatus = typeof details?.gatewayStatus === "number" ? details.gatewayStatus : null;
+  const gatewayCode = typeof details?.gatewayCode === "string" ? details.gatewayCode : null;
+  const mapped = attemptOutcomeFromSettlement({
+    spendCap: isAppError(error) && error.code === "SPEND_CAP_REACHED",
+    settlement,
+    settleReason,
+    gatewayStatus,
+    gatewayCode,
+  });
+  return {
+    ...mapped,
+    gatewayReservationId:
+      typeof details?.gatewayReservationId === "string" ? details.gatewayReservationId : null,
+    gatewayJobId: typeof details?.gatewayJobId === "string" ? details.gatewayJobId : null,
+    actualBilledSeconds: finiteDetail(details?.actualBilledSeconds),
+    actualUsd: finiteDetail(details?.actualUsd),
+  };
+}
+
+function finiteDetail(value: unknown): number | null {
+  return typeof value === "number" && Number.isFinite(value) ? value : null;
 }
 
 function appSettlementFor(
