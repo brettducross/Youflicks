@@ -6,6 +6,7 @@ import {
   type AiVideoBudgetCaps,
 } from "@/server/sg/budget-source";
 import { roundMeasure, settleTransition, type ReservationStatus } from "@/server/sg/lane-rate";
+import { recordSettledAiVideoSeconds } from "@/server/sg/metering";
 
 export class AiVideoBudgetCapError extends Error {
   readonly code = "AI_VIDEO_BUDGET_CAP";
@@ -487,7 +488,9 @@ export class PrismaAiVideoBudget implements AiVideoBudgetPort {
         data: { status: transition.status, settleReason: reason, settledAt: new Date() },
       });
     });
-    return toBudgetReservation(updated);
+    const record = toBudgetReservation(updated);
+    await recordSettledAiVideoSeconds(record);
+    return record;
   }
 }
 

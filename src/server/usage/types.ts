@@ -7,6 +7,8 @@ export const UsageKind = {
   MOVIE_GENERATION: "MOVIE_GENERATION",
   RENDER_SECONDS: "RENDER_SECONDS",
   ASSET_CALL: "ASSET_CALL",
+  /** Open string. Billed AI-video seconds from a settled budget hold. Not currency. */
+  AI_VIDEO_SECONDS: "AI_VIDEO_SECONDS",
 } as const;
 
 export type UsageKindValue = (typeof UsageKind)[keyof typeof UsageKind];
