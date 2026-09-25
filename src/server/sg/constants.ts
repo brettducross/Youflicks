@@ -48,6 +48,33 @@ export const ATTEMPT_OUTCOMES = [
 export type AttemptOutcome = (typeof ATTEMPT_OUTCOMES)[number];
 export const attemptOutcomeSchema = z.enum(ATTEMPT_OUTCOMES);
 
+/** ShotFulfillment.status. Open string in the database (D9). */
+export const FULFILLMENT_STATUSES = [
+  "PLANNED",
+  "IN_PROGRESS",
+  "FULFILLED",
+  "FALLBACK",
+  "DEFERRED",
+  "FAILED",
+  "SUPERSEDED",
+] as const;
+export type FulfillmentStatus = (typeof FULFILLMENT_STATUSES)[number];
+export const fulfillmentStatusSchema = z.enum(FULFILLMENT_STATUSES);
+
+/** ShotFulfillment.identityState. UNKNOWN counts as IDENTITY (D3). Cues are PR-6. */
+export const IDENTITY_STATES = ["PRESENT", "ABSENT", "UNKNOWN"] as const;
+export type IdentityState = (typeof IDENTITY_STATES)[number];
+export const identityStateSchema = z.enum(IDENTITY_STATES);
+
+/**
+ * ShotFulfillment.routingMode (D12).
+ * LEGACY until PR-8; E-R1 pending PO. PR-2 records the value and does not route.
+ */
+export const ROUTING_MODES = ["LEGACY", "ENFORCED"] as const;
+export type RoutingMode = (typeof ROUTING_MODES)[number];
+export const routingModeSchema = z.enum(ROUTING_MODES);
+export const DEFAULT_RECORDED_ROUTING_MODE = "LEGACY" as const satisfies RoutingMode;
+
 /**
  * CreativePlan JSON keys rejected on the write path only (§5.1).
  * `cost` and `treatment` are omitted on purpose so creative prose keys still pass.

@@ -73,6 +73,11 @@ export interface AiVideoBudgetPort {
     input: { actualBilledSeconds: number; reason: string },
   ): Promise<AiVideoBudgetReservationRecord>;
   markUnreconciled(id: string, reason: string): Promise<AiVideoBudgetReservationRecord>;
+  /** Fills gatewayReservationId when it is still null. Does not change settlement. */
+  rememberGatewayReservationId(
+    id: string,
+    gatewayReservationId: string,
+  ): Promise<AiVideoBudgetReservationRecord>;
   snapshot(ledgerId: string): Promise<AiVideoBudgetLedgerSnapshot | null>;
 }
 
@@ -215,6 +220,19 @@ export class MemoryAiVideoBudget implements AiVideoBudgetPort {
 
   async markUnreconciled(id: string, reason: string): Promise<AiVideoBudgetReservationRecord> {
     return this.exclusive(() => this.settle(id, "unreconcile", reason));
+  }
+
+  async rememberGatewayReservationId(
+    id: string,
+    gatewayReservationId: string,
+  ): Promise<AiVideoBudgetReservationRecord> {
+    return this.exclusive(() => {
+      const row = this.must(id);
+      if (!row.gatewayReservationId) {
+        row.gatewayReservationId = gatewayReservationId;
+      }
+      return this.copy(row);
+    });
   }
 
   async snapshot(ledgerId: string): Promise<AiVideoBudgetLedgerSnapshot | null> {
@@ -386,6 +404,18 @@ export class PrismaAiVideoBudget implements AiVideoBudgetPort {
 
   async markUnreconciled(id: string, reason: string): Promise<AiVideoBudgetReservationRecord> {
     return this.settle(id, "unreconcile", reason);
+  }
+
+  async rememberGatewayReservationId(
+    id: string,
+    gatewayReservationId: string,
+  ): Promise<AiVideoBudgetReservationRecord> {
+    await this.db.aiVideoBudgetReservation.updateMany({
+      where: { id, gatewayReservationId: null },
+      data: { gatewayReservationId },
+    });
+    const row = await this.db.aiVideoBudgetReservation.findUniqueOrThrow({ where: { id } });
+    return toBudgetReservation(row);
   }
 
   async snapshot(ledgerId: string): Promise<AiVideoBudgetLedgerSnapshot | null> {

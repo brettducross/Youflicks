@@ -25,6 +25,10 @@ export const yfGenerateSuccessSchema = z
     width: z.number().int().positive().optional(),
     height: z.number().int().positive().optional(),
     jobId: z.string().min(1).max(128).optional(),
+    /** Plain gateway reservation id. Not a vendor payload. */
+    gatewayReservationId: z.string().min(1).max(128).optional(),
+    actualBilledSeconds: z.number().nonnegative().optional(),
+    actualUsd: z.number().nonnegative().optional(),
   })
   .strict();
 
@@ -60,6 +64,11 @@ export type GatewayErrorBody = {
   settlement?: GatewaySettlement;
   /** Present when settlement is RECONCILED. */
   actualBilledSeconds?: number;
+  actualUsd?: number;
+  /** PR-1 settle reason (TIMEOUT, CANCELLED, SUBMIT_REJECTED, …). */
+  settleReason?: string;
+  gatewayReservationId?: string;
+  gatewayJobId?: string;
 };
 
 export function gatewayError(
@@ -70,6 +79,10 @@ export function gatewayError(
     capability?: string;
     settlement?: GatewaySettlement;
     actualBilledSeconds?: number;
+    actualUsd?: number;
+    settleReason?: string;
+    gatewayReservationId?: string;
+    gatewayJobId?: string;
   },
 ): { ok: false; status: number; body: GatewayErrorBody } {
   return {
