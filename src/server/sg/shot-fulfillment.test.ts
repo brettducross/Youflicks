@@ -256,6 +256,19 @@ describe("registry stamp", () => {
     expect(stamp.registrySha256).not.toBe("unavailable");
   });
 
+  it("stamps an invalid registry as empty", async () => {
+    const dir = await mkdtemp(path.join(tmpdir(), "youflicks-registry-stamp-bad-"));
+    try {
+      const file = path.join(dir, "registry.json");
+      await writeFile(file, JSON.stringify({ registryVersion: "sg-lanes-v1" }), "utf8");
+      expect(readRegistryStamp(file)).toEqual({ registryVersion: "", registrySha256: "" });
+      await writeFile(file, "{not json", "utf8");
+      expect(readRegistryStamp(file)).toEqual({ registryVersion: "", registrySha256: "" });
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
   it("records the in-file version and sha for a readable registry", async () => {
     const dir = await mkdtemp(path.join(tmpdir(), "youflicks-registry-stamp-"));
     try {

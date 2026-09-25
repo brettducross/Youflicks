@@ -50,6 +50,7 @@ import {
   actualBilledSecondsFromDurationMs,
   estimateLaneCharge,
   requireLaneRate,
+  requireLiveLane,
 } from "@/server/sg/lane-rate";
 import {
   PrismaShotFulfillment,
@@ -787,7 +788,7 @@ export class AssetService {
     }
     let lane;
     try {
-      lane = requireLaneRate(laneId, registryPathFromEnv());
+      lane = requireLiveLane(laneId, registryPathFromEnv());
     } catch (error) {
       throw AppError.assetProviderUnavailable(
         error instanceof Error ? error.message : "AI video lane registry failed closed.",
@@ -921,7 +922,7 @@ export class AssetService {
     if (!laneId) {
       return unpricedQuote("unconfigured", "unconfigured", modelId);
     }
-    const lane = requireLaneRate(laneId, registryPathFromEnv());
+    const lane = requireLiveLane(laneId, registryPathFromEnv());
     const charge = estimateLaneCharge(lane);
     return {
       laneId: lane.laneId,

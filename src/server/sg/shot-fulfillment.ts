@@ -19,7 +19,7 @@ export const LEGACY_DECISION_REASON =
 
 /**
  * Attempt label when the registry cannot be read or has no such lane.
- * A priced attempt never uses this: requireLaneRate fails closed first.
+ * A priced attempt never uses this: requireLiveLane fails closed first.
  */
 export const UNCLASSIFIED_LANE_CLASS = "unclassified";
 
@@ -55,7 +55,11 @@ export function fulfillmentSlotKey(input: {
 
 export type { RegistryStamp };
 
-/** Decision stamp: in-file registryVersion and the sha256 of the file bytes. */
+/**
+ * Decision stamp: in-file registryVersion and the sha256 of the file bytes.
+ * Both are empty when the file is missing, unreadable, or fails validation.
+ * Ops and PR-11 treat that empty stamp as registry unavailable.
+ */
 export function readRegistryStamp(path?: string): RegistryStamp {
   const file = path && path.length > 0 ? path : registryPathFromEnv();
   try {

@@ -158,8 +158,8 @@ describe("lane registry validators", () => {
     expect(parsed.lanes[0]?.gates.HERO.status).toBe("NOT_QUALIFIED");
   });
 
-  it("accepts HERO QUALIFIED at 720p, 768p, 1080p, and pro", () => {
-    for (const resolutionTier of ["720p", "768p", "1080p", "pro"] as const) {
+  it("accepts HERO QUALIFIED at 720p, 768p, and 1080p, and rejects unmeasured pro", () => {
+    for (const resolutionTier of ["720p", "768p", "1080p"] as const) {
       const parsed = parseLaneRegistry(
         document([
           lane({
@@ -173,6 +173,27 @@ describe("lane registry validators", () => {
       expect(parsed.lanes[0]?.resolutionTier).toBe(resolutionTier);
       expect(resolutionMeets720pFloor(resolutionTier)).toBe(true);
     }
+    expect(resolutionMeets720pFloor("pro")).toBe(false);
+    expect(() =>
+      parseLaneRegistry(
+        document([
+          lane({
+            resolutionTier: "pro",
+            gates: gates(qualified()),
+          }),
+        ]),
+      ),
+    ).toThrow(/HERO QUALIFIED requires resolutionTier >= 720p/);
+    expect(() =>
+      parseLaneRegistry(
+        document([
+          lane({
+            resolutionTier: "pro",
+            gates: gates(notQualified(), qualified()),
+          }),
+        ]),
+      ),
+    ).toThrow(/IDENTITY QUALIFIED requires resolutionTier >= 720p/);
   });
 
   it("rejects an enabled lane with a TBD providerKey", () => {
@@ -212,6 +233,134 @@ describe("lane registry validators", () => {
         ]),
       ),
     ).toThrow(/TBD:<laneId>/);
+    const lower = parseLaneRegistry(
+      document([
+        lane({
+          laneId: "boreal-720",
+          providerKey: "tbd:boreal-720",
+          enabled: false,
+        }),
+      ]),
+    );
+    expect(lower.lanes[0]?.providerKey).toBe("tbd:boreal-720");
+    expect(() =>
+      parseLaneRegistry(
+        document([
+          lane({
+            enabled: true,
+            providerKey: "tbd:lane-a",
+          }),
+        ]),
+      ),
+    ).toThrow(/enabled lane must have a non-TBD providerKey/);
+    expect(() =>
+      parseLaneRegistry(
+        document([
+          lane({
+            enabled: true,
+            providerKey: " TBD:lane-a",
+          }),
+        ]),
+      ),
+    ).toThrow(/whitespace|non-TBD/);
+    expect(() =>
+      parseLaneRegistry(
+        document([
+          lane({
+            laneId: "boreal-720",
+            providerKey: " TBD:boreal-720",
+            enabled: false,
+          }),
+        ]),
+      ),
+    ).toThrow(/whitespace/);
+  });
+
+  it("rejects a laneId with whitespace or an illegal character", () => {
+    expect(() => parseLaneRegistry(document([lane({ laneId: " boreal-720" })]))).toThrow(/laneId/);
+    expect(() => parseLaneRegistry(document([lane({ laneId: "Boreal-720" })]))).toThrow(/laneId/);
+    expect(() => parseLaneRegistry(document([lane({ laneId: "lane_a" })]))).toThrow(/laneId/);
+  });
+
+  it("allows one enabled LEGACY_R1 lane with a real providerKey", () => {
+    expect(() =>
+      parseLaneRegistry(
+        document([
+          lane({ designation: "LEGACY_R1" }),
+          lane({
+            laneId: "legacy-2",
+            providerKey: "open:legacy-2",
+            designation: "LEGACY_R1",
+          }),
+        ]),
+      ),
+    ).toThrow(/at most one LEGACY_R1/);
+    expect(() =>
+      parseLaneRegistry(
+        document([
+          lane({
+            designation: "LEGACY_R1",
+            enabled: false,
+            providerKey: "open:legacy",
+          }),
+        ]),
+      ),
+    ).toThrow(/LEGACY_R1 lane must be enabled with a real providerKey/);
+    expect(() =>
+      parseLaneRegistry(
+        document([
+          lane({
+            laneId: "legacy",
+            designation: "LEGACY_R1",
+            enabled: false,
+            providerKey: "TBD:legacy",
+          }),
+        ]),
+      ),
+    ).toThrow(/LEGACY_R1 lane must be enabled with a real providerKey/);
+  });
+
+  it("requires an enabled lane to have a positive rate, a listed clip, and a non-blank signoff", () => {
+    expect(() =>
+      parseLaneRegistry(document([lane({ enabled: true, usdPerSecond: 0 })])),
+    ).toThrow(/usdPerSecond/);
+    expect(() =>
+      parseLaneRegistry(
+        document([lane({ clipDurationS: 7, supportedDurationsS: [5] })]),
+      ),
+    ).toThrow(/clipDurationS must be one of supportedDurationsS/);
+    expect(() =>
+      parseLaneRegistry(
+        document([
+          lane({
+            gates: gates({ status: "NOT_QUALIFIED", signoffRef: " " }),
+          }),
+        ]),
+      ),
+    ).toThrow(/signoffRef must be non-blank/);
+    const parsed = parseLaneRegistry(document([lane({ enabled: false, usdPerSecond: 0, providerKey: "TBD:lane-a" })]));
+    expect(parsed.lanes[0]?.usdPerSecond).toBe(0);
+  });
+
+  it("rejects secret-like env names and high-entropy tokens", () => {
+    expect(() =>
+      parseLaneRegistry(
+        document([
+          lane({
+            gateway: { baseUrlEnv: "SG_LANE_A_BASE_URL", apiKeyEnv: "R8_ABC123" },
+          }),
+        ]),
+      ),
+    ).toThrow(/env var names|secret-like/);
+    expect(() =>
+      parseLaneRegistry(
+        document([
+          lane({
+            rateRef: "token abcDEF1234567890abcdefABCD1234 buried in prose",
+          }),
+        ]),
+      ),
+    ).toThrow(/secret-like/);
   });
 
   it("rejects designation DEFAULT", () => {
@@ -482,7 +631,15 @@ describe("committed lane registry", () => {
       expect(item.usdPerSecond).toBe(rates[item.laneId]);
       expect(item.rateRef).toMatch(/ESTIMATE/i);
       expect(item.rateRef).toMatch(/not a price/i);
-      expect(item.audioMode).toBe("OFF");
+      const stripAudio = new Set([
+        "veo31lite-720",
+        "seedance2-fast-720",
+        "h3turbo-768",
+        "pruna-480-cost",
+        "pruna-768-cost",
+        "pruna-768-quality",
+      ]);
+      expect(item.audioMode).toBe(stripAudio.has(item.laneId) ? "STRIP" : "OFF");
       for (const scope of ROUTING_SCOPES) {
         expect(item.gates[scope].status).toBe("NOT_QUALIFIED");
         expect(item.gates[scope].evidenceSha256).toBeUndefined();
@@ -525,6 +682,14 @@ describe("committed lane registry", () => {
     expect(registry.lanes.find((item) => item.laneId === "veo31lite-720")?.rateRef).toMatch(/0\.05/);
     expect(registry.lanes.find((item) => item.laneId === "h3turbo-768")?.rateRef).toMatch(/LIST/);
     expect(registry.lanes.find((item) => item.laneId === "seedance2-fast-720")?.rateRef).toMatch(/audio always billed/i);
+    expect(registry.lanes.find((item) => item.laneId === "seedance2-fast-720")?.audioMode).toBe("STRIP");
+    expect(registry.lanes.find((item) => item.laneId === "veo31lite-720")?.audioMode).toBe("STRIP");
+    expect(registry.lanes.find((item) => item.laneId === "veo31lite-720")?.usdPerSecond).toBe(0.05);
+    expect(registry.lanes.find((item) => item.laneId === "seedance2-fast-720")?.usdPerSecond).toBe(0.2419);
+    expect(registry.lanes.find((item) => item.laneId === "h3turbo-768")?.audioMode).toBe("STRIP");
+    expect(registry.lanes.find((item) => item.laneId === "pruna-480-cost")?.audioMode).toBe("STRIP");
+    expect(registry.lanes.find((item) => item.laneId === "kling3-pro-audio-off")?.audioMode).toBe("OFF");
+    expect(registry.lanes.find((item) => item.laneId === "r1-wan27-replicate")?.audioMode).toBe("OFF");
 
     expect(
       listEligibleLanes({ requiredScopes: ["HERO"], path: filePath, suspendedLaneIds: [] }),
@@ -582,6 +747,14 @@ describe("committed lane registry", () => {
       expect(value).not.toMatch(/sk-|r8_|BEGIN PRIVATE|AKIA[0-9A-Z]{16}/i);
       expect(value).not.toMatch(/^https?:\/\//);
       expect(value).not.toMatch(/\bkey_[A-Za-z0-9]{8,}/);
+      if (/^[A-Z][A-Z0-9_]*$/.test(value) || /^[a-f0-9]{64}$/.test(value)) {
+        continue;
+      }
+      const tokens = value.match(/[A-Za-z0-9]{24,}/g) ?? [];
+      for (const token of tokens) {
+        const highEntropy = /[0-9]/.test(token) && /[A-Za-z]/.test(token) && !/^[a-f0-9]{64}$/.test(token);
+        expect(highEntropy).toBe(false);
+      }
     }
   });
 
@@ -595,8 +768,13 @@ describe("committed lane registry", () => {
     expect(stamp.registryVersion).not.toBe("v0");
     expect(stamp.registrySha256).not.toBe("unavailable");
     const unreadable = stampRegistryBytes(Buffer.from("{not json", "utf8"));
-    expect(unreadable.registryVersion).toBe("");
-    expect(unreadable.registrySha256).toMatch(/^[a-f0-9]{64}$/);
+    expect(unreadable).toEqual({ registryVersion: "", registrySha256: "" });
+    const invalid = stampRegistryBytes(
+      Buffer.from(JSON.stringify({ registryVersion: "sg-lanes-v1" }), "utf8"),
+    );
+    expect(invalid).toEqual({ registryVersion: "", registrySha256: "" });
+    expect(invalid.registryVersion).not.toBe("v0");
+    expect(invalid.registrySha256).not.toBe("unavailable");
   });
 });
 

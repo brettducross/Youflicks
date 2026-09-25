@@ -29,7 +29,7 @@ import {
   gatewayChargeLedgerIds,
   LaneDurationError,
   numericExtraDuration,
-  requireLaneRate,
+  requireLiveLane,
   roundMeasure,
   type LaneRate,
 } from "@/server/sg/lane-rate";
@@ -157,9 +157,7 @@ export class YfAssetGenerateService {
   ): Promise<GenerateHandlerResult> {
     let lane: LaneRate;
     try {
-      lane =
-        this.config.lane ??
-        requireLaneRate(this.config.laneId ?? "", this.config.registryPath);
+      lane = requireLiveLane(this.config.laneId ?? "", this.config.registryPath);
     } catch (error) {
       return noReservationError(
         503,

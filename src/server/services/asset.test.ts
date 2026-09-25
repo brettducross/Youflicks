@@ -869,6 +869,175 @@ describe("AssetService M3", () => {
     }
   });
 
+  async function runPricedJob(sceneId: string, adapter: AssetGeneratorPort) {
+    const { assets, worker } = harness({
+      adapter,
+      productionAvailable: true,
+      supportedCapabilities: [AssetCapability.IMAGE_GENERATION],
+    });
+    const queued = await assets.requestGenerate(ownerId, projectId, {
+      roles: [{ role: "intimate_portrait", storySceneId: sceneId, kind: "IMAGE" }],
+    });
+    for (let attempt = 0; attempt < 5; attempt += 1) {
+      const current = await jobs.get(queued.jobId);
+      if (current?.status !== JobStatus.PENDING) break;
+      const ran = await worker.processNext();
+      if (!ran) break;
+    }
+    return queued.jobId;
+  }
+
+  function clearBudgetCaps() {
+    delete process.env.SG_BUDGET_PROJECT_MAX_SECONDS;
+    delete process.env.SG_BUDGET_PROJECT_MAX_USD;
+    delete process.env.SG_BUDGET_USER_WINDOW_MAX_SECONDS;
+    delete process.env.SG_BUDGET_USER_WINDOW_MAX_USD;
+  }
+
+  it("refuses a disabled lane before any provider call, hold, or attempt", async () => {
+    const previousLane = process.env.YF_GATEWAY_LANE_ID;
+    const previousRegistry = process.env.SG_LANE_REGISTRY_PATH;
+    clearBudgetCaps();
+    const scratch = await mkdtemp(path.join(tmpdir(), "youflicks-asset-disabled-lane-"));
+    const file = path.join(scratch, "registry.json");
+    const doc = JSON.parse(
+      readFileSync(path.join(process.cwd(), "config/sg-lane-registry.json"), "utf8"),
+    ) as { lanes: Array<{ laneId: string; enabled: boolean }> };
+    const row = doc.lanes.find((item) => item.laneId === "r1-wan27-replicate");
+    expect(row).toBeTruthy();
+    row!.enabled = false;
+    await writeFile(file, JSON.stringify(doc), "utf8");
+    process.env.SG_LANE_REGISTRY_PATH = file;
+    process.env.YF_GATEWAY_LANE_ID = "r1-wan27-replicate";
+    const calls: string[] = [];
+    try {
+      const jobId = await runPricedJob(
+        "scene-disabled-lane",
+        scriptedGenerator(async () => {
+          calls.push("generate");
+          throw new Error("adapter should not run");
+        }),
+      );
+      const job = await jobs.get(jobId);
+      expect(job?.status).toBe(JobStatus.FAILED);
+      expect(job?.attempts).toBe(1);
+      expect(calls).toEqual([]);
+      const reservation = await prisma.aiVideoBudgetReservation.findFirst({
+        where: { idempotencyKey: { startsWith: `asset:${jobId}:` } },
+      });
+      expect(reservation).toBeNull();
+      const attempt = await prisma.shotFulfillmentAttempt.findFirst({ where: { jobId } });
+      expect(attempt).toBeNull();
+      const slot = await prisma.shotFulfillment.findFirst({
+        where: { projectId, slotKey: { contains: "scene-disabled-lane" } },
+      });
+      expect(slot?.status).toBe("FAILED");
+    } finally {
+      if (previousLane === undefined) delete process.env.YF_GATEWAY_LANE_ID;
+      else process.env.YF_GATEWAY_LANE_ID = previousLane;
+      if (previousRegistry === undefined) delete process.env.SG_LANE_REGISTRY_PATH;
+      else process.env.SG_LANE_REGISTRY_PATH = previousRegistry;
+      await rm(scratch, { recursive: true, force: true });
+      await prisma.aiVideoBudgetLedger.deleteMany({
+        where: { OR: [{ projectId }, { userId: ownerId }] },
+      });
+    }
+  });
+
+  it("refuses a TBD lane on the app path before any provider call, hold, or attempt", async () => {
+    const previousLane = process.env.YF_GATEWAY_LANE_ID;
+    const previousRegistry = process.env.SG_LANE_REGISTRY_PATH;
+    clearBudgetCaps();
+    delete process.env.SG_LANE_REGISTRY_PATH;
+    process.env.YF_GATEWAY_LANE_ID = "boreal-720";
+    const calls: string[] = [];
+    try {
+      const jobId = await runPricedJob(
+        "scene-tbd-lane",
+        scriptedGenerator(async () => {
+          calls.push("generate");
+          throw new Error("adapter should not run");
+        }),
+      );
+      const job = await jobs.get(jobId);
+      expect(job?.status).toBe(JobStatus.FAILED);
+      expect(job?.attempts).toBe(1);
+      expect(calls).toEqual([]);
+      const reservation = await prisma.aiVideoBudgetReservation.findFirst({
+        where: { idempotencyKey: { startsWith: `asset:${jobId}:` } },
+      });
+      expect(reservation).toBeNull();
+      const attempt = await prisma.shotFulfillmentAttempt.findFirst({ where: { jobId } });
+      expect(attempt).toBeNull();
+      const slot = await prisma.shotFulfillment.findFirst({
+        where: { projectId, slotKey: { contains: "scene-tbd-lane" } },
+      });
+      expect(slot?.status).toBe("FAILED");
+    } finally {
+      if (previousLane === undefined) delete process.env.YF_GATEWAY_LANE_ID;
+      else process.env.YF_GATEWAY_LANE_ID = previousLane;
+      if (previousRegistry === undefined) delete process.env.SG_LANE_REGISTRY_PATH;
+      else process.env.SG_LANE_REGISTRY_PATH = previousRegistry;
+      await prisma.aiVideoBudgetLedger.deleteMany({
+        where: { OR: [{ projectId }, { userId: ownerId }] },
+      });
+    }
+  });
+
+  it("settles an existing hold after the lane is disabled", async () => {
+    const previousLane = process.env.YF_GATEWAY_LANE_ID;
+    const previousRegistry = process.env.SG_LANE_REGISTRY_PATH;
+    clearBudgetCaps();
+    const scratch = await mkdtemp(path.join(tmpdir(), "youflicks-asset-settle-disabled-"));
+    const file = path.join(scratch, "registry.json");
+    const doc = JSON.parse(
+      readFileSync(path.join(process.cwd(), "config/sg-lane-registry.json"), "utf8"),
+    ) as { lanes: Array<{ laneId: string; enabled: boolean; designation: string }> };
+    const live = doc.lanes.find((item) => item.laneId === "r1-wan27-replicate");
+    expect(live).toBeTruthy();
+    live!.designation = "NONE";
+    await writeFile(file, JSON.stringify(doc), "utf8");
+    process.env.SG_LANE_REGISTRY_PATH = file;
+    process.env.YF_GATEWAY_LANE_ID = "r1-wan27-replicate";
+    const local = new LocalDeterministicAssetGenerator(storage);
+    const calls: string[] = [];
+    try {
+      const jobId = await runPricedJob(
+        "scene-settle-disabled",
+        scriptedGenerator(async (input) => {
+          calls.push("generate");
+          const doc = JSON.parse(readFileSync(file, "utf8")) as {
+            lanes: Array<{ laneId: string; enabled: boolean }>;
+          };
+          const row = doc.lanes.find((item) => item.laneId === "r1-wan27-replicate");
+          expect(row?.enabled).toBe(true);
+          row!.enabled = false;
+          await writeFile(file, JSON.stringify(doc), "utf8");
+          return local.generate(input);
+        }),
+      );
+      expect(calls).toEqual(["generate"]);
+      const job = await jobs.get(jobId);
+      expect(job?.status).toBe(JobStatus.SUCCEEDED);
+      const reservation = await prisma.aiVideoBudgetReservation.findFirst({
+        where: { idempotencyKey: { startsWith: `asset:${jobId}:` } },
+      });
+      expect(reservation?.status).toBe("RECONCILED");
+      expect(reservation?.laneId).toBe("r1-wan27-replicate");
+      const attempt = await prisma.shotFulfillmentAttempt.findFirst({ where: { jobId } });
+      expect(attempt?.outcome).toBe("SUCCEEDED");
+    } finally {
+      if (previousLane === undefined) delete process.env.YF_GATEWAY_LANE_ID;
+      else process.env.YF_GATEWAY_LANE_ID = previousLane;
+      if (previousRegistry === undefined) delete process.env.SG_LANE_REGISTRY_PATH;
+      else process.env.SG_LANE_REGISTRY_PATH = previousRegistry;
+      await rm(scratch, { recursive: true, force: true });
+      await prisma.aiVideoBudgetLedger.deleteMany({
+        where: { OR: [{ projectId }, { userId: ownerId }] },
+      });
+    }
+  });
+
   async function settleThroughGateway(
     backend: VideoBackend,
     download: typeof fetch = async () => new Response("clip"),
@@ -1129,7 +1298,6 @@ describe("AssetService M3", () => {
       },
     };
     const { reservation, gatewayRow } = await settleThroughGateway(neverCalled, async () => new Response("no"), {
-      YF_GATEWAY_LANE_ID: "veo31lite-720",
       YF_GATEWAY_BACKEND_INPUT_JSON: JSON.stringify({ duration: 9 }),
     });
     expect(gatewayRow).toBeUndefined();

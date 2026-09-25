@@ -22,16 +22,18 @@ import {
 
 export const DEFAULT_SG_LANE_REGISTRY_PATH = "config/sg-lane-registry.json";
 
-/** Lock §4 resolution tiers. `pro` is the 1080p-class tier (1080p UNVERIFIED). */
+/**
+ * Lock §4 resolution tiers. `pro` is a SKU name, not a measured pixel tier.
+ * HERO and IDENTITY QUALIFIED fail the 720p floor on `pro` until it is measured.
+ */
 export const RESOLUTION_TIERS = ["480p", "720p", "768p", "1080p", "pro"] as const;
 export type ResolutionTier = (typeof RESOLUTION_TIERS)[number];
 
-const RESOLUTION_RANK: Record<ResolutionTier, number> = {
+const RESOLUTION_RANK: Record<Exclude<ResolutionTier, "pro">, number> = {
   "480p": 480,
   "720p": 720,
   "768p": 768,
   "1080p": 1080,
-  pro: 1080,
 };
 
 export const AUDIO_MODES = ["OFF", "STRIP"] as const;
@@ -44,10 +46,70 @@ export type AudioMode = (typeof AUDIO_MODES)[number];
 export const PROCESSOR_LANE_CLASS = "processor" as const;
 
 const ENV_VAR_NAME = /^[A-Z][A-Z0-9_]*$/;
+const LANE_ID_PATTERN = /^[a-z0-9][a-z0-9.-]*$/;
+const SECRET_LIKE = /sk-|r8_|begin private|akia[0-9a-z]{16}/i;
+
+/** TBD prefix, including leading whitespace and any letter case. */
+export function isTbdProviderKey(providerKey: string): boolean {
+  return /^\s*tbd:/i.test(providerKey);
+}
+
+const laneIdSchema = z
+  .string()
+  .regex(LANE_ID_PATTERN, "laneId must match [a-z0-9][a-z0-9.-]*");
 
 const envNameSchema = z
   .string()
-  .regex(ENV_VAR_NAME, "gateway env fields must be env var names, not values");
+  .regex(ENV_VAR_NAME, "gateway env fields must be env var names, not values")
+  .refine((name) => !SECRET_LIKE.test(name), "gateway env fields must be env var names, not values");
+
+function valueLooksSecret(value: string, field: string | number | undefined): boolean {
+  if (SECRET_LIKE.test(value)) {
+    return true;
+  }
+  if (field === "evidenceSha256" && /^[a-f0-9]{64}$/.test(value)) {
+    return false;
+  }
+  if (ENV_VAR_NAME.test(value)) {
+    return false;
+  }
+  const tokens = value.match(/[A-Za-z0-9]{24,}/g) ?? [];
+  return tokens.some((token) => {
+    if (ENV_VAR_NAME.test(token)) {
+      return false;
+    }
+    if (/^[a-f0-9]{64}$/.test(token)) {
+      return false;
+    }
+    return /[0-9]/.test(token) && /[A-Za-z]/.test(token);
+  });
+}
+
+function rejectSecretLikeValues(
+  value: unknown,
+  path: Array<string | number>,
+  ctx: { addIssue: (issue: { code: "custom"; message: string; path: Array<string | number> }) => void },
+) {
+  if (typeof value === "string") {
+    if (valueLooksSecret(value, path[path.length - 1])) {
+      ctx.addIssue({
+        code: "custom",
+        message: "registry contains a secret-like value",
+        path,
+      });
+    }
+    return;
+  }
+  if (Array.isArray(value)) {
+    value.forEach((item, index) => rejectSecretLikeValues(item, [...path, index], ctx));
+    return;
+  }
+  if (value && typeof value === "object") {
+    for (const [key, child] of Object.entries(value)) {
+      rejectSecretLikeValues(child, [...path, key], ctx);
+    }
+  }
+}
 
 const designationSchema = z.string().superRefine((value, ctx) => {
   if (value === "DEFAULT") {
@@ -69,7 +131,10 @@ const gateRecordSchema = z
       .string()
       .regex(/^[a-f0-9]{64}$/, "evidenceSha256 must be a sha256 hex digest")
       .optional(),
-    signoffRef: z.string().min(1).optional(),
+    signoffRef: z
+      .string()
+      .refine((value) => value.trim().length > 0, "signoffRef must be non-blank")
+      .optional(),
     date: z
       .string()
       .regex(/^\d{4}-\d{2}-\d{2}$/, "gate date must be YYYY-MM-DD")
@@ -106,9 +171,12 @@ const gatesSchema = z
 
 export const generativeLaneSchema = z
   .object({
-    laneId: z.string().min(1),
+    laneId: laneIdSchema,
     laneClass: laneClassSchema,
-    providerKey: z.string().min(1),
+    providerKey: z
+      .string()
+      .min(1)
+      .refine((value) => value === value.trim(), "providerKey must not have leading or trailing whitespace"),
     modelId: z.string().min(1),
     gateway: z
       .object({
@@ -130,18 +198,38 @@ export const generativeLaneSchema = z
   })
   .strict()
   .superRefine((lane, ctx) => {
-    if (lane.enabled && lane.providerKey.startsWith("TBD:")) {
+    if (isTbdProviderKey(lane.providerKey)) {
+      if (lane.enabled) {
+        ctx.addIssue({
+          code: "custom",
+          message: "enabled lane must have a non-TBD providerKey",
+          path: ["providerKey"],
+        });
+      }
+      const remainder = lane.providerKey.replace(/^\s*tbd:/i, "");
+      if (remainder !== lane.laneId) {
+        ctx.addIssue({
+          code: "custom",
+          message: "TBD providerKey is allowed only as TBD:<laneId> while enabled is false",
+          path: ["providerKey"],
+        });
+      }
+    }
+    if (lane.enabled && !(lane.usdPerSecond > 0)) {
       ctx.addIssue({
         code: "custom",
-        message: "enabled lane must have a non-TBD providerKey",
-        path: ["providerKey"],
+        message: "enabled lane requires usdPerSecond > 0",
+        path: ["usdPerSecond"],
       });
     }
-    if (lane.providerKey.startsWith("TBD:") && lane.providerKey !== `TBD:${lane.laneId}`) {
+    const durationListed = lane.supportedDurationsS.some(
+      (duration) => Math.abs(duration - lane.clipDurationS) < 1e-9,
+    );
+    if (!durationListed) {
       ctx.addIssue({
         code: "custom",
-        message: "TBD providerKey is allowed only as TBD:<laneId> while enabled is false",
-        path: ["providerKey"],
+        message: "clipDurationS must be one of supportedDurationsS",
+        path: ["clipDurationS"],
       });
     }
     for (const scope of ["HERO", "IDENTITY"] as const) {
@@ -158,9 +246,12 @@ export const generativeLaneSchema = z
 
 const processorSchema = z
   .object({
-    laneId: z.string().min(1),
+    laneId: laneIdSchema,
     laneClass: z.literal(PROCESSOR_LANE_CLASS),
-    providerKey: z.string().min(1),
+    providerKey: z
+      .string()
+      .min(1)
+      .refine((value) => value === value.trim(), "providerKey must not have leading or trailing whitespace"),
     modelId: z.string().min(1),
     resolutionTier: z.literal("output-profile"),
     usdPerSecond: z.literal(0),
@@ -220,6 +311,24 @@ export const laneRegistryFileSchema = z
       }
       ids.add(processor.laneId);
     }
+    const legacy = doc.lanes.filter((lane) => lane.designation === "LEGACY_R1");
+    if (legacy.length > 1) {
+      ctx.addIssue({
+        code: "custom",
+        message: "at most one LEGACY_R1 lane",
+        path: ["lanes"],
+      });
+    }
+    for (const lane of legacy) {
+      if (!lane.enabled || isTbdProviderKey(lane.providerKey)) {
+        ctx.addIssue({
+          code: "custom",
+          message: "LEGACY_R1 lane must be enabled with a real providerKey",
+          path: ["lanes"],
+        });
+      }
+    }
+    rejectSecretLikeValues(doc, [], ctx);
   });
 
 export type RegistryLane = z.infer<typeof generativeLaneSchema>;
@@ -241,6 +350,9 @@ export class LaneRegistryError extends Error {
 }
 
 export function resolutionMeets720pFloor(tier: ResolutionTier): boolean {
+  if (tier === "pro") {
+    return false;
+  }
   return RESOLUTION_RANK[tier] >= 720;
 }
 
@@ -275,21 +387,26 @@ export function loadSgLaneRegistry(path = DEFAULT_SG_LANE_REGISTRY_PATH): SgLane
 
 /**
  * In-file registryVersion plus the sha256 of the file bytes.
- * A missing or unreadable file has no version and no sha. Callers must not
- * substitute a placeholder generation label.
+ * Both fields stay empty unless the bytes parse and validate. An empty
+ * stamp means the registry is unavailable (missing, unreadable, or invalid)
+ * and fails closed. Callers must not substitute a placeholder label.
  */
 export function stampRegistryBytes(raw: Buffer): RegistryStamp {
-  const registrySha256 = createHash("sha256").update(raw).digest("hex");
-  let registryVersion = "";
+  const empty: RegistryStamp = { registryVersion: "", registrySha256: "" };
+  let parsed: unknown;
   try {
-    const parsed = JSON.parse(raw.toString("utf8")) as { registryVersion?: unknown };
-    if (typeof parsed.registryVersion === "string") {
-      registryVersion = parsed.registryVersion;
-    }
+    parsed = JSON.parse(raw.toString("utf8")) as unknown;
   } catch {
-    registryVersion = "";
+    return empty;
   }
-  return { registryVersion, registrySha256 };
+  const result = laneRegistryFileSchema.safeParse(parsed);
+  if (!result.success) {
+    return empty;
+  }
+  return {
+    registryVersion: result.data.registryVersion,
+    registrySha256: createHash("sha256").update(raw).digest("hex"),
+  };
 }
 
 export function suspendedLaneIdsFromEnv(raw: string | undefined): string[] {
@@ -327,7 +444,7 @@ export function applyLaneSuspension(
 }
 
 function laneIsEligible(lane: RegistryLane, requiredScopes: readonly RoutingScope[]): boolean {
-  if (!lane.enabled || lane.providerKey.startsWith("TBD:")) {
+  if (!lane.enabled || isTbdProviderKey(lane.providerKey)) {
     return false;
   }
   return requiredScopes.every((scope) => lane.gates[scope].status === "QUALIFIED");

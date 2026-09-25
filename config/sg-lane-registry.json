@@ -98,7 +98,7 @@
       ],
       "billingGranularityS": 1,
       "failuresBillable": true,
-      "audioMode": "OFF",
+      "audioMode": "STRIP",
       "enabled": false,
       "designation": "NONE",
       "gates": {
@@ -131,7 +131,7 @@
       ],
       "billingGranularityS": 1,
       "failuresBillable": true,
-      "audioMode": "OFF",
+      "audioMode": "STRIP",
       "enabled": false,
       "designation": "NONE",
       "gates": {
@@ -164,7 +164,7 @@
       ],
       "billingGranularityS": 1,
       "failuresBillable": true,
-      "audioMode": "OFF",
+      "audioMode": "STRIP",
       "enabled": false,
       "designation": "NONE",
       "gates": {
@@ -199,7 +199,7 @@
       ],
       "billingGranularityS": 1,
       "failuresBillable": true,
-      "audioMode": "OFF",
+      "audioMode": "STRIP",
       "enabled": false,
       "designation": "NONE",
       "gates": {
@@ -232,7 +232,7 @@
       ],
       "billingGranularityS": 1,
       "failuresBillable": true,
-      "audioMode": "OFF",
+      "audioMode": "STRIP",
       "enabled": false,
       "designation": "NONE",
       "gates": {
@@ -298,7 +298,7 @@
       ],
       "billingGranularityS": 1,
       "failuresBillable": true,
-      "audioMode": "OFF",
+      "audioMode": "STRIP",
       "enabled": false,
       "designation": "NONE",
       "gates": {

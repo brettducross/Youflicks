@@ -6,7 +6,7 @@ import {
 } from "@/server/beta/defaults";
 import {
   DEFAULT_SG_LANE_REGISTRY_PATH,
-  requireLaneRate,
+  requireLiveLane,
   type LaneRate,
 } from "@/server/sg/lane-rate";
 import {
@@ -176,8 +176,9 @@ function resolveLiveSpendCaps(
 }
 
 /**
- * Live backends price from the lane registry. A missing, unknown, non-positive,
- * or unreadable lane fails closed before the process accepts work.
+ * Live backends price from an enabled, non-TBD lane. A missing, unknown,
+ * disabled, TBD, non-positive, or unreadable lane fails closed before the
+ * process accepts work.
  */
 export function assertLiveGatewayLane(config: YfAssetGatewayConfig): LaneRate | undefined {
   if (config.backend === "mock") {
@@ -188,20 +189,13 @@ export function assertLiveGatewayLane(config: YfAssetGatewayConfig): LaneRate | 
       "YF_GATEWAY_LANE_ID is required when YF_GATEWAY_BACKEND is not mock. The gateway fails closed without a lane.",
     );
   }
-  let lane: LaneRate;
   try {
-    lane = requireLaneRate(config.laneId, config.registryPath);
+    return requireLiveLane(config.laneId, config.registryPath);
   } catch (error) {
     throw new GatewayConfigError(
       error instanceof Error ? error.message : "Lane registry failed closed.",
     );
   }
-  if (lane.providerKey.startsWith("TBD:")) {
-    throw new GatewayConfigError(
-      `Lane ${lane.laneId} providerKey starts with TBD:. A live gateway fails closed until the transport is set.`,
-    );
-  }
-  return lane;
 }
 
 export function warnIfFlatRateIgnored(config: YfAssetGatewayConfig): void {

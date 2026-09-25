@@ -178,3 +178,21 @@ export function requireLaneRate(laneId: string, path?: string): RegistryLane {
   }
   return lane;
 }
+
+/**
+ * Rate lookup for a new reservation or a live gateway call.
+ * A disabled lane or a TBD transport fails closed. Settlement of an
+ * existing hold uses requireLaneRate, which does not apply these checks.
+ */
+export function requireLiveLane(laneId: string, path?: string): RegistryLane {
+  const lane = requireLaneRate(laneId, path);
+  if (/^\s*tbd:/i.test(lane.providerKey)) {
+    throw new LaneRegistryError(
+      `Lane ${lane.laneId} providerKey starts with TBD:. A live gateway fails closed until the transport is set.`,
+    );
+  }
+  if (!lane.enabled) {
+    throw new LaneRegistryError(`Lane ${lane.laneId} is disabled. A live gateway fails closed.`);
+  }
+  return lane;
+}

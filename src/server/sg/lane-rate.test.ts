@@ -9,6 +9,7 @@ import {
   LaneDurationError,
   loadLaneRegistry,
   requireLaneRate,
+  requireLiveLane,
   roundUpToGranularity,
   type LaneRate,
 } from "@/server/sg/lane-rate";
@@ -190,5 +191,31 @@ describe("lane registry fail-closed", () => {
     await writeFile(file, JSON.stringify(rateProbeRegistry("free", 0)), "utf8");
     expect(() => requireLaneRate("missing", file)).toThrow(/not in the registry/);
     expect(() => requireLaneRate("free", file)).toThrow(/usdPerSecond/);
+  });
+
+  it("requireLiveLane refuses a disabled lane and a TBD lane, and requireLaneRate still prices them", async () => {
+    dir = dir || (await mkdtemp(path.join(tmpdir(), "youflicks-lane-registry-")));
+    const tbdFile = path.join(dir, "tbd.json");
+    await writeFile(tbdFile, JSON.stringify(rateProbeRegistry("priced", 0.05)), "utf8");
+    const priced = requireLaneRate("priced", tbdFile);
+    expect(priced.usdPerSecond).toBe(0.05);
+    expect(() => requireLiveLane("priced", tbdFile)).toThrow(/TBD:/);
+
+    const disabled = rateProbeRegistry("parked", 0.1);
+    const row = disabled.lanes[0] as { providerKey: string; modelId: string; enabled: boolean };
+    row.providerKey = "open:parked";
+    row.modelId = "open-parked";
+    row.enabled = false;
+    const disabledFile = path.join(dir, "disabled.json");
+    await writeFile(disabledFile, JSON.stringify(disabled), "utf8");
+    expect(requireLaneRate("parked", disabledFile).enabled).toBe(false);
+    expect(() => requireLiveLane("parked", disabledFile)).toThrow(/disabled/);
+
+    const lower = rateProbeRegistry("lower", 0.02);
+    const lowerRow = lower.lanes[0] as { providerKey: string };
+    lowerRow.providerKey = "tbd:lower";
+    const lowerFile = path.join(dir, "lower.json");
+    await writeFile(lowerFile, JSON.stringify(lower), "utf8");
+    expect(() => requireLiveLane("lower", lowerFile)).toThrow(/TBD:/);
   });
 });
