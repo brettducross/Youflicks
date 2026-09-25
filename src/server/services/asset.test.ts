@@ -32,6 +32,7 @@ import {
   TIMELINE_DOCUMENT_SCHEMA_VERSION,
   type TimelineDocument,
 } from "@/server/timeline/schema";
+import type { AiVideoBudgetPort } from "@/server/sg/ai-video-budget";
 import { AttributionService } from "@/server/services/attribution";
 import { ConsentService } from "@/server/services/consent";
 import { AnalysisService } from "@/server/services/analysis";
@@ -230,6 +231,7 @@ describe("AssetService M3", () => {
     productionAvailable?: boolean;
     localDevAvailable?: boolean;
     supportedCapabilities?: AssetCapabilityValue[];
+    budgets?: AiVideoBudgetPort;
   }) {
     const productionAvailable = options.productionAvailable ?? Boolean(options.adapter);
     const localDevAvailable = options.localDevAvailable ?? false;
@@ -268,6 +270,9 @@ describe("AssetService M3", () => {
           supportedCapabilities: supported,
         });
       },
+      undefined,
+      undefined,
+      options.budgets,
     );
     return { assets, worker: new AssetWorker(jobs, assets) };
   }
@@ -1232,6 +1237,134 @@ describe("AssetService M3", () => {
     expect(reservation?.settleReason).toBe("GATEWAY_UNRECONCILED");
     expect(attempt?.outcome).toBe("TIMEOUT_UNRECONCILED");
     expect(attempt?.failureCode).toBe("UNKNOWN");
+  });
+
+  function budgetThatThrows(error: unknown): AiVideoBudgetPort {
+    return {
+      async reserve() {
+        throw error;
+      },
+      async release(id) {
+        throw new Error(`unused release ${id}`);
+      },
+      async reconcile(id) {
+        throw new Error(`unused reconcile ${id}`);
+      },
+      async markUnreconciled(id) {
+        throw new Error(`unused unreconcile ${id}`);
+      },
+      async rememberGatewayReservationId(id) {
+        throw new Error(`unused gateway id ${id}`);
+      },
+      async snapshot() {
+        return null;
+      },
+    };
+  }
+
+  it("writes no attempt when reserve fails with an AppError other than SPEND_CAP_REACHED", async () => {
+    const previousLane = process.env.YF_GATEWAY_LANE_ID;
+    process.env.YF_GATEWAY_LANE_ID = "r1-wan27-replicate";
+    const calls: string[] = [];
+    try {
+      const { assets, worker } = harness({
+        adapter: scriptedGenerator(async () => {
+          calls.push("generate");
+          throw new Error("provider must not be called");
+        }),
+        productionAvailable: true,
+        supportedCapabilities: [AssetCapability.IMAGE_GENERATION],
+        budgets: budgetThatThrows(
+          AppError.assetProviderUnavailable(
+            "Lane r1-wan27-replicate is not in the registry. The gateway fails closed.",
+          ),
+        ),
+      });
+      const queued = await assets.requestGenerate(ownerId, projectId, {
+        roles: [{ role: "intimate_portrait", storySceneId: "scene-reserve-app-error", kind: "IMAGE" }],
+      });
+      for (let attempt = 0; attempt < 8; attempt += 1) {
+        const current = await jobs.get(queued.jobId);
+        if (current && current.status !== JobStatus.PENDING && current.status !== JobStatus.RUNNING) {
+          break;
+        }
+        const ran = await worker.processNext();
+        if (!ran) break;
+      }
+      const job = await jobs.get(queued.jobId);
+      expect(job?.status).toBe(JobStatus.FAILED);
+      expect(job?.attempts).toBe(1);
+      expect(calls).toEqual([]);
+      expect(await prisma.shotFulfillmentAttempt.count({ where: { jobId: queued.jobId } })).toBe(0);
+      const slot = await prisma.shotFulfillment.findFirst({
+        where: { projectId, storySceneId: "scene-reserve-app-error" },
+      });
+      expect(slot?.status).toBe("FAILED");
+      expect(
+        await prisma.shotFulfillmentAttempt.count({ where: { shotFulfillmentId: slot?.id } }),
+      ).toBe(0);
+    } finally {
+      if (previousLane === undefined) delete process.env.YF_GATEWAY_LANE_ID;
+      else process.env.YF_GATEWAY_LANE_ID = previousLane;
+    }
+  });
+
+  it("writes no attempt when reserve throws a non-AppError, including on retry", async () => {
+    const previousLane = process.env.YF_GATEWAY_LANE_ID;
+    process.env.YF_GATEWAY_LANE_ID = "r1-wan27-replicate";
+    const calls: string[] = [];
+    try {
+      const { assets, worker } = harness({
+        adapter: scriptedGenerator(async () => {
+          calls.push("generate");
+          throw new Error("provider must not be called");
+        }),
+        productionAvailable: true,
+        supportedCapabilities: [AssetCapability.IMAGE_GENERATION],
+        budgets: budgetThatThrows(new Error("db connection reset")),
+      });
+      const queued = await assets.requestGenerate(ownerId, projectId, {
+        roles: [{ role: "intimate_portrait", storySceneId: "scene-reserve-db-error", kind: "IMAGE" }],
+      });
+      for (let attempt = 0; attempt < 8; attempt += 1) {
+        const current = await jobs.get(queued.jobId);
+        if (current && current.attempts >= 1 && current.status !== JobStatus.RUNNING) break;
+        const ran = await worker.processNext();
+        if (!ran) break;
+      }
+      expect((await jobs.get(queued.jobId))?.attempts).toBe(1);
+      expect(calls).toEqual([]);
+      expect(await prisma.shotFulfillmentAttempt.count({ where: { jobId: queued.jobId } })).toBe(0);
+
+      await prisma.job.update({
+        where: { id: queued.jobId },
+        data: { runAfter: new Date(0) },
+      });
+      for (let attempt = 0; attempt < 8; attempt += 1) {
+        const current = await jobs.get(queued.jobId);
+        if (current && current.attempts >= 2) break;
+        await prisma.job.update({
+          where: { id: queued.jobId },
+          data: { runAfter: new Date(0) },
+        });
+        const ran = await worker.processNext();
+        if (!ran) break;
+      }
+      const job = await jobs.get(queued.jobId);
+      expect(job?.attempts).toBe(2);
+      expect(calls).toEqual([]);
+      expect(await prisma.shotFulfillmentAttempt.count({ where: { jobId: queued.jobId } })).toBe(0);
+      const slot = await prisma.shotFulfillment.findFirst({
+        where: { projectId, storySceneId: "scene-reserve-db-error" },
+      });
+      expect(slot?.status).toBe("FAILED");
+      expect(
+        await prisma.shotFulfillmentAttempt.count({ where: { shotFulfillmentId: slot?.id } }),
+      ).toBe(0);
+    } finally {
+      if (previousLane === undefined) delete process.env.YF_GATEWAY_LANE_ID;
+      else process.env.YF_GATEWAY_LANE_ID = previousLane;
+    }
   });
 
   it("writes no attempt when the lane registry cannot be read", async () => {

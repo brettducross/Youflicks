@@ -380,7 +380,11 @@ export class AssetService {
           storySceneId: role.storySceneId,
         });
       } catch (error) {
-        await this.recordClosedAttempt(slot.id, quote, job.id, error, null);
+        if (isAppError(error) && error.code === "SPEND_CAP_REACHED") {
+          await this.recordClosedAttempt(slot.id, quote, job.id, error, null);
+        } else {
+          await this.fulfillments.markUnattemptedFailure(slot.id);
+        }
         throw error;
       }
 
