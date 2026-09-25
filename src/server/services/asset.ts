@@ -350,7 +350,7 @@ export class AssetService {
           capability,
           error: `No ready adapter can perform ${capability}.`,
         });
-        await this.fulfillments.markUnattemptedFailure(slot.id, failed.id);
+        await this.markSlotFailure(slot.id, projectId, job.id, failed.id);
         throw AppError.assetCapabilityUnavailable(capability);
       }
 
@@ -364,7 +364,7 @@ export class AssetService {
       try {
         quote = this.legacyAttemptQuote(attribution.providerKey, attribution.modelId);
       } catch (error) {
-        await this.fulfillments.markUnattemptedFailure(slot.id);
+        await this.markSlotFailure(slot.id, projectId, job.id);
         throw AppError.assetProviderUnavailable(
           error instanceof Error ? error.message : "AI video lane registry failed closed.",
         );
@@ -380,9 +380,13 @@ export class AssetService {
         });
       } catch (error) {
         if (isAppError(error) && error.code === "SPEND_CAP_REACHED") {
-          await this.recordClosedAttempt(slot.id, quote, job.id, error, null);
+          try {
+            await this.recordClosedAttempt(slot.id, quote, job.id, error, null);
+          } catch (markError) {
+            this.logSlotMarkFailed(projectId, job.id, slot.id, markError);
+          }
         } else {
-          await this.fulfillments.markUnattemptedFailure(slot.id);
+          await this.markSlotFailure(slot.id, projectId, job.id);
         }
         throw error;
       }
@@ -877,6 +881,32 @@ export class AssetService {
       hold.id,
       settlement === "UNRECONCILED" ? "GATEWAY_UNRECONCILED" : "SETTLEMENT_MISSING",
     );
+  }
+
+  /**
+   * A slot-marker failure must not replace the error the worker will classify.
+   * A thrown marker used to turn a terminal AppError into a retryable job.
+   */
+  private async markSlotFailure(
+    slotId: string,
+    projectId: string,
+    jobId: string,
+    generatedAssetId?: string,
+  ) {
+    try {
+      await this.fulfillments.markUnattemptedFailure(slotId, generatedAssetId);
+    } catch (markError) {
+      this.logSlotMarkFailed(projectId, jobId, slotId, markError);
+    }
+  }
+
+  private logSlotMarkFailed(projectId: string, jobId: string, slotId: string, markError: unknown) {
+    logger.warn("asset.slot_mark_failed", {
+      projectId,
+      jobId,
+      slotId,
+      error: markError instanceof Error ? markError.message : "unknown",
+    });
   }
 
   /**

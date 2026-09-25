@@ -35,6 +35,7 @@ import {
   type TimelineDocument,
 } from "@/server/timeline/schema";
 import type { AiVideoBudgetPort } from "@/server/sg/ai-video-budget";
+import { PrismaShotFulfillment } from "@/server/sg/shot-fulfillment";
 import { AttributionService } from "@/server/services/attribution";
 import { ConsentService } from "@/server/services/consent";
 import { AnalysisService } from "@/server/services/analysis";
@@ -234,6 +235,7 @@ describe("AssetService M3", () => {
     localDevAvailable?: boolean;
     supportedCapabilities?: AssetCapabilityValue[];
     budgets?: AiVideoBudgetPort;
+    fulfillments?: PrismaShotFulfillment;
   }) {
     const productionAvailable = options.productionAvailable ?? Boolean(options.adapter);
     const localDevAvailable = options.localDevAvailable ?? false;
@@ -275,6 +277,7 @@ describe("AssetService M3", () => {
       undefined,
       undefined,
       options.budgets,
+      options.fulfillments,
     );
     return { assets, worker: new AssetWorker(jobs, assets) };
   }
@@ -1368,6 +1371,61 @@ describe("AssetService M3", () => {
         await prisma.shotFulfillmentAttempt.count({ where: { shotFulfillmentId: slot?.id } }),
       ).toBe(0);
     } finally {
+      if (previousLane === undefined) delete process.env.YF_GATEWAY_LANE_ID;
+      else process.env.YF_GATEWAY_LANE_ID = previousLane;
+    }
+  });
+
+  it("keeps the original AppError when markUnattemptedFailure throws", async () => {
+    const previousLane = process.env.YF_GATEWAY_LANE_ID;
+    process.env.YF_GATEWAY_LANE_ID = "r1-wan27-replicate";
+    const fulfillments = new PrismaShotFulfillment(prisma);
+    fulfillments.markUnattemptedFailure = async () => {
+      throw new Error("marker write failed");
+    };
+    const warns: string[] = [];
+    const originalWarn = console.warn;
+    console.warn = (...args: unknown[]) => {
+      warns.push(args.map((arg) => String(arg)).join(" "));
+      originalWarn.apply(console, args);
+    };
+    const calls: string[] = [];
+    try {
+      const { assets, worker } = harness({
+        adapter: scriptedGenerator(async () => {
+          calls.push("generate");
+          throw new Error("provider must not be called");
+        }),
+        productionAvailable: true,
+        supportedCapabilities: [AssetCapability.IMAGE_GENERATION],
+        budgets: budgetThatThrows(AppError.assetProviderUnavailable("registry vanished after quote")),
+        fulfillments,
+      });
+      const queued = await assets.requestGenerate(ownerId, projectId, {
+        roles: [{ role: "intimate_portrait", storySceneId: "scene-marker-mask", kind: "IMAGE" }],
+      });
+      await worker.processNext();
+      const job = await jobs.get(queued.jobId);
+      expect(calls).toEqual([]);
+      expect(job?.status).toBe(JobStatus.FAILED);
+      expect(job?.attempts).toBe(1);
+      expect(job?.error).toBe("registry vanished after quote");
+      expect(job?.error).not.toContain("marker write failed");
+      expect(await prisma.shotFulfillmentAttempt.count({ where: { jobId: queued.jobId } })).toBe(0);
+      const logged = warns
+        .map((line) => {
+          try {
+            return JSON.parse(line) as Record<string, unknown>;
+          } catch {
+            return null;
+          }
+        })
+        .filter((entry): entry is Record<string, unknown> => entry?.message === "asset.slot_mark_failed");
+      expect(logged.some((entry) => entry.error === "marker write failed" && entry.jobId === queued.jobId)).toBe(
+        true,
+      );
+    } finally {
+      console.warn = originalWarn;
       if (previousLane === undefined) delete process.env.YF_GATEWAY_LANE_ID;
       else process.env.YF_GATEWAY_LANE_ID = previousLane;
     }
