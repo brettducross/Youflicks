@@ -8,6 +8,7 @@ import { assertDirectorInputPrivacy, isIgnoreGeneralTaste } from "@/server/direc
 import {
   assertNoCommercialPlanFields,
   assertNoInventedConfidence,
+  assertNoRoutingPlanFields,
   assertPlanRespectsConstraints,
   assertPlanSchemaVersion,
   validateCreativePlan,
@@ -83,6 +84,7 @@ export class DirectorContractService {
     assertPlanSchemaVersion(plan);
     assertNoInventedConfidence(plan);
     assertNoCommercialPlanFields(plan);
+    assertNoRoutingPlanFields(plan);
     assertPlanRespectsConstraints(input, plan);
     return plan;
   }
