@@ -5,6 +5,7 @@ import {
   type CreativePlan,
 } from "@/server/director/schema";
 import type { DirectorInput } from "@/server/director/input";
+import { SG_ROUTING_PLAN_KEYS } from "@/server/sg/constants";
 
 const COMMERCIAL_PLAN_KEYS = new Set([
   "planKind",
@@ -31,6 +32,8 @@ const COMMERCIAL_PLAN_KEYS = new Set([
   "advertisingPort",
 ]);
 
+const ROUTING_PLAN_KEYS = new Set<string>(SG_ROUTING_PLAN_KEYS);
+
 export function validateCreativePlan(raw: unknown): CreativePlan {
   const parsed = creativePlanSchema.safeParse(raw);
   if (!parsed.success) {
@@ -39,13 +42,14 @@ export function validateCreativePlan(raw: unknown): CreativePlan {
     });
   }
   assertNoCommercialPlanFields(parsed.data);
+  assertNoRoutingPlanFields(parsed.data);
   return parsed.data;
 }
 
 /** Entitlements are platform gates — never CreativePlan meaning. */
 export function assertNoCommercialPlanFields(plan: CreativePlan) {
   const hits: string[] = [];
-  walkCommercialKeys(plan, "plan", hits);
+  walkDeniedPlanKeys(plan, "plan", hits, []);
   if (hits.length > 0) {
     throw AppError.directorPlanInvalid(
       "Creative plans must not include commercial entitlement or engine-cost fields.",
@@ -54,19 +58,45 @@ export function assertNoCommercialPlanFields(plan: CreativePlan) {
   }
 }
 
-function walkCommercialKeys(value: unknown, path: string, hits: string[]) {
+/**
+ * Routing economics stay on the fulfillment side (§5.1).
+ * Write path only: reads keep passthrough bytes so stored plans and fingerprints stay stable.
+ */
+export function assertNoRoutingPlanFields(plan: CreativePlan) {
+  const hits: string[] = [];
+  walkDeniedPlanKeys(plan, "plan", [], hits);
+  if (hits.length > 0) {
+    throw AppError.directorPlanInvalid(
+      "Creative plans must not include routing or fulfillment-economics fields.",
+      { paths: hits },
+    );
+  }
+}
+
+function walkDeniedPlanKeys(
+  value: unknown,
+  path: string,
+  commercialHits: string[],
+  routingHits: string[],
+) {
   if (!value || typeof value !== "object") {
     return;
   }
   if (Array.isArray(value)) {
-    value.forEach((item, index) => walkCommercialKeys(item, `${path}[${index}]`, hits));
+    value.forEach((item, index) =>
+      walkDeniedPlanKeys(item, `${path}[${index}]`, commercialHits, routingHits),
+    );
     return;
   }
   for (const [key, child] of Object.entries(value as Record<string, unknown>)) {
+    const childPath = `${path}.${key}`;
     if (COMMERCIAL_PLAN_KEYS.has(key)) {
-      hits.push(`${path}.${key}`);
+      commercialHits.push(childPath);
     }
-    walkCommercialKeys(child, `${path}.${key}`, hits);
+    if (ROUTING_PLAN_KEYS.has(key)) {
+      routingHits.push(childPath);
+    }
+    walkDeniedPlanKeys(child, childPath, commercialHits, routingHits);
   }
 }
 

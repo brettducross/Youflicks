@@ -10,6 +10,7 @@ import { ProviderRegistry } from "@/server/analysis/registry";
 import { PreferredThenFirstPolicy } from "@/server/analysis/selection";
 import { DirectorCapabilityGateway } from "@/server/director/capabilities";
 import { CREATIVE_PLAN_SCHEMA_VERSION } from "@/server/director/schema";
+import { validateCreativePlan } from "@/server/director/validate";
 import { prisma } from "@/server/db";
 import {
   CreativePlanStatus,
@@ -33,6 +34,8 @@ import { IntentService } from "@/server/services/intent";
 import { MediaService } from "@/server/services/media";
 import { ProjectService } from "@/server/services/projects";
 import { TasteService } from "@/server/services/taste";
+import { fingerprintStoredPlan, parseCreativePlanJson } from "@/server/services/story-contract";
+import { fingerprintCreativePlan } from "@/server/story/fingerprint";
 
 const PNG_1X1 = Buffer.from(
   "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==",
@@ -676,6 +679,128 @@ describe("DirectorService Phase 2F", () => {
     expect(json).not.toMatch(
       /maxOutputDurationMs|watermarkRequired|adsEnabled|constraintReceipt|planKind/i,
     );
+  });
+
+  it("rejects routing keys on compose and leaves versioned plans readable", async () => {
+    const planV1 = {
+      schemaVersion: CREATIVE_PLAN_SCHEMA_VERSION,
+      concept: "Version one",
+      tone: "Warm",
+      decisions: [{ kind: "tone", summary: "Keep it light" }],
+    };
+    const planV2 = {
+      ...planV1,
+      concept: "Version two",
+    };
+    const { director } = harness({
+      adapter: scriptedDirector(async () => planV1),
+      productionAvailable: true,
+    });
+
+    await prisma.generationAuthorization.deleteMany({ where: { userId: ownerId } });
+    const countBefore = await prisma.creativePlan.count({ where: { projectId } });
+    const maxBefore = await prisma.creativePlan.aggregate({
+      where: { projectId },
+      _max: { version: true },
+    });
+
+    const queued = await director.requestCompose(ownerId, projectId);
+    const job = await jobs.get(queued.jobId);
+    const saved = await director.processJob(job!);
+    await jobs.complete(job!.id, { creativePlanId: saved.id, version: saved.version });
+
+    expect(saved.version).toBe((maxBefore._max.version ?? 0) + 1);
+    expect(saved.plan).toEqual(planV1);
+    expect(saved.status).toBe(CreativePlanStatus.READY);
+    const storedV1 = await prisma.creativePlan.findUnique({ where: { id: saved.id } });
+    expect(storedV1!.plan).toEqual(planV1);
+    expect(fingerprintStoredPlan(storedV1!.plan)).toBe(fingerprintCreativePlan(planV1));
+    expect(parseCreativePlanJson(storedV1!.plan)).toEqual(planV1);
+
+    await prisma.generationAuthorization.deleteMany({ where: { userId: ownerId } });
+    const denied = harness({
+      adapter: scriptedDirector(async () => ({
+        ...planV1,
+        concept: "should not persist",
+        laneClass: "premium",
+        decisions: [{ kind: "tone", summary: "warm", detail: { usdPerSecond: 0.1 } }],
+      })),
+      attribution: defaultAttribution({ providerKey: "bad.director" }),
+      productionAvailable: true,
+    });
+    const queuedBad = await denied.director.requestCompose(ownerId, projectId);
+    const badJob = await jobs.get(queuedBad.jobId);
+    await expect(denied.director.processJob(badJob!)).rejects.toMatchObject({
+      code: "DIRECTOR_PLAN_INVALID",
+      message: expect.stringMatching(/routing or fulfillment-economics/i),
+    });
+    await jobs.fail(badJob!.id, {
+      error: "Creative plans must not include routing or fulfillment-economics fields.",
+      retry: false,
+    });
+    const failed = await jobs.get(badJob!.id);
+    expect(failed?.status).toBe(JobStatus.FAILED);
+    expect(await prisma.creativePlan.count({ where: { projectId } })).toBe(countBefore + 1);
+    const untouched = await prisma.creativePlan.findUnique({ where: { id: saved.id } });
+    expect(untouched!.status).toBe(CreativePlanStatus.READY);
+    expect(untouched!.version).toBe(saved.version);
+    expect(untouched!.plan).toEqual(planV1);
+
+    await prisma.generationAuthorization.deleteMany({ where: { userId: ownerId } });
+    const next = harness({
+      adapter: scriptedDirector(async () => planV2),
+      productionAvailable: true,
+    });
+    const queuedNext = await next.director.requestCompose(ownerId, projectId);
+    const nextJob = await jobs.get(queuedNext.jobId);
+    const savedNext = await next.director.processJob(nextJob!);
+    await jobs.complete(nextJob!.id, { creativePlanId: savedNext.id, version: savedNext.version });
+
+    expect(savedNext.version).toBe(saved.version + 1);
+    expect(savedNext.plan).toEqual(planV2);
+    const prior = await prisma.creativePlan.findUnique({ where: { id: saved.id } });
+    expect(prior!.status).toBe(CreativePlanStatus.SUPERSEDED);
+    expect(prior!.version).toBe(saved.version);
+    expect(prior!.plan).toEqual(planV1);
+    expect(fingerprintStoredPlan(prior!.plan)).toBe(fingerprintCreativePlan(planV1));
+
+    const historical = {
+      schemaVersion: CREATIVE_PLAN_SCHEMA_VERSION,
+      concept: "Historical plan",
+      laneClass: "premium",
+      providerKey: "replicate:wan-video/wan-2.7-i2v",
+      decisions: [{ kind: "tone", summary: "warm", detail: { usdPerSecond: 0.1 } }],
+    };
+    await prisma.creativePlan.deleteMany({ where: { projectId, version: 9000 } });
+    const historicalRow = await prisma.creativePlan.create({
+      data: {
+        projectId,
+        version: 9000,
+        status: CreativePlanStatus.SUPERSEDED,
+        plan: historical,
+        inputFingerprint: "b".repeat(64),
+        providerKey: "historical.director",
+        capability: "STORY_REASONING",
+      },
+    });
+    try {
+      const viewed = await next.director.getPlan(ownerId, projectId, historicalRow.id);
+      expect(viewed.plan).toMatchObject(historical);
+      expect(viewed.version).toBe(9000);
+      const parsed = parseCreativePlanJson(historicalRow.plan);
+      expect(parsed).toMatchObject({
+        concept: "Historical plan",
+        laneClass: "premium",
+        providerKey: "replicate:wan-video/wan-2.7-i2v",
+      });
+      expect(fingerprintStoredPlan(historicalRow.plan)).toBe(fingerprintCreativePlan(parsed));
+      expect(() => validateCreativePlan(historicalRow.plan)).toThrow(AppError);
+      const latest = await next.director.getLatestReady(ownerId, projectId);
+      expect(latest!.id).toBe(savedNext.id);
+      expect(latest!.plan).toEqual(planV2);
+    } finally {
+      await prisma.creativePlan.delete({ where: { id: historicalRow.id } });
+    }
   });
 
   it("does not let a stranger enqueue or burn the owner movie-generation quota", async () => {
