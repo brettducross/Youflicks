@@ -35,9 +35,13 @@ export class BackendSubmitError extends Error {
   }
 }
 
-/** 4xx from the create call is a definite rejection. Anything else may have created a job. */
+/**
+ * A definite 4xx from the create call is a rejection. 408 and 409 are ambiguous
+ * (the host may already be processing). 5xx and anything else stay unknown.
+ */
 export function submitHttpError(label: string, status: number, text: string): BackendSubmitError {
-  const disposition = status >= 400 && status < 500 ? "rejected" : "unknown";
+  const disposition =
+    status !== 408 && status !== 409 && status >= 400 && status < 500 ? "rejected" : "unknown";
   return new BackendSubmitError(`${label} (${status}): ${text.slice(0, 240)}`, disposition, status);
 }
 

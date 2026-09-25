@@ -46,14 +46,17 @@ export function capabilityForGenerateKind(
   return KIND_TO_GATEWAY_CAPABILITY[kind];
 }
 
-export const GATEWAY_SETTLEMENTS = ["RELEASED", "RECONCILED", "UNRECONCILED"] as const;
+export const GATEWAY_SETTLEMENTS = ["RELEASED", "RECONCILED", "UNRECONCILED", "NONE"] as const;
 export type GatewaySettlement = (typeof GATEWAY_SETTLEMENTS)[number];
 
 export type GatewayErrorBody = {
   error: string;
   code: string;
   capability?: string;
-  /** Set after a reservation exists. The app ledger mirrors this outcome. */
+  /**
+   * Post-reserve outcome the app ledger mirrors.
+   * NONE means the gateway never created a reservation.
+   */
   settlement?: GatewaySettlement;
   /** Present when settlement is RECONCILED. */
   actualBilledSeconds?: number;

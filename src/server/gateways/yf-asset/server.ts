@@ -157,7 +157,11 @@ async function handleRequest(
 
     if (req.method === "POST" && url.pathname === "/v1/generate") {
       if (!authorizeBearer(runtime.config, req)) {
-        return json(res, 401, { error: "Unauthorized.", code: "UNAUTHORIZED" });
+        return json(res, 401, {
+          error: "Unauthorized.",
+          code: "UNAUTHORIZED",
+          settlement: "NONE",
+        });
       }
       const body = await readJson(req);
       const result = await runtime.generate.generate(body);

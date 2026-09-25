@@ -695,6 +695,10 @@ export class AssetService {
       return;
     }
     const settlement = appSettlementFor(error);
+    if (settlement === "NONE") {
+      await this.budgets.release(hold.id, "GATEWAY_NONE");
+      return;
+    }
     if (settlement === "RELEASED") {
       await this.budgets.release(hold.id, "GATEWAY_RELEASED");
       return;
@@ -786,7 +790,7 @@ export class AssetService {
 
 function appSettlementFor(
   error: unknown,
-): "RELEASED" | "RECONCILED" | "UNRECONCILED" | "MISSING" {
+): "RELEASED" | "RECONCILED" | "UNRECONCILED" | "NONE" | "MISSING" {
   if (!isAppError(error)) {
     return "MISSING";
   }
@@ -800,7 +804,12 @@ function appSettlementFor(
     return "RELEASED";
   }
   const settlement = error.details?.settlement;
-  if (settlement === "RELEASED" || settlement === "RECONCILED" || settlement === "UNRECONCILED") {
+  if (
+    settlement === "RELEASED" ||
+    settlement === "RECONCILED" ||
+    settlement === "UNRECONCILED" ||
+    settlement === "NONE"
+  ) {
     return settlement;
   }
   return "MISSING";

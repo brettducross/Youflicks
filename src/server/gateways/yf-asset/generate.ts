@@ -13,7 +13,7 @@ import {
 } from "@/server/gateways/yf-asset/contract";
 import { downloadNormalizedAsset } from "@/server/gateways/yf-asset/download";
 import { GatewayJobStore } from "@/server/gateways/yf-asset/jobs";
-import { extractBackendRequestId, normalizeBackendAsset } from "@/server/gateways/yf-asset/normalize";
+import { extractBackendRequestId, mapQueueStatus, normalizeBackendAsset } from "@/server/gateways/yf-asset/normalize";
 import { promptFromGenerateRequest } from "@/server/gateways/yf-asset/prompt";
 import { alertSpendCap, GatewaySpendCapError } from "@/server/gateways/yf-asset/ledger";
 import {
@@ -53,7 +53,7 @@ export class YfAssetGenerateService {
     try {
       assertGatewaySecrets(this.config);
     } catch (error) {
-      return gatewayError(
+      return noReservationError(
         503,
         "GATEWAY_NOT_CONFIGURED",
         error instanceof Error ? error.message : "Asset gateway is not configured.",
@@ -62,13 +62,17 @@ export class YfAssetGenerateService {
 
     const parsed = yfGenerateRequestSchema.safeParse(rawBody);
     if (!parsed.success) {
-      return gatewayError(400, "ASSET_INPUT_INVALID", "Generate body is not a YouFlicks /v1/generate request.");
+      return noReservationError(
+        400,
+        "ASSET_INPUT_INVALID",
+        "Generate body is not a YouFlicks /v1/generate request.",
+      );
     }
 
     const request = parsed.data;
     const capability = capabilityForGenerateKind(request.kind);
     if (!this.config.capabilities.includes(capability)) {
-      return gatewayError(
+      return noReservationError(
         503,
         "ASSET_CAPABILITY_UNAVAILABLE",
         `This gateway does not advertise ${capability}. Voice, music, and SFX stay unmet unless a real adapter covers them.`,
@@ -78,7 +82,7 @@ export class YfAssetGenerateService {
 
     const model = resolveModel(this.config, request.model, capability);
     if (!model) {
-      return gatewayError(
+      return noReservationError(
         503,
         "GATEWAY_NOT_CONFIGURED",
         "No open-string model is configured. Set ASSET_HTTP_MODEL or YF_GATEWAY_MODEL.",
@@ -156,7 +160,7 @@ export class YfAssetGenerateService {
         this.config.lane ??
         requireLaneRate(this.config.laneId ?? "", this.config.registryPath);
     } catch (error) {
-      return gatewayError(
+      return noReservationError(
         503,
         "GATEWAY_NOT_CONFIGURED",
         error instanceof Error ? error.message : "Live gateway lane is not configured.",
@@ -168,13 +172,13 @@ export class YfAssetGenerateService {
       charge = estimateLaneCharge(lane, numericExtraDuration(this.config.extraInput));
     } catch (error) {
       if (error instanceof LaneDurationError) {
-        return gatewayError(400, error.code, error.message);
+        return noReservationError(400, error.code, error.message);
       }
       throw error;
     }
 
     if (!this.reservations) {
-      return gatewayError(
+      return noReservationError(
         503,
         "GATEWAY_NOT_CONFIGURED",
         "A live gateway requires a durable spend reservation ledger. Flat per-job reservation is not used.",
@@ -370,10 +374,10 @@ export class YfAssetGenerateService {
 
   /**
    * Accept a backend webhook. Keep only a normalized URL; drop vendor JSON.
+   * In-progress and unknown events do not change the job. A missing URL is not a failure.
    */
   acceptWebhook(rawBody: unknown): { status: number; body: { ok: boolean; jobId?: string } } {
     const backendRequestId = extractBackendRequestId(rawBody);
-    const asset = normalizeBackendAsset(rawBody);
     if (!backendRequestId) {
       return { status: 202, body: { ok: true } };
     }
@@ -381,12 +385,23 @@ export class YfAssetGenerateService {
     if (!job) {
       return { status: 202, body: { ok: true } };
     }
-    if (asset) {
-      this.jobs.markSucceeded(job.jobId, asset);
+    const status = mapQueueStatus(webhookStatus(rawBody));
+    if (status === "canceled") {
+      this.jobs.markCanceled(job.jobId);
       return { status: 200, body: { ok: true, jobId: job.jobId } };
     }
-    this.jobs.markFailed(job.jobId, "Backend webhook had no normalized asset URL.");
-    return { status: 200, body: { ok: true, jobId: job.jobId } };
+    if (status === "failed") {
+      this.jobs.markFailed(job.jobId, webhookError(rawBody) ?? "Backend generation failed.");
+      return { status: 200, body: { ok: true, jobId: job.jobId } };
+    }
+    if (status === "succeeded") {
+      const asset = normalizeBackendAsset(rawBody);
+      if (asset) {
+        this.jobs.markSucceeded(job.jobId, asset);
+        return { status: 200, body: { ok: true, jobId: job.jobId } };
+      }
+    }
+    return { status: 202, body: { ok: true } };
   }
 
   private async waitForAsset(jobId: string, model: string, backendRequestId: string) {
@@ -401,6 +416,12 @@ export class YfAssetGenerateService {
           width: local.width,
           height: local.height,
         };
+      }
+      if (local?.status === "canceled") {
+        throw new GatewayUnreconciledError(
+          local.error ?? "Backend generation was canceled.",
+          "CANCELLED",
+        );
       }
       if (local?.status === "failed") {
         const message = local.error ?? "Gateway job failed.";
@@ -522,6 +543,9 @@ function classifySubmitThrow(error: unknown): "rejected" | "unknown" {
   const status = /failed \((\d{3})\)/.exec(message);
   if (status) {
     const code = Number(status[1]);
+    if (code === 408 || code === 409) {
+      return "unknown";
+    }
     if (code >= 400 && code < 500) {
       return "rejected";
     }
@@ -534,6 +558,30 @@ function classifySubmitThrow(error: unknown): "rejected" | "unknown" {
     return "unknown";
   }
   return "rejected";
+}
+
+function noReservationError(
+  status: number,
+  code: string,
+  error: string,
+  extra?: { capability?: string },
+): GenerateHandlerResult {
+  return gatewayError(status, code, error, { ...extra, settlement: "NONE" });
+}
+
+function webhookStatus(rawBody: unknown): unknown {
+  if (!rawBody || typeof rawBody !== "object" || Array.isArray(rawBody)) {
+    return undefined;
+  }
+  return (rawBody as Record<string, unknown>).status;
+}
+
+function webhookError(rawBody: unknown): string | undefined {
+  if (!rawBody || typeof rawBody !== "object" || Array.isArray(rawBody)) {
+    return undefined;
+  }
+  const error = (rawBody as Record<string, unknown>).error;
+  return typeof error === "string" && error.length > 0 ? error : undefined;
 }
 
 function resolveModel(

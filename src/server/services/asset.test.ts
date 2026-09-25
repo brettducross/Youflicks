@@ -743,7 +743,11 @@ describe("AssetService M3", () => {
     }
   });
 
-  async function settleThroughGateway(backend: VideoBackend, download: typeof fetch = async () => new Response("clip")) {
+  async function settleThroughGateway(
+    backend: VideoBackend,
+    download: typeof fetch = async () => new Response("clip"),
+    configOverrides: Record<string, string> = {},
+  ) {
     const previousLane = process.env.YF_GATEWAY_LANE_ID;
     delete process.env.SG_BUDGET_PROJECT_MAX_SECONDS;
     delete process.env.SG_BUDGET_PROJECT_MAX_USD;
@@ -764,6 +768,7 @@ describe("AssetService M3", () => {
       YF_GATEWAY_POLL_MS: "1",
       YF_GATEWAY_TIMEOUT_MS: "40",
       YF_GATEWAY_LEDGER_ID: ledgerId,
+      ...configOverrides,
     });
     const gateway = new YfAssetGenerateService(
       config,
@@ -883,6 +888,28 @@ describe("AssetService M3", () => {
     expect(gatewayRow?.status).toBe("RELEASED");
     expect(reservation?.status).toBe("RELEASED");
     expect(reservation?.settleReason).toBe("GATEWAY_RELEASED");
+  });
+
+  it("releases the app budget when the gateway errors before reserving", async () => {
+    const neverCalled: VideoBackend = {
+      kind: "http",
+      async submit() {
+        throw new Error("backend must not be called before a reservation exists");
+      },
+      async status() {
+        return { status: "queued" };
+      },
+      async result() {
+        throw new Error("no result");
+      },
+    };
+    const { reservation, gatewayRow } = await settleThroughGateway(neverCalled, async () => new Response("no"), {
+      YF_GATEWAY_LANE_ID: "veo31lite-720",
+      YF_GATEWAY_BACKEND_INPUT_JSON: JSON.stringify({ duration: 9 }),
+    });
+    expect(gatewayRow).toBeUndefined();
+    expect(reservation?.status).toBe("RELEASED");
+    expect(reservation?.settleReason).toBe("GATEWAY_NONE");
   });
 
   it("marks the app budget UNRECONCILED when the gateway settlement is missing", async () => {

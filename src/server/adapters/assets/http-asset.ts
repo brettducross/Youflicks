@@ -231,7 +231,7 @@ function redact(text: string, secret?: string) {
 
 function parseGatewayError(text: string): {
   code?: string;
-  settlement?: "RELEASED" | "RECONCILED" | "UNRECONCILED";
+  settlement?: "RELEASED" | "RECONCILED" | "UNRECONCILED" | "NONE";
   actualBilledSeconds?: number;
 } {
   try {
@@ -243,7 +243,8 @@ function parseGatewayError(text: string): {
     const settlement =
       parsed.settlement === "RELEASED" ||
       parsed.settlement === "RECONCILED" ||
-      parsed.settlement === "UNRECONCILED"
+      parsed.settlement === "UNRECONCILED" ||
+      parsed.settlement === "NONE"
         ? parsed.settlement
         : undefined;
     const actualBilledSeconds =
@@ -261,7 +262,7 @@ function parseGatewayError(text: string): {
 }
 
 function gatewaySettlementDetails(parsed: {
-  settlement?: "RELEASED" | "RECONCILED" | "UNRECONCILED";
+  settlement?: "RELEASED" | "RECONCILED" | "UNRECONCILED" | "NONE";
   actualBilledSeconds?: number;
 }): Record<string, unknown> | undefined {
   if (!parsed.settlement) {

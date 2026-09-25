@@ -3,6 +3,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterAll, describe, expect, it, vi } from "vitest";
 import { MockVideoBackend } from "@/server/gateways/yf-asset/backends/mock";
+import { HttpQueueVideoBackend } from "@/server/gateways/yf-asset/backends/http-queue";
 import { ReplicateVideoBackend } from "@/server/gateways/yf-asset/backends/replicate";
 import type { VideoBackend } from "@/server/gateways/yf-asset/backends/types";
 import {
@@ -202,7 +203,7 @@ describe("GatewaySpendReservation Postgres", () => {
       where: { idempotencyKey: { startsWith: prefix } },
     });
     await prisma.gatewaySpendLedger.deleteMany({
-      where: { OR: [{ id: { contains: prefix } }, { id: `lane:${wan.laneId}` }] },
+      where: { id: { contains: prefix } },
     });
   });
 
@@ -227,12 +228,14 @@ describe("GatewaySpendReservation Postgres", () => {
   it("keeps a bake-off ledger id isolated from yf-asset", async () => {
     const before = await prisma.gatewaySpendLedger.findUnique({ where: { id: "yf-asset" } });
     const bakeoff = `bakeoff:${prefix}-run`;
+    const testLaneId = `${prefix}-wan`;
     const store = new PrismaGatewayReservation(prisma);
     await store.reserve(
       reserveInput({
         idempotencyKey: `${prefix}-bakeoff`,
+        laneId: testLaneId,
         primaryLedgerId: bakeoff,
-        ledgerIds: gatewayChargeLedgerIds(bakeoff, wan.laneId),
+        ledgerIds: gatewayChargeLedgerIds(bakeoff, testLaneId),
         maxJobs: 100,
         maxSpendUsd: 1000,
       }),
@@ -243,9 +246,11 @@ describe("GatewaySpendReservation Postgres", () => {
     const row = await store.snapshot(bakeoff);
     expect(row.scopeKind).toBe("BAKEOFF");
     expect(row.jobsAccepted).toBe(1);
-    const lane = await store.snapshot(`lane:${wan.laneId}`);
+    const laneLedgerId = `lane:${testLaneId}`;
+    expect(laneLedgerId.startsWith(`lane:${prefix}`)).toBe(true);
+    const lane = await store.snapshot(laneLedgerId);
     expect(lane.scopeKind).toBe("LANE");
-    expect(lane.jobsAccepted).toBeGreaterThanOrEqual(1);
+    expect(lane.jobsAccepted).toBe(1);
   });
 
   it("serializes 50 reserves so a cap of 10 accepts exactly 10", async () => {
@@ -689,4 +694,212 @@ describe("live submit and cancel settlement", () => {
       }
     }
   });
+
+  it("keeps the hold when a processing webhook arrives mid-poll", async () => {
+    const holder: { service?: YfAssetGenerateService } = {};
+    let polls = 0;
+    const backend: VideoBackend = {
+      kind: "http",
+      async submit() {
+        return { backendRequestId: "pred_processing" };
+      },
+      async status() {
+        polls += 1;
+        if (polls === 1) {
+          const accepted = holder.service!.acceptWebhook({
+            id: "pred_processing",
+            status: "processing",
+            error: null,
+          });
+          expect(accepted.status).toBe(202);
+          return { status: "running" };
+        }
+        return { status: "succeeded" };
+      },
+      async result() {
+        return {
+          url: "https://example.test/clip.mp4",
+          mimeType: "video/mp4",
+          durationMs: 5000,
+        };
+      },
+    };
+    const harness = liveGenerate(
+      backend,
+      async () =>
+        new Response(Buffer.from("clip"), {
+          status: 200,
+          headers: { "content-type": "video/mp4" },
+        }),
+    );
+    holder.service = harness.generate;
+    const result = await holder.service.generate(body);
+    expect(result.ok).toBe(true);
+    expect(row(harness.store, harness.ledgerId).status).toBe("RECONCILED");
+    const snap = await harness.store.snapshot(harness.ledgerId);
+    expect(snap.reservedUsd).toBeCloseTo(0, 5);
+    expect(snap.spendUsd).toBeGreaterThan(0);
+  });
+
+  it("ends UNRECONCILED when a canceled webhook arrives mid-poll", async () => {
+    const holder: { service?: YfAssetGenerateService } = {};
+    const backend: VideoBackend = {
+      kind: "http",
+      async submit() {
+        return { backendRequestId: "pred_wh_cancel" };
+      },
+      async status() {
+        holder.service!.acceptWebhook({ id: "pred_wh_cancel", status: "canceled", error: null });
+        return { status: "running" };
+      },
+      async result() {
+        throw new Error("result must not be fetched after a canceled webhook");
+      },
+    };
+    const harness = liveGenerate(backend);
+    holder.service = harness.generate;
+    const result = await holder.service.generate(body);
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error("expected canceled webhook to stay unreconciled");
+    expect(result.body.settlement).toBe("UNRECONCILED");
+    const held = row(harness.store, harness.ledgerId);
+    expect(held.status).toBe("UNRECONCILED");
+    expect(held.settleReason).toBe("CANCELLED");
+    expect((await harness.store.snapshot(harness.ledgerId)).reservedUsd).toBeCloseTo(
+      wanCharge.reservedUsd,
+      5,
+    );
+  });
+
+  it("keeps a Replicate 2xx without a prediction id and a typed 502 UNRECONCILED", async () => {
+    const missingId = await runReplicateSubmit(
+      new Response(JSON.stringify({ status: "starting" }), { status: 200 }),
+    );
+    expect(missingId.result.ok).toBe(false);
+    if (missingId.result.ok) throw new Error("expected missing prediction id");
+    expect(missingId.result.body.settlement).toBe("UNRECONCILED");
+    expect(row(missingId.store, missingId.ledgerId).status).toBe("UNRECONCILED");
+    expect(row(missingId.store, missingId.ledgerId).settleReason).toBe("SUBMIT_UNKNOWN");
+    expect((await missingId.store.snapshot(missingId.ledgerId)).reservedUsd).toBeCloseTo(
+      wanCharge.reservedUsd,
+      5,
+    );
+
+    const upstream = await runReplicateSubmit(new Response("upstream", { status: 502 }));
+    expect(upstream.result.ok).toBe(false);
+    if (upstream.result.ok) throw new Error("expected 502");
+    expect(upstream.result.body.settlement).toBe("UNRECONCILED");
+    expect(upstream.result.body.error).toMatch(/Replicate submit failed \(502\)/);
+    expect(row(upstream.store, upstream.ledgerId).settleReason).toBe("SUBMIT_UNKNOWN");
+    expect((await upstream.store.snapshot(upstream.ledgerId)).reservedUsd).toBeCloseTo(
+      wanCharge.reservedUsd,
+      5,
+    );
+  });
+
+  it("keeps an http-queue 2xx without a request id UNRECONCILED", async () => {
+    const ledgerId = `http-noid-${Math.random().toString(16).slice(2)}`;
+    const config = parseYfAssetGatewayConfig({
+      YF_GATEWAY_API_KEY: "gw-key",
+      YF_GATEWAY_BACKEND_API_KEY: "backend-key",
+      YF_GATEWAY_BACKEND: "http",
+      YF_GATEWAY_BACKEND_BASE_URL: "https://queue.other.test",
+      YF_GATEWAY_MODEL: "open.model",
+      YF_GATEWAY_LANE_ID: "r1-wan27-replicate",
+      YF_GATEWAY_MAX_JOBS: "10",
+      YF_GATEWAY_MAX_SPEND_USD: "100",
+      YF_GATEWAY_LEDGER_ID: ledgerId,
+    });
+    const backend = new HttpQueueVideoBackend(config, async (_url, init) => {
+      if (init?.method === "POST") {
+        return new Response(JSON.stringify({ status: "IN_QUEUE" }), { status: 200 });
+      }
+      return new Response("no", { status: 404 });
+    });
+    const store = new MemoryGatewayReservation();
+    const generate = new YfAssetGenerateService(
+      config,
+      backend,
+      new GatewayJobStore(),
+      new SpendGuard(config.maxJobs, config.maxSpendUsd, config.estimatedUsdPerJob),
+      async () => new Response("no", { status: 500 }),
+      async () => {},
+      store,
+    );
+    const result = await generate.generate(body);
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error("expected missing request id");
+    expect(result.body.settlement).toBe("UNRECONCILED");
+    expect(result.body.error).toMatch(/no request id/);
+    expect(row(store, ledgerId).status).toBe("UNRECONCILED");
+    expect(row(store, ledgerId).settleReason).toBe("SUBMIT_UNKNOWN");
+    expect((await store.snapshot(ledgerId)).reservedUsd).toBeCloseTo(wanCharge.reservedUsd, 5);
+  });
+
+  it("keeps provider 408 and 409 UNRECONCILED", async () => {
+    for (const status of [408, 409]) {
+      const outcome = await runReplicateSubmit(new Response("ambiguous", { status }));
+      expect(outcome.result.ok).toBe(false);
+      if (outcome.result.ok) throw new Error(`expected ${status} to stay unreconciled`);
+      expect(outcome.result.body.settlement).toBe("UNRECONCILED");
+      expect(outcome.result.body.error).toMatch(new RegExp(`Replicate submit failed \\(${status}\\)`));
+      expect(row(outcome.store, outcome.ledgerId).status).toBe("UNRECONCILED");
+      expect(row(outcome.store, outcome.ledgerId).settleReason).toBe("SUBMIT_UNKNOWN");
+      expect((await outcome.store.snapshot(outcome.ledgerId)).reservedUsd).toBeCloseTo(
+        wanCharge.reservedUsd,
+        5,
+      );
+    }
+  });
 });
+
+async function runReplicateSubmit(prediction: Response) {
+  const ledgerId = `submit-${Math.random().toString(16).slice(2)}`;
+  const png = Buffer.from(
+    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==",
+    "base64",
+  );
+  const config = parseYfAssetGatewayConfig({
+    YF_GATEWAY_API_KEY: "gw-key",
+    YF_GATEWAY_BACKEND: "replicate",
+    REPLICATE_API_TOKEN: "r8_test_token",
+    YF_GATEWAY_MODEL: "wan-video/wan-2.7-i2v",
+    YF_GATEWAY_LANE_ID: "r1-wan27-replicate",
+    YF_GATEWAY_MAX_JOBS: "10",
+    YF_GATEWAY_MAX_SPEND_USD: "100",
+    YF_GATEWAY_POLL_MS: "1",
+    YF_GATEWAY_TIMEOUT_MS: "1000",
+    YF_GATEWAY_LEDGER_ID: ledgerId,
+    YF_GATEWAY_BACKEND_INPUT_JSON: JSON.stringify({ imageBytesBase64: png.toString("base64") }),
+  });
+  const fetchImpl: typeof fetch = async (input, init) => {
+    const url = String(input);
+    if (url.endsWith("/v1/files")) {
+      return new Response(
+        JSON.stringify({ urls: { get: "https://api.replicate.com/v1/files/file_1" } }),
+        { status: 200 },
+      );
+    }
+    if (init?.method === "POST" && url.includes("/predictions")) {
+      return prediction;
+    }
+    return new Response("missing", { status: 404 });
+  };
+  const store = new MemoryGatewayReservation();
+  const generate = new YfAssetGenerateService(
+    config,
+    new ReplicateVideoBackend(config, fetchImpl),
+    new GatewayJobStore(),
+    new SpendGuard(config.maxJobs, config.maxSpendUsd, config.estimatedUsdPerJob),
+    fetchImpl,
+    async () => {},
+    store,
+  );
+  const result = await generate.generate({
+    model: "wan-video/wan-2.7-i2v",
+    kind: "VIDEO_CLIP",
+    role: "broll",
+    input: {},
+  });
+  return { result, store, ledgerId };
+}
