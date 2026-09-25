@@ -365,17 +365,10 @@ export class AssetService {
       try {
         quote = this.legacyAttemptQuote(attribution.providerKey, attribution.modelId);
       } catch (error) {
-        const unavailable = AppError.assetProviderUnavailable(
+        await this.fulfillments.markUnattemptedFailure(slot.id);
+        throw AppError.assetProviderUnavailable(
           error instanceof Error ? error.message : "AI video lane registry failed closed.",
         );
-        await this.recordClosedAttempt(
-          slot.id,
-          unpricedQuote(attribution.providerKey, "unconfigured", attribution.modelId),
-          job.id,
-          unavailable,
-          null,
-        );
-        throw unavailable;
       }
       let budgetHold: AiVideoBudgetReservationRecord | null = null;
       try {
@@ -417,10 +410,24 @@ export class AssetService {
           reconciled = await this.reconcileBudget(budgetHold, rawDocument.durationMs);
         }
       } catch (error) {
+        const mapped = attemptOutcomeFor(error);
         if (budgetHold) {
           await this.settleBudgetFailure(budgetHold, error);
+          await this.rememberBudgetGatewayId(budgetHold, mapped.gatewayReservationId);
         }
         await this.recordAttemptFailure(attempt.id, error);
+        this.logFulfillmentAttempt({
+          projectId,
+          jobId: job.id,
+          slotKey: slot.slotKey,
+          attemptNo: attempt.attemptNo,
+          classAttemptNo: attempt.classAttemptNo,
+          outcome: mapped.outcome,
+          laneId: quote.laneId,
+          providerKey: quote.providerKey,
+          budgetReservationId: budgetHold?.id ?? null,
+          gatewayReservationId: mapped.gatewayReservationId,
+        });
         await this.usage.recordJobUsage({
           userId,
           projectId,
@@ -444,6 +451,7 @@ export class AssetService {
         capability: attribution.capability,
       });
       const trace = gatewayTraceFor(rawDocument);
+      await this.rememberBudgetGatewayId(budgetHold, trace?.gatewayReservationId ?? null);
       let document;
       let stored;
       try {
@@ -452,13 +460,25 @@ export class AssetService {
       } catch (error) {
         await this.fulfillments.finishAttempt({
           attemptId: attempt.id,
-          outcome: "FAILED",
-          failureCode: isAppError(error) ? error.code : "PERSIST_FAILED",
+          outcome: "REJECTED_TECHNICAL",
+          failureCode: isAppError(error) ? error.code : "REJECTED_TECHNICAL",
           budgetReservationId: budgetHold?.id ?? null,
           gatewayJobId: trace?.gatewayJobId ?? null,
           gatewayReservationId: trace?.gatewayReservationId ?? null,
           actualBilledSeconds: reconciled?.actualBilledSeconds ?? trace?.actualBilledSeconds ?? null,
           actualUsd: reconciled?.actualUsd ?? trace?.actualUsd ?? null,
+        });
+        this.logFulfillmentAttempt({
+          projectId,
+          jobId: job.id,
+          slotKey: slot.slotKey,
+          attemptNo: attempt.attemptNo,
+          classAttemptNo: attempt.classAttemptNo,
+          outcome: "REJECTED_TECHNICAL",
+          laneId: quote.laneId,
+          providerKey: quote.providerKey,
+          budgetReservationId: budgetHold?.id ?? null,
+          gatewayReservationId: trace?.gatewayReservationId ?? null,
         });
         throw error;
       }
@@ -525,6 +545,18 @@ export class AssetService {
           actualBilledSeconds: reconciled?.actualBilledSeconds ?? trace?.actualBilledSeconds ?? null,
           actualUsd: reconciled?.actualUsd ?? trace?.actualUsd ?? null,
         });
+        this.logFulfillmentAttempt({
+          projectId,
+          jobId: job.id,
+          slotKey: slot.slotKey,
+          attemptNo: attempt.attemptNo,
+          classAttemptNo: attempt.classAttemptNo,
+          outcome: "FAILED",
+          laneId: quote.laneId,
+          providerKey: quote.providerKey,
+          budgetReservationId: budgetHold?.id ?? null,
+          gatewayReservationId: trace?.gatewayReservationId ?? null,
+        });
         throw error;
       }
 
@@ -541,7 +573,7 @@ export class AssetService {
         outputWidth: stored.width,
         outputHeight: stored.height,
       });
-      logger.info("asset.fulfillment_attempt", {
+      this.logFulfillmentAttempt({
         projectId,
         jobId: job.id,
         slotKey: slot.slotKey,
@@ -846,7 +878,7 @@ export class AssetService {
 
   /**
    * Price label for the existing single-lane path. Local and unconfigured
-   * runs record zeros and an unclassified class so they are not ceiling counts.
+   * runs record zeros and laneClass "unclassified", a recording label only.
    */
   private legacyAttemptQuote(providerKey: string, modelId: string | null) {
     if (!this.availability().productionAvailable) {
@@ -878,7 +910,7 @@ export class AssetService {
   ) {
     const slot = await prisma.shotFulfillment.findUniqueOrThrow({
       where: { id: shotFulfillmentId },
-      select: { requiredScopes: true, projectId: true },
+      select: { requiredScopes: true, projectId: true, slotKey: true },
     });
     await this.fulfillments.abandonPendingAttempts({ shotFulfillmentId, jobId });
     const attempt = await this.fulfillments.beginAttempt({
@@ -894,18 +926,56 @@ export class AssetService {
       usdPerSecond: quote.usdPerSecond,
       estimatedUsd: quote.estimatedUsd,
     });
+    const mapped = attemptOutcomeFor(error);
     await this.recordAttemptFailure(attempt.id, error);
-    logger.info("asset.fulfillment_attempt", {
+    this.logFulfillmentAttempt({
       projectId: slot.projectId,
       jobId,
+      slotKey: slot.slotKey,
       attemptNo: attempt.attemptNo,
       classAttemptNo: attempt.classAttemptNo,
-      outcome: attemptOutcomeFor(error).outcome,
+      outcome: mapped.outcome,
       laneId: quote.laneId,
       providerKey: quote.providerKey,
       budgetReservationId,
-      gatewayReservationId: null,
+      gatewayReservationId: mapped.gatewayReservationId,
     });
+  }
+
+  private logFulfillmentAttempt(input: {
+    projectId: string;
+    jobId: string;
+    slotKey: string;
+    attemptNo: number;
+    classAttemptNo: number;
+    outcome: string;
+    laneId: string;
+    providerKey: string;
+    budgetReservationId: string | null;
+    gatewayReservationId: string | null;
+  }) {
+    logger.info("asset.fulfillment_attempt", {
+      projectId: input.projectId,
+      jobId: input.jobId,
+      slotKey: input.slotKey,
+      attemptNo: input.attemptNo,
+      classAttemptNo: input.classAttemptNo,
+      outcome: input.outcome,
+      laneId: input.laneId,
+      providerKey: input.providerKey,
+      budgetReservationId: input.budgetReservationId,
+      gatewayReservationId: input.gatewayReservationId,
+    });
+  }
+
+  private async rememberBudgetGatewayId(
+    hold: AiVideoBudgetReservationRecord | null,
+    gatewayReservationId: string | null,
+  ) {
+    if (!hold || !gatewayReservationId || hold.gatewayReservationId) {
+      return;
+    }
+    await this.budgets.rememberGatewayReservationId(hold.id, gatewayReservationId);
   }
 
   private async recordAttemptFailure(attemptId: string, error: unknown) {

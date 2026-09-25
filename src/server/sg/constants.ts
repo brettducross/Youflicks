@@ -68,8 +68,7 @@ export const identityStateSchema = z.enum(IDENTITY_STATES);
 
 /**
  * ShotFulfillment.routingMode (D12).
- * LEGACY is the E-R1 working default: a temporary, labeled Wan exception
- * while testing stays internal. PR-2 records the value and does not route.
+ * LEGACY until PR-8; E-R1 pending PO. PR-2 records the value and does not route.
  */
 export const ROUTING_MODES = ["LEGACY", "ENFORCED"] as const;
 export type RoutingMode = (typeof ROUTING_MODES)[number];

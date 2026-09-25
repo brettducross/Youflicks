@@ -938,6 +938,7 @@ describe("AssetService M3", () => {
     const attempt = await prisma.shotFulfillmentAttempt.findFirst({
       where: { budgetReservationId: reservation?.id },
     });
+    expect(reservation?.gatewayReservationId).toBe(gatewayRow?.id);
     expect(attempt?.outcome).toBe("SUCCEEDED");
     expect(attempt?.actualBilledSeconds).toBe(5);
     expect(attempt?.actualUsd).toBeCloseTo(0.5, 5);
@@ -970,6 +971,7 @@ describe("AssetService M3", () => {
     expect(gatewayRow?.settleReason).toBe("TIMEOUT");
     expect(reservation?.status).toBe("UNRECONCILED");
     expect(reservation?.settleReason).toBe("GATEWAY_UNRECONCILED");
+    expect(reservation?.gatewayReservationId).toBe(gatewayRow?.id);
     const attempt = await prisma.shotFulfillmentAttempt.findFirst({
       where: { budgetReservationId: reservation?.id },
     });
@@ -1034,8 +1036,9 @@ describe("AssetService M3", () => {
     const attempt = await prisma.shotFulfillmentAttempt.findFirst({
       where: { budgetReservationId: reservation?.id },
     });
-    expect(attempt?.outcome).toBe("REJECTED_TECHNICAL");
+    expect(attempt?.outcome).toBe("FAILED");
     expect(attempt?.failureCode).toBe("SUBMIT_REJECTED");
+    expect(reservation?.gatewayReservationId).toBe(gatewayRow?.id);
     expect(attempt?.gatewayReservationId).toBe(gatewayRow?.id);
     expect(attempt?.actualBilledSeconds).toBeNull();
   });
@@ -1091,12 +1094,233 @@ describe("AssetService M3", () => {
       });
       expect(reservation?.status).toBe("UNRECONCILED");
       expect(reservation?.settleReason).toBe("SETTLEMENT_MISSING");
+      const attempt = await prisma.shotFulfillmentAttempt.findFirst({
+        where: { jobId: queued.jobId },
+      });
+      expect(attempt?.outcome).toBe("TIMEOUT_UNRECONCILED");
+      expect(attempt?.failureCode).toBe("SETTLEMENT_MISSING");
     } finally {
       if (previousLane === undefined) delete process.env.YF_GATEWAY_LANE_ID;
       else process.env.YF_GATEWAY_LANE_ID = previousLane;
       await prisma.aiVideoBudgetLedger.deleteMany({
         where: { OR: [{ projectId }, { userId: ownerId }] },
       });
+    }
+  });
+
+  async function runProxiedGatewayFailure(response: Response, storySceneId: string) {
+    const previousLane = process.env.YF_GATEWAY_LANE_ID;
+    delete process.env.SG_BUDGET_PROJECT_MAX_SECONDS;
+    delete process.env.SG_BUDGET_PROJECT_MAX_USD;
+    delete process.env.SG_BUDGET_USER_WINDOW_MAX_SECONDS;
+    delete process.env.SG_BUDGET_USER_WINDOW_MAX_USD;
+    process.env.YF_GATEWAY_LANE_ID = "r1-wan27-replicate";
+    const lines: string[] = [];
+    const originalLog = console.log;
+    console.log = (...args: unknown[]) => {
+      lines.push(args.map((arg) => String(arg)).join(" "));
+      originalLog.apply(console, args);
+    };
+    try {
+      const adapter = new HttpAssetGeneratorAdapter(
+        storage,
+        {
+          providerKey: "http.asset",
+          baseUrl: "http://gateway.test",
+          apiKey: "gw-key",
+          model: "open.model",
+          capabilities: [AssetCapability.IMAGE_GENERATION],
+          timeoutMs: 5_000,
+        },
+        async () => response,
+      );
+      const { assets, worker } = harness({
+        adapter,
+        productionAvailable: true,
+        supportedCapabilities: [AssetCapability.IMAGE_GENERATION],
+      });
+      const queued = await assets.requestGenerate(ownerId, projectId, {
+        roles: [{ role: "intimate_portrait", storySceneId, kind: "IMAGE" }],
+      });
+      for (let attempt = 0; attempt < 8; attempt += 1) {
+        const current = await jobs.get(queued.jobId);
+        if (current && current.status !== JobStatus.PENDING && current.status !== JobStatus.RUNNING) {
+          break;
+        }
+        const ran = await worker.processNext();
+        if (!ran) break;
+      }
+      const reservation = await prisma.aiVideoBudgetReservation.findFirst({
+        where: { idempotencyKey: { startsWith: `asset:${queued.jobId}:` } },
+      });
+      const attempt = await prisma.shotFulfillmentAttempt.findFirst({
+        where: { jobId: queued.jobId },
+      });
+      const logged = lines
+        .map((line) => {
+          try {
+            return JSON.parse(line) as Record<string, unknown>;
+          } catch {
+            return null;
+          }
+        })
+        .filter((entry): entry is Record<string, unknown> => entry?.message === "asset.fulfillment_attempt");
+      return { reservation, attempt, logged, jobId: queued.jobId };
+    } finally {
+      console.log = originalLog;
+      if (previousLane === undefined) delete process.env.YF_GATEWAY_LANE_ID;
+      else process.env.YF_GATEWAY_LANE_ID = previousLane;
+      await prisma.aiVideoBudgetLedger.deleteMany({
+        where: { OR: [{ projectId }, { userId: ownerId }] },
+      });
+    }
+  }
+
+  it("records TIMEOUT_UNRECONCILED when a proxy 404 has no settlement", async () => {
+    const { reservation, attempt, logged } = await runProxiedGatewayFailure(
+      new Response("not found", { status: 404 }),
+      "scene-proxy-404",
+    );
+    expect(reservation?.status).toBe("UNRECONCILED");
+    expect(reservation?.settleReason).toBe("SETTLEMENT_MISSING");
+    expect(attempt?.outcome).toBe("TIMEOUT_UNRECONCILED");
+    expect(attempt?.failureCode).toBe("SETTLEMENT_MISSING");
+    expect(logged.some((entry) => entry.outcome === "TIMEOUT_UNRECONCILED")).toBe(true);
+    for (const entry of logged) {
+      expect(Object.keys(entry).sort()).toEqual([
+        "attemptNo",
+        "budgetReservationId",
+        "classAttemptNo",
+        "gatewayReservationId",
+        "jobId",
+        "laneId",
+        "level",
+        "message",
+        "outcome",
+        "projectId",
+        "providerKey",
+        "service",
+        "slotKey",
+        "time",
+      ]);
+    }
+  });
+
+  it("records TIMEOUT_UNRECONCILED when a proxy 413 has no settlement", async () => {
+    const { reservation, attempt } = await runProxiedGatewayFailure(
+      new Response(JSON.stringify({ code: "PAYLOAD_TOO_LARGE" }), {
+        status: 413,
+        headers: { "content-type": "application/json" },
+      }),
+      "scene-proxy-413",
+    );
+    expect(reservation?.status).toBe("UNRECONCILED");
+    expect(reservation?.settleReason).toBe("SETTLEMENT_MISSING");
+    expect(attempt?.outcome).toBe("TIMEOUT_UNRECONCILED");
+    expect(attempt?.failureCode).toBe("PAYLOAD_TOO_LARGE");
+  });
+
+  it("records TIMEOUT_UNRECONCILED when a 400 carries settlement UNRECONCILED", async () => {
+    const { reservation, attempt } = await runProxiedGatewayFailure(
+      new Response(JSON.stringify({ settlement: "UNRECONCILED", settleReason: "UNKNOWN" }), {
+        status: 400,
+        headers: { "content-type": "application/json" },
+      }),
+      "scene-proxy-400",
+    );
+    expect(reservation?.status).toBe("UNRECONCILED");
+    expect(reservation?.settleReason).toBe("GATEWAY_UNRECONCILED");
+    expect(attempt?.outcome).toBe("TIMEOUT_UNRECONCILED");
+    expect(attempt?.failureCode).toBe("UNKNOWN");
+  });
+
+  it("writes no attempt when the lane registry cannot be read", async () => {
+    const previousLane = process.env.YF_GATEWAY_LANE_ID;
+    const previousRegistry = process.env.SG_LANE_REGISTRY_PATH;
+    process.env.YF_GATEWAY_LANE_ID = "r1-wan27-replicate";
+    process.env.SG_LANE_REGISTRY_PATH = "/tmp/youflicks-missing-lane-registry.json";
+    let calls = 0;
+    try {
+      const { assets, worker } = harness({
+        adapter: scriptedGenerator(async () => {
+          calls += 1;
+          throw new Error("provider must not be called");
+        }),
+        productionAvailable: true,
+        supportedCapabilities: [AssetCapability.IMAGE_GENERATION],
+      });
+      const queued = await assets.requestGenerate(ownerId, projectId, {
+        roles: [{ role: "intimate_portrait", storySceneId: "scene-registry-miss", kind: "IMAGE" }],
+      });
+      for (let attempt = 0; attempt < 8; attempt += 1) {
+        const current = await jobs.get(queued.jobId);
+        if (current && current.status !== JobStatus.PENDING && current.status !== JobStatus.RUNNING) {
+          break;
+        }
+        const ran = await worker.processNext();
+        if (!ran) break;
+      }
+      expect(calls).toBe(0);
+      const attempts = await prisma.shotFulfillmentAttempt.findMany({
+        where: { jobId: queued.jobId },
+      });
+      expect(attempts).toHaveLength(0);
+      const slot = await prisma.shotFulfillment.findFirst({
+        where: { projectId, storySceneId: "scene-registry-miss" },
+      });
+      expect(slot?.status).toBe("FAILED");
+      const reservation = await prisma.aiVideoBudgetReservation.findFirst({
+        where: { idempotencyKey: { startsWith: `asset:${queued.jobId}:` } },
+      });
+      expect(reservation).toBeNull();
+    } finally {
+      if (previousLane === undefined) delete process.env.YF_GATEWAY_LANE_ID;
+      else process.env.YF_GATEWAY_LANE_ID = previousLane;
+      if (previousRegistry === undefined) delete process.env.SG_LANE_REGISTRY_PATH;
+      else process.env.SG_LANE_REGISTRY_PATH = previousRegistry;
+    }
+  });
+
+  it("records REJECTED_TECHNICAL when the returned document fails the output contract", async () => {
+    const local = new LocalDeterministicAssetGenerator(storage);
+    const lines: string[] = [];
+    const originalLog = console.log;
+    console.log = (...args: unknown[]) => {
+      lines.push(args.map((arg) => String(arg)).join(" "));
+      originalLog.apply(console, args);
+    };
+    try {
+      const { assets, worker } = harness({
+        adapter: scriptedGenerator(async (input) => {
+          const document = await local.generate(input);
+          return { ...document, role: "not-the-requested-role" };
+        }),
+        productionAvailable: false,
+        localDevAvailable: true,
+      });
+      const queued = await assets.requestGenerate(ownerId, projectId, {
+        roles: [{ role: "intimate_portrait", storySceneId: "scene-output-reject", kind: "IMAGE" }],
+      });
+      await worker.processNext();
+      const attempt = await prisma.shotFulfillmentAttempt.findFirst({
+        where: { jobId: queued.jobId },
+      });
+      expect(attempt?.outcome).toBe("REJECTED_TECHNICAL");
+      expect(attempt?.failureCode).toBe("ASSET_DOCUMENT_INVALID");
+      const logged = lines
+        .map((line) => {
+          try {
+            return JSON.parse(line) as Record<string, unknown>;
+          } catch {
+            return null;
+          }
+        })
+        .filter((entry): entry is Record<string, unknown> => entry?.message === "asset.fulfillment_attempt");
+      expect(logged.some((entry) => entry.outcome === "REJECTED_TECHNICAL" && entry.jobId === queued.jobId)).toBe(
+        true,
+      );
+    } finally {
+      console.log = originalLog;
     }
   });
 

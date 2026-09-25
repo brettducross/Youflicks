@@ -6,6 +6,7 @@ import path from "node:path";
 import { afterAll, describe, expect, it } from "vitest";
 import { LocalStorageAdapter } from "@/server/adapters/storage/local";
 import { prisma } from "@/server/db";
+import { PrismaAiVideoBudget } from "@/server/sg/ai-video-budget";
 import { attemptOutcomeFromSettlement } from "@/server/sg/attempt-outcome";
 import { IdentityEvidenceError } from "@/server/sg/identity-evidence";
 import {
@@ -74,7 +75,7 @@ describe("attempt outcome mapping", () => {
         settlement: "RELEASED",
         settleReason: "SUBMIT_REJECTED",
       }),
-    ).toEqual({ outcome: "REJECTED_TECHNICAL", failureCode: "SUBMIT_REJECTED" });
+    ).toEqual({ outcome: "FAILED", failureCode: "SUBMIT_REJECTED" });
     expect(
       attemptOutcomeFromSettlement({
         spendCap: false,
@@ -83,7 +84,48 @@ describe("attempt outcome mapping", () => {
         gatewayStatus: 400,
         gatewayCode: "DURATION_UNSUPPORTED",
       }),
-    ).toEqual({ outcome: "REJECTED_TECHNICAL", failureCode: "DURATION_UNSUPPORTED" });
+    ).toEqual({ outcome: "FAILED", failureCode: "SUBMIT_REJECTED" });
+    expect(
+      attemptOutcomeFromSettlement({
+        spendCap: false,
+        settlement: "MISSING",
+        settleReason: null,
+        gatewayStatus: 404,
+      }),
+    ).toEqual({ outcome: "TIMEOUT_UNRECONCILED", failureCode: "SETTLEMENT_MISSING" });
+    expect(
+      attemptOutcomeFromSettlement({
+        spendCap: false,
+        settlement: "MISSING",
+        settleReason: null,
+        gatewayStatus: 413,
+      }),
+    ).toEqual({ outcome: "TIMEOUT_UNRECONCILED", failureCode: "SETTLEMENT_MISSING" });
+    expect(
+      attemptOutcomeFromSettlement({
+        spendCap: false,
+        settlement: "UNRECONCILED",
+        settleReason: null,
+        gatewayStatus: 400,
+        gatewayCode: "BAD_REQUEST",
+      }),
+    ).toEqual({ outcome: "TIMEOUT_UNRECONCILED", failureCode: "BAD_REQUEST" });
+    expect(
+      attemptOutcomeFromSettlement({
+        spendCap: false,
+        settlement: "UNRECONCILED",
+        settleReason: "STATUS_UNKNOWN",
+        gatewayStatus: 404,
+      }),
+    ).toEqual({ outcome: "TIMEOUT_UNRECONCILED", failureCode: "STATUS_UNKNOWN" });
+    expect(
+      attemptOutcomeFromSettlement({
+        spendCap: false,
+        settlement: "RELEASED",
+        settleReason: "RESULT_UNKNOWN",
+        gatewayStatus: 400,
+      }),
+    ).toEqual({ outcome: "TIMEOUT_UNRECONCILED", failureCode: "RESULT_UNKNOWN" });
     expect(
       attemptOutcomeFromSettlement({
         spendCap: false,
@@ -279,15 +321,35 @@ describe("ShotFulfillment records", () => {
 
     await records.setIdentityEvidence(nextVersion.id, {
       faceCount: 1,
-      identityPresent: false,
-      faces: { count: 0, matched: false },
+      faceDetected: false,
+      recurringPersonCount: 0,
+      analysisCompleted: true,
+      detail: { faceCount: 0, faceDetected: false },
     });
     const accepted = await prisma.shotFulfillment.findUniqueOrThrow({ where: { id: nextVersion.id } });
     expect(accepted.identityEvidence).toEqual({
       faceCount: 1,
-      identityPresent: false,
-      faces: { count: 0, matched: false },
+      faceDetected: false,
+      recurringPersonCount: 0,
+      analysisCompleted: true,
+      detail: { faceCount: 0, faceDetected: false },
     });
+    const quantized = Object.fromEntries(
+      Array.from({ length: 128 }, (_, index) => [`e${index}`, index % 256]),
+    );
+    await expect(records.setIdentityEvidence(nextVersion.id, quantized)).rejects.toBeInstanceOf(
+      IdentityEvidenceError,
+    );
+    let deep: Record<string, unknown> = { faceCount: 1 };
+    for (let level = 0; level < 6; level += 1) {
+      deep = { detail: deep };
+    }
+    await expect(records.setIdentityEvidence(nextVersion.id, deep)).rejects.toBeInstanceOf(
+      IdentityEvidenceError,
+    );
+    await expect(
+      records.setIdentityEvidence(nextVersion.id, { faceCount: Number.MAX_SAFE_INTEGER }),
+    ).rejects.toBeInstanceOf(IdentityEvidenceError);
 
     await expect(
       records.setIdentityEvidence(nextVersion.id, { embedding: [0.12, -0.4, 1.5] }),
@@ -302,6 +364,122 @@ describe("ShotFulfillment records", () => {
     ).rejects.toBeInstanceOf(IdentityEvidenceError);
     const unchanged = await prisma.shotFulfillment.findUniqueOrThrow({ where: { id: nextVersion.id } });
     expect(unchanged.identityEvidence).toEqual(accepted.identityEvidence);
+  });
+
+  it("gives classAttemptNo 1 when the only prior same-class row is CAP_DENIED", async () => {
+    const slot = await records.ensureSlot({
+      projectId,
+      timelineId: "tl_cap",
+      timelineVersion: 4,
+      role: "intimate_portrait",
+      storySceneId: "scene-cap",
+    });
+    const denied = await records.beginAttempt({
+      shotFulfillmentId: slot.id,
+      laneClass: "standard",
+      laneId: "r1-wan27-replicate",
+      providerKey: "replicate:wan-video/wan-2.7-i2v",
+      requiredScopes: ["IDENTITY"],
+      jobId: "job_cap",
+      estimatedBilledSeconds: 5,
+      usdPerSecond: 0.1,
+      estimatedUsd: 0.5,
+    });
+    await records.finishAttempt({
+      attemptId: denied.id,
+      outcome: "CAP_DENIED",
+      failureCode: "CAP_DENIED",
+    });
+    const generation = await records.beginAttempt({
+      shotFulfillmentId: slot.id,
+      laneClass: "standard",
+      laneId: "r1-wan27-replicate",
+      providerKey: "replicate:wan-video/wan-2.7-i2v",
+      requiredScopes: ["IDENTITY"],
+      jobId: "job_generation",
+      estimatedBilledSeconds: 5,
+      usdPerSecond: 0.1,
+      estimatedUsd: 0.5,
+    });
+    expect(generation.attemptNo).toBe(2);
+    expect(generation.classAttemptNo).toBe(1);
+    await records.finishAttempt({
+      attemptId: generation.id,
+      outcome: "TIMEOUT_UNRECONCILED",
+      failureCode: "TIMEOUT",
+    });
+    const afterTimeout = await records.beginAttempt({
+      shotFulfillmentId: slot.id,
+      laneClass: "standard",
+      laneId: "r1-wan27-replicate",
+      providerKey: "replicate:wan-video/wan-2.7-i2v",
+      requiredScopes: ["IDENTITY"],
+      estimatedBilledSeconds: 5,
+      usdPerSecond: 0.1,
+      estimatedUsd: 0.5,
+    });
+    expect(afterTimeout.classAttemptNo).toBe(2);
+  });
+
+  it("closes an interrupted PENDING attempt as TIMEOUT_UNRECONCILED and marks its hold UNRECONCILED", async () => {
+    const slot = await records.ensureSlot({
+      projectId,
+      timelineId: "tl_interrupt",
+      timelineVersion: 5,
+      role: "intimate_portrait",
+      storySceneId: "scene-interrupt",
+    });
+    const budgets = new PrismaAiVideoBudget(prisma);
+    const hold = await budgets.reserve({
+      idempotencyKey: `${userId}-interrupted`,
+      projectId,
+      userId,
+      windowKey: "2026-09-25",
+      laneId: "r1-wan27-replicate",
+      providerKey: "replicate:wan-video/wan-2.7-i2v",
+      estimatedBilledSeconds: 5,
+      usdPerSecond: 0.1,
+      estimatedUsd: 0.5,
+      caps: {},
+    });
+    const pending = await records.beginAttempt({
+      shotFulfillmentId: slot.id,
+      laneClass: "standard",
+      laneId: "r1-wan27-replicate",
+      providerKey: "replicate:wan-video/wan-2.7-i2v",
+      requiredScopes: ["IDENTITY"],
+      jobId: "job_interrupted",
+      budgetReservationId: hold.id,
+      estimatedBilledSeconds: 5,
+      usdPerSecond: 0.1,
+      estimatedUsd: 0.5,
+    });
+    const other = await records.beginAttempt({
+      shotFulfillmentId: slot.id,
+      laneClass: "standard",
+      laneId: "r1-wan27-replicate",
+      providerKey: "replicate:wan-video/wan-2.7-i2v",
+      requiredScopes: ["IDENTITY"],
+      jobId: "job_other",
+      estimatedBilledSeconds: 5,
+      usdPerSecond: 0.1,
+      estimatedUsd: 0.5,
+    });
+    await records.abandonPendingAttempts({
+      shotFulfillmentId: slot.id,
+      jobId: "job_interrupted",
+    });
+    const closed = await prisma.shotFulfillmentAttempt.findUniqueOrThrow({ where: { id: pending.id } });
+    expect(closed.outcome).toBe("TIMEOUT_UNRECONCILED");
+    expect(closed.failureCode).toBe("INTERRUPTED");
+    const settled = await prisma.aiVideoBudgetReservation.findUniqueOrThrow({ where: { id: hold.id } });
+    expect(settled.status).toBe("UNRECONCILED");
+    expect(settled.settleReason).toBe("INTERRUPTED");
+    const untouched = await prisma.shotFulfillmentAttempt.findUniqueOrThrow({ where: { id: other.id } });
+    expect(untouched.outcome).toBe("PENDING");
+    await prisma.aiVideoBudgetLedger.deleteMany({
+      where: { OR: [{ projectId }, { userId }] },
+    });
   });
 
   it("assigns one attempt sequence when two workers record the same slot", async () => {

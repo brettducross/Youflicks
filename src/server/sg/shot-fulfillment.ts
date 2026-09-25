@@ -7,11 +7,12 @@ import {
   type AttemptOutcome,
 } from "@/server/sg/constants";
 import { assertIdentityEvidence, IdentityEvidenceError } from "@/server/sg/identity-evidence";
+import { PrismaAiVideoBudget } from "@/server/sg/ai-video-budget";
 import { DEFAULT_SG_LANE_REGISTRY_PATH, roundMeasure } from "@/server/sg/lane-rate";
 
 /**
- * E-R1 working default. Temporary labeled Wan exception while testing stays
- * internal. Recording LEGACY is not routing and does not read SG_ROUTING_MODE.
+ * LEGACY until PR-8; E-R1 pending PO. Recording LEGACY is not routing
+ * and does not read SG_ROUTING_MODE.
  */
 export const LEGACY_DECISION_REASON =
   "LEGACY records the existing single-lane path. Routing and regen ceilings are not applied.";
@@ -215,8 +216,35 @@ export class PrismaShotFulfillment {
   /**
    * A retried job may have left a PENDING row. Close it before the next
    * attempt on that same job. Concurrent jobs keep their own rows.
+   * The interrupted try may already have a billed provider job (D11), so
+   * the outcome stays counted and a still-RESERVED app hold is marked
+   * UNRECONCILED rather than left open.
    */
   async abandonPendingAttempts(input: { shotFulfillmentId: string; jobId: string }) {
+    const pending = await this.db.shotFulfillmentAttempt.findMany({
+      where: {
+        shotFulfillmentId: input.shotFulfillmentId,
+        jobId: input.jobId,
+        outcome: "PENDING",
+      },
+      select: { budgetReservationId: true },
+    });
+    if (pending.length === 0) {
+      return;
+    }
+    const budgets = new PrismaAiVideoBudget(this.db);
+    for (const row of pending) {
+      if (!row.budgetReservationId) {
+        continue;
+      }
+      const hold = await this.db.aiVideoBudgetReservation.findUnique({
+        where: { id: row.budgetReservationId },
+        select: { id: true, status: true },
+      });
+      if (hold?.status === "RESERVED") {
+        await budgets.markUnreconciled(hold.id, "INTERRUPTED");
+      }
+    }
     await this.db.shotFulfillmentAttempt.updateMany({
       where: {
         shotFulfillmentId: input.shotFulfillmentId,
@@ -224,7 +252,7 @@ export class PrismaShotFulfillment {
         outcome: "PENDING",
       },
       data: {
-        outcome: "FAILED",
+        outcome: "TIMEOUT_UNRECONCILED",
         failureCode: "INTERRUPTED",
         finishedAt: new Date(),
       },
@@ -253,11 +281,13 @@ export class PrismaShotFulfillment {
           });
           const existing = await tx.shotFulfillmentAttempt.findMany({
             where: { shotFulfillmentId: input.shotFulfillmentId },
-            select: { attemptNo: true, laneClass: true },
+            select: { attemptNo: true, laneClass: true, outcome: true },
           });
           const attemptNo = existing.reduce((max, row) => Math.max(max, row.attemptNo), 0) + 1;
           const classAttemptNo =
-            existing.filter((row) => row.laneClass === input.laneClass).length + 1;
+            existing.filter(
+              (row) => row.laneClass === input.laneClass && countsAsClassAttempt(row.outcome),
+            ).length + 1;
           const created = await tx.shotFulfillmentAttempt.create({
             data: {
               shotFulfillmentId: input.shotFulfillmentId,
@@ -418,6 +448,16 @@ export class PrismaShotFulfillment {
       data: { identityEvidence: parsed as Prisma.InputJsonValue },
     });
   }
+}
+
+/**
+ * classAttemptNo counts provider attempts in the class (L553).
+ * CAP_DENIED made no provider call and must not consume the ceiling (L554).
+ * Capability misses and registry failures write no row. TIMEOUT_UNRECONCILED
+ * (including INTERRUPTED), CANCELLED, FAILED, and in-flight PENDING rows count.
+ */
+function countsAsClassAttempt(outcome: string): boolean {
+  return outcome !== "CAP_DENIED";
 }
 
 function slotStatusForOutcome(outcome: AttemptOutcome): string {
