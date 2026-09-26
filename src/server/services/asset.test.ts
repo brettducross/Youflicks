@@ -2263,6 +2263,67 @@ describe("AssetService M3", () => {
     return { dir, file };
   }
 
+  const QUALIFIED_GATE = {
+    status: "QUALIFIED",
+    evidenceSha256: "ab".repeat(32),
+    signoffRef: "po-signoff:fixture",
+  };
+  const UNQUALIFIED_GATE = { status: "NOT_QUALIFIED" };
+
+  function fixtureLane(input: {
+    laneId: string;
+    laneClass: string;
+    providerKey: string;
+    modelId: string;
+    usdPerSecond: number;
+    gateway: { baseUrlEnv: string; apiKeyEnv: string };
+    gates: { HERO: object; IDENTITY: object; NON_IDENTITY: object };
+    designation?: string;
+  }) {
+    return {
+      laneId: input.laneId,
+      laneClass: input.laneClass,
+      providerKey: input.providerKey,
+      modelId: input.modelId,
+      gateway: input.gateway,
+      resolutionTier: "720p",
+      usdPerSecond: input.usdPerSecond,
+      rateRef: "ESTIMATE fixture; not a price",
+      clipDurationS: 5,
+      supportedDurationsS: [5],
+      billingGranularityS: 1,
+      failuresBillable: true,
+      audioMode: "OFF",
+      enabled: true,
+      designation: input.designation ?? "NONE",
+      gates: input.gates,
+    };
+  }
+
+  async function writeLaneRegistry(lanes: object[]) {
+    const dir = await mkdtemp(path.join(tmpdir(), "youflicks-pr8-r2-"));
+    const file = path.join(dir, "lanes.json");
+    await writeFile(
+      file,
+      JSON.stringify({
+        registryVersion: "sg-lanes-v1",
+        thresholdsVersion: "po-sg-2026-09-25",
+        regenCeilings: { "draft-cost": 3, "draft-quality": 2, standard: 2, premium: 2 },
+        classOrder: ["draft-cost", "draft-quality", "standard", "premium"],
+        lanes,
+        processors: [],
+      }),
+      "utf8",
+    );
+    return { dir, file };
+  }
+
+  async function clearBudgetLedgers() {
+    await prisma.aiVideoBudgetLedger.deleteMany({
+      where: { OR: [{ projectId }, { userId: ownerId }] },
+    });
+  }
+
   async function withEnv(values: Record<string, string | undefined>, run: () => Promise<void>) {
     const previous = new Map<string, string | undefined>();
     for (const [key, value] of Object.entries(values)) {
@@ -2351,6 +2412,7 @@ describe("AssetService M3", () => {
     events: string[];
     adapter: AssetGeneratorPort;
     modelId?: string;
+    supportedCapabilities?: AssetCapabilityValue[];
   }) {
     return () => ({
       forLane() {
@@ -2365,7 +2427,7 @@ describe("AssetService M3", () => {
               modelVersion: "1",
             };
           },
-          supportedCapabilities: [
+          supportedCapabilities: input.supportedCapabilities ?? [
             AssetCapability.IMAGE_GENERATION,
             AssetCapability.VIDEO_GENERATION,
             AssetCapability.MEDIA_ENHANCEMENT,
@@ -2674,7 +2736,7 @@ describe("AssetService M3", () => {
           }),
         });
         const queued = await assets.requestGenerate(ownerId, projectId, {
-          roles: [{ role: "routed_hold_still", storySceneId: "scene-arrive", kind: "IMAGE" }],
+          roles: [{ role: "routed_hold_still", storySceneId: "scene-arrive", kind: "VIDEO_CLIP" }],
         });
         jobId = queued.jobId;
         try {
@@ -2751,7 +2813,7 @@ describe("AssetService M3", () => {
           }),
         });
         const queued = await assets.requestGenerate(ownerId, projectId, {
-          roles: [{ role: "unset_lane_hold_still", storySceneId: "scene-arrive", kind: "IMAGE" }],
+          roles: [{ role: "unset_lane_hold_still", storySceneId: "scene-arrive", kind: "VIDEO_CLIP" }],
         });
         jobId = queued.jobId;
         try {
@@ -2804,7 +2866,7 @@ describe("AssetService M3", () => {
           }),
         });
         const queued = await assets.requestGenerate(ownerId, projectId, {
-          roles: [{ role: "model_mismatch_still", storySceneId: "scene-arrive", kind: "IMAGE" }],
+          roles: [{ role: "model_mismatch_still", storySceneId: "scene-arrive", kind: "VIDEO_CLIP" }],
         });
         try {
           await assets.processJob((await jobs.get(queued.jobId))!);
@@ -2865,7 +2927,7 @@ describe("AssetService M3", () => {
           });
         const first = build();
         const queued = await first.assets.requestGenerate(ownerId, projectId, {
-          roles: [{ role, storySceneId: "scene-arrive", kind: "IMAGE" }],
+          roles: [{ role, storySceneId: "scene-arrive", kind: "VIDEO_CLIP" }],
         });
         try {
           await expect(first.assets.processJob((await jobs.get(queued.jobId))!)).rejects.toThrow(/cap/i);
@@ -2882,7 +2944,7 @@ describe("AssetService M3", () => {
           });
           const second = build();
           const again = await second.assets.requestGenerate(ownerId, projectId, {
-            roles: [{ role, storySceneId: "scene-arrive", kind: "IMAGE" }],
+            roles: [{ role, storySceneId: "scene-arrive", kind: "VIDEO_CLIP" }],
           });
           await second.assets.processJob((await jobs.get(again.jobId))!);
           await jobs.complete(again.jobId, {});
@@ -3023,6 +3085,712 @@ describe("AssetService M3", () => {
       if (previousMode === undefined) delete process.env.SG_ROUTING_MODE;
       else process.env.SG_ROUTING_MODE = previousMode;
     }
+  });
+
+  it("AP12b reserves the routed lane when the injected adapter is local-dev only", async () => {
+    const registry = await writeQualifiedRegistry();
+    const events: string[] = [];
+    const local = new LocalDeterministicAssetGenerator(storage);
+    let jobId = "";
+    await withEnv(
+      {
+        SG_ROUTING_MODE: "ENFORCED",
+        YF_GATEWAY_LANE_ID: undefined,
+        SG_LANE_REGISTRY_PATH: registry.file,
+        SG_LANE_VEO_LITE_BASE_URL: "http://127.0.0.1:9",
+        SG_LANE_VEO_LITE_API_KEY: "test-key",
+        ASSET_ALLOW_LOCAL: "true",
+      },
+      async () => {
+        const { assets } = harness({
+          adapter: scriptedGenerator(async () => {
+            events.push("injected");
+            throw new Error("injected adapter must not run");
+          }),
+          productionAvailable: false,
+          localDevAvailable: true,
+          probeHealth: async () => true,
+          budgets: spendSpy(events),
+          resolveLanes: routedLane({
+            events,
+            adapter: {
+              async generate(input) {
+                events.push("generate");
+                return local.generate(input);
+              },
+            },
+          }),
+        });
+        const queued = await assets.requestGenerate(ownerId, projectId, {
+          roles: [{ role: "ap12b_local_clip", storySceneId: "scene-arrive", kind: "VIDEO_CLIP" }],
+        });
+        jobId = queued.jobId;
+        try {
+          await assets.processJob((await jobs.get(queued.jobId))!);
+          await jobs.complete(queued.jobId, {});
+          expect(events).toEqual(["reserve", "forLane", "generate"]);
+          const reservation = await prisma.aiVideoBudgetReservation.findFirstOrThrow({
+            where: { idempotencyKey: { startsWith: `asset:${jobId}:` } },
+          });
+          expect(reservation.laneId).toBe("veo31lite-720");
+          expect(reservation.usdPerSecond).toBe(0.05);
+          const attempt = await prisma.shotFulfillmentAttempt.findFirstOrThrow({
+            where: { jobId },
+          });
+          expect(attempt.budgetReservationId).toBe(reservation.id);
+        } finally {
+          await finishQuietly(queued.jobId);
+          await clearBudgetLedgers();
+        }
+      },
+    );
+    await rm(registry.dir, { recursive: true, force: true });
+  });
+
+  it("AP14 does not book a hold when the role is not a generative video capability", async () => {
+    const registry = await writeQualifiedRegistry();
+    const events: string[] = [];
+    await withEnv(
+      {
+        SG_ROUTING_MODE: "ENFORCED",
+        SG_LANE_REGISTRY_PATH: registry.file,
+        SG_LANE_VEO_LITE_BASE_URL: "http://127.0.0.1:9",
+        SG_LANE_VEO_LITE_API_KEY: "test-key",
+      },
+      async () => {
+        const { assets } = harness({
+          adapter: scriptedGenerator(async () => {
+            events.push("generate");
+            throw new Error("AP14 must not generate");
+          }),
+          productionAvailable: true,
+          probeHealth: async () => true,
+          budgets: spendSpy(events),
+          resolveLanes: routedLane({
+            events,
+            adapter: scriptedGenerator(async () => {
+              events.push("generate");
+              throw new Error("AP14 must not generate");
+            }),
+          }),
+        });
+        const queued = await assets.requestGenerate(ownerId, projectId, {
+          roles: [{ role: "ap14_image", storySceneId: "scene-arrive", kind: "IMAGE" }],
+        });
+        try {
+          await assets.processJob((await jobs.get(queued.jobId))!);
+          await jobs.complete(queued.jobId, {});
+          expect(events).toEqual([]);
+          await expectNoPaidAttempt(queued.jobId);
+          const slot = await prisma.shotFulfillment.findFirstOrThrow({
+            where: { projectId, role: "ap14_image" },
+          });
+          expect(slot.treatment).toBe("FAIL_HONEST");
+          expect(slot.decisionReason).toContain("IMAGE_GENERATION");
+        } finally {
+          await finishQuietly(queued.jobId);
+          await clearBudgetLedgers();
+        }
+      },
+    );
+    await rm(registry.dir, { recursive: true, force: true });
+  });
+
+  it("releases an ENFORCED hold when the resolved lane lacks the role capability", async () => {
+    const registry = await writeQualifiedRegistry();
+    const events: string[] = [];
+    await withEnv(
+      {
+        SG_ROUTING_MODE: "ENFORCED",
+        SG_LANE_REGISTRY_PATH: registry.file,
+        SG_LANE_VEO_LITE_BASE_URL: "http://127.0.0.1:9",
+        SG_LANE_VEO_LITE_API_KEY: "test-key",
+      },
+      async () => {
+        const { assets } = harness({
+          adapter: scriptedGenerator(async () => {
+            events.push("generate");
+            throw new Error("capability mismatch must not generate");
+          }),
+          productionAvailable: true,
+          probeHealth: async () => true,
+          budgets: spendSpy(events),
+          resolveLanes: routedLane({
+            events,
+            supportedCapabilities: [AssetCapability.IMAGE_GENERATION],
+            adapter: scriptedGenerator(async () => {
+              events.push("generate");
+              throw new Error("capability mismatch must not generate");
+            }),
+          }),
+        });
+        const queued = await assets.requestGenerate(ownerId, projectId, {
+          roles: [{ role: "resolved_capability_clip", storySceneId: "scene-arrive", kind: "VIDEO_CLIP" }],
+        });
+        try {
+          await expect(assets.processJob((await jobs.get(queued.jobId))!)).rejects.toThrow(/VIDEO_GENERATION/);
+          await jobs.fail(queued.jobId, { error: "capability", retry: false });
+          expect(events).toEqual(["reserve", "forLane"]);
+          const reservation = await prisma.aiVideoBudgetReservation.findFirstOrThrow({
+            where: { idempotencyKey: { startsWith: `asset:${queued.jobId}:` } },
+          });
+          expect(reservation.status).toBe("RELEASED");
+          expect(await prisma.shotFulfillmentAttempt.count({ where: { jobId: queued.jobId } })).toBe(0);
+        } finally {
+          await finishQuietly(queued.jobId);
+          await clearBudgetLedgers();
+        }
+      },
+    );
+    await rm(registry.dir, { recursive: true, force: true });
+  });
+
+  it("APH does not jump two failed LEGACY standard attempts to premium", async () => {
+    const allGates = { HERO: QUALIFIED_GATE, IDENTITY: QUALIFIED_GATE, NON_IDENTITY: QUALIFIED_GATE };
+    const none = { HERO: UNQUALIFIED_GATE, IDENTITY: UNQUALIFIED_GATE, NON_IDENTITY: UNQUALIFIED_GATE };
+    const registry = await writeLaneRegistry([
+      fixtureLane({
+        laneId: "r1-wan27-replicate",
+        laneClass: "standard",
+        providerKey: "open:r1",
+        modelId: "r1-model",
+        usdPerSecond: 0.1,
+        gateway: { baseUrlEnv: "ASSET_HTTP_BASE_URL", apiKeyEnv: "ASSET_HTTP_API_KEY" },
+        designation: "LEGACY_R1",
+        gates: none,
+      }),
+      fixtureLane({
+        laneId: "veo31lite-720",
+        laneClass: "draft-quality",
+        providerKey: "open:veo-lite",
+        modelId: "open-veo-lite",
+        usdPerSecond: 0.05,
+        gateway: { baseUrlEnv: "SG_LANE_VEO_LITE_BASE_URL", apiKeyEnv: "SG_LANE_VEO_LITE_API_KEY" },
+        gates: allGates,
+      }),
+      fixtureLane({
+        laneId: "seedance2-fast-720",
+        laneClass: "premium",
+        providerKey: "open:seedance",
+        modelId: "open-seedance",
+        usdPerSecond: 0.2419,
+        gateway: { baseUrlEnv: "SG_LANE_SEEDANCE_BASE_URL", apiKeyEnv: "SG_LANE_SEEDANCE_API_KEY" },
+        gates: allGates,
+      }),
+    ]);
+    const local = new LocalDeterministicAssetGenerator(storage);
+    const role = "aph_legacy_standard";
+    await withEnv(
+      {
+        SG_ROUTING_MODE: undefined,
+        YF_GATEWAY_LANE_ID: "r1-wan27-replicate",
+        ASSET_HTTP_MODEL: undefined,
+        SG_BUDGET_PROJECT_MAX_SECONDS: undefined,
+        SG_BUDGET_PROJECT_MAX_USD: undefined,
+        SG_BUDGET_USER_WINDOW_MAX_SECONDS: undefined,
+        SG_BUDGET_USER_WINDOW_MAX_USD: undefined,
+        SG_LANE_REGISTRY_PATH: registry.file,
+        SG_LANE_VEO_LITE_BASE_URL: "http://127.0.0.1:9",
+        SG_LANE_VEO_LITE_API_KEY: "test-key",
+        SG_LANE_SEEDANCE_BASE_URL: "http://127.0.0.1:9",
+        SG_LANE_SEEDANCE_API_KEY: "test-key",
+      },
+      async () => {
+        try {
+          for (let index = 0; index < 2; index += 1) {
+            const { assets } = harness({
+              adapter: scriptedGenerator(async (input) => {
+                const document = await local.generate(input);
+                return { ...document, role: "not-the-requested-role" };
+              }),
+              productionAvailable: true,
+              probeHealth: async () => true,
+            });
+            const queued = await assets.requestGenerate(ownerId, projectId, {
+              roles: [{ role, storySceneId: "scene-arrive", kind: "VIDEO_CLIP" }],
+            });
+            await expect(assets.processJob((await jobs.get(queued.jobId))!)).rejects.toThrow();
+            await jobs.fail(queued.jobId, { error: "rejected", retry: false });
+          }
+          const slot = await prisma.shotFulfillment.findFirstOrThrow({ where: { projectId, role } });
+          const prior = await prisma.shotFulfillmentAttempt.findMany({
+            where: { shotFulfillmentId: slot.id },
+            orderBy: { attemptNo: "asc" },
+          });
+          expect(prior.map((row) => row.laneClass)).toEqual(["standard", "standard"]);
+          expect(prior.map((row) => row.outcome)).toEqual(["REJECTED_TECHNICAL", "REJECTED_TECHNICAL"]);
+          expect(prior[1]?.classAttemptNo).toBe(2);
+
+          process.env.SG_ROUTING_MODE = "ENFORCED";
+          const events: string[] = [];
+          const laneIds: string[] = [];
+          const priced = (record: string[]) => () => ({
+            forLane(laneId: string) {
+              events.push("forLane");
+              record.push(laneId);
+              const modelId = laneId === "seedance2-fast-720" ? "open-seedance" : "open-veo-lite";
+              return {
+                adapter: {
+                  async generate(input: Parameters<AssetGeneratorPort["generate"]>[0]) {
+                    events.push("generate");
+                    return local.generate(input);
+                  },
+                },
+                attribution(capability: AssetCapabilityValue): AssetExecutionAttribution {
+                  return {
+                    providerKey: laneId === "seedance2-fast-720" ? "open:seedance" : "open:veo-lite",
+                    capability,
+                    modelId,
+                    modelVersion: "1",
+                  };
+                },
+                supportedCapabilities: [AssetCapability.VIDEO_GENERATION],
+              };
+            },
+            processors() {
+              return [];
+            },
+          });
+          const { assets } = harness({
+            adapter: scriptedGenerator(async () => {
+              events.push("injected");
+              throw new Error("injected adapter must not run");
+            }),
+            productionAvailable: true,
+            probeHealth: async () => true,
+            budgets: spendSpy(events),
+            resolveLanes: priced(laneIds),
+          });
+          const enforced = await assets.requestGenerate(ownerId, projectId, {
+            roles: [{ role, storySceneId: "scene-arrive", kind: "VIDEO_CLIP" }],
+          });
+          await assets.processJob((await jobs.get(enforced.jobId))!);
+          await jobs.complete(enforced.jobId, {});
+          expect(events).toEqual(["reserve", "forLane", "generate"]);
+          expect(laneIds).toEqual(["veo31lite-720"]);
+          const hold = await prisma.aiVideoBudgetReservation.findFirstOrThrow({
+            where: { idempotencyKey: { startsWith: `asset:${enforced.jobId}:` } },
+          });
+          expect(hold.laneId).toBe("veo31lite-720");
+          expect(hold.usdPerSecond).toBe(0.05);
+          expect(hold.usdPerSecond).not.toBe(0.2419);
+
+          const freshEvents: string[] = [];
+          const freshLanes: string[] = [];
+          const control = harness({
+            adapter: scriptedGenerator(async () => {
+              throw new Error("injected adapter must not run");
+            }),
+            productionAvailable: true,
+            probeHealth: async () => true,
+            budgets: spendSpy(freshEvents),
+            resolveLanes: () => ({
+              forLane(laneId: string) {
+                freshEvents.push("forLane");
+                freshLanes.push(laneId);
+                return {
+                  adapter: {
+                    async generate(input: Parameters<AssetGeneratorPort["generate"]>[0]) {
+                      freshEvents.push("generate");
+                      return local.generate(input);
+                    },
+                  },
+                  attribution(capability: AssetCapabilityValue): AssetExecutionAttribution {
+                    return {
+                      providerKey: "open:veo-lite",
+                      capability,
+                      modelId: "open-veo-lite",
+                      modelVersion: "1",
+                    };
+                  },
+                  supportedCapabilities: [AssetCapability.VIDEO_GENERATION],
+                };
+              },
+              processors() {
+                return [];
+              },
+            }),
+          });
+          const fresh = await control.assets.requestGenerate(ownerId, projectId, {
+            roles: [{ role: "aph_fresh_slot", storySceneId: "scene-arrive", kind: "VIDEO_CLIP" }],
+          });
+          await control.assets.processJob((await jobs.get(fresh.jobId))!);
+          await jobs.complete(fresh.jobId, {});
+          expect(freshLanes).toEqual(["veo31lite-720"]);
+          expect(freshEvents).toEqual(["reserve", "forLane", "generate"]);
+        } finally {
+          await clearBudgetLedgers();
+        }
+      },
+    );
+    await rm(registry.dir, { recursive: true, force: true });
+  });
+
+  it("N01 keeps a stored UNKNOWN identity when the fresh room is ABSENT", async () => {
+    const registry = await writeLaneRegistry([
+      fixtureLane({
+        laneId: "draft-only",
+        laneClass: "draft-cost",
+        providerKey: "open:draft",
+        modelId: "open-draft",
+        usdPerSecond: 0.01,
+        gateway: { baseUrlEnv: "SG_LANE_DRAFT_BASE_URL", apiKeyEnv: "SG_LANE_DRAFT_API_KEY" },
+        gates: { HERO: UNQUALIFIED_GATE, IDENTITY: UNQUALIFIED_GATE, NON_IDENTITY: QUALIFIED_GATE },
+      }),
+    ]);
+    await withEnv(
+      {
+        SG_ROUTING_MODE: "ENFORCED",
+        SG_LANE_REGISTRY_PATH: registry.file,
+        SG_LANE_DRAFT_BASE_URL: "http://127.0.0.1:9",
+        SG_LANE_DRAFT_API_KEY: "test-key",
+      },
+      async () => {
+        const role = "n01_stored_unknown";
+        const photo = await seedAnalyzedPhoto("n01-unknown", "PROCESSING", null);
+        const events: string[] = [];
+        const build = () =>
+          harness({
+            adapter: scriptedGenerator(async () => {
+              events.push("generate");
+              throw new Error("N01 must not generate");
+            }),
+            productionAvailable: true,
+            probeHealth: async () => true,
+            resolveLanes: routedLane({
+              events,
+              modelId: "open-draft",
+              adapter: scriptedGenerator(async () => {
+                events.push("generate");
+                throw new Error("N01 must not generate");
+              }),
+            }),
+          });
+        const first = build();
+        const queued = await first.assets.requestGenerate(ownerId, projectId, {
+          roles: [
+            {
+              role,
+              storySceneId: "scene-arrive",
+              kind: "ENHANCEMENT",
+              sourceMediaAssetId: photo.id,
+            },
+          ],
+        });
+        try {
+          await first.assets.processJob((await jobs.get(queued.jobId))!);
+          await jobs.complete(queued.jobId, {});
+          const stored = await prisma.shotFulfillment.findFirstOrThrow({ where: { projectId, role } });
+          expect(stored.identityState).toBe("UNKNOWN");
+          expect(stored.requiredScopes).toContain("IDENTITY");
+          await prisma.mediaAsset.update({
+            where: { id: photo.id },
+            data: { analysisStatus: "COMPLETED" },
+          });
+          await prisma.mediaAnalysis.create({
+            data: {
+              assetId: photo.id,
+              providerKey: "test.analysis",
+              schemaVersion: "1.0",
+              status: "COMPLETED",
+              payload: EMPTY_ROOM as Prisma.InputJsonValue,
+            },
+          });
+          const second = build();
+          const again = await second.assets.requestGenerate(ownerId, projectId, {
+            roles: [
+              {
+                role,
+                storySceneId: "scene-arrive",
+                kind: "ENHANCEMENT",
+                sourceMediaAssetId: photo.id,
+              },
+            ],
+          });
+          await second.assets.processJob((await jobs.get(again.jobId))!);
+          await jobs.complete(again.jobId, {});
+          expect(events).toEqual([]);
+          await expectNoPaidAttempt(again.jobId);
+          const slot = await prisma.shotFulfillment.findFirstOrThrow({ where: { projectId, role } });
+          expect(slot.treatment).toBe("DEFER");
+          expect(slot.userMessageKey).toBe("SG_NO_QUALIFIED_LANE");
+          expect(slot.requiredScopes).toContain("IDENTITY");
+        } finally {
+          await finishQuietly(queued.jobId);
+        }
+      },
+    );
+    await rm(registry.dir, { recursive: true, force: true });
+  });
+
+  it("N12 defers before reserve when the project budget flag is blocked", async () => {
+    const registry = await writeQualifiedRegistry();
+    const local = new LocalDeterministicAssetGenerator(storage);
+    await withEnv(
+      {
+        SG_ROUTING_MODE: "ENFORCED",
+        SG_BUDGET_PROJECT_MAX_SECONDS: undefined,
+        SG_BUDGET_PROJECT_MAX_USD: undefined,
+        SG_BUDGET_USER_WINDOW_MAX_SECONDS: undefined,
+        SG_BUDGET_USER_WINDOW_MAX_USD: undefined,
+        SG_LANE_REGISTRY_PATH: registry.file,
+        SG_LANE_VEO_LITE_BASE_URL: "http://127.0.0.1:9",
+        SG_LANE_VEO_LITE_API_KEY: "test-key",
+      },
+      async () => {
+        const firstEvents: string[] = [];
+        const first = harness({
+          adapter: scriptedGenerator(async () => {
+            throw new Error("injected adapter must not run");
+          }),
+          productionAvailable: true,
+          probeHealth: async () => true,
+          budgets: spendSpy(firstEvents),
+          resolveLanes: routedLane({
+            events: firstEvents,
+            adapter: {
+              async generate(input) {
+                firstEvents.push("generate");
+                return local.generate(input);
+              },
+            },
+          }),
+        });
+        const opened = await first.assets.requestGenerate(ownerId, projectId, {
+          roles: [{ role: "n12_budget_open", storySceneId: "scene-arrive", kind: "VIDEO_CLIP" }],
+        });
+        try {
+          await first.assets.processJob((await jobs.get(opened.jobId))!);
+          await jobs.complete(opened.jobId, {});
+          expect(firstEvents).toEqual(["reserve", "forLane", "generate"]);
+          process.env.SG_BUDGET_PROJECT_MAX_USD = "0.01";
+          const blockedEvents: string[] = [];
+          const second = harness({
+            adapter: scriptedGenerator(async () => {
+              blockedEvents.push("generate");
+              throw new Error("N12 must not generate");
+            }),
+            productionAvailable: true,
+            probeHealth: async () => true,
+            budgets: spendSpy(blockedEvents),
+            resolveLanes: routedLane({
+              events: blockedEvents,
+              adapter: scriptedGenerator(async () => {
+                blockedEvents.push("generate");
+                throw new Error("N12 must not generate");
+              }),
+            }),
+          });
+          const again = await second.assets.requestGenerate(ownerId, projectId, {
+            roles: [{ role: "n12_budget_blocked", storySceneId: "scene-arrive", kind: "VIDEO_CLIP" }],
+          });
+          await second.assets.processJob((await jobs.get(again.jobId))!);
+          await jobs.complete(again.jobId, {});
+          expect(blockedEvents).toEqual([]);
+          await expectNoPaidAttempt(again.jobId);
+          const slot = await prisma.shotFulfillment.findFirstOrThrow({
+            where: { projectId, role: "n12_budget_blocked" },
+          });
+          expect(slot.treatment).toBe("DEFER");
+          expect(slot.userMessageKey).toBe("SG_CAP_REACHED");
+        } finally {
+          await finishQuietly(opened.jobId);
+          await clearBudgetLedgers();
+        }
+      },
+    );
+    await rm(registry.dir, { recursive: true, force: true });
+  });
+
+  it("keeps a stored HERO scope when the fresh scene is no longer a hero", async () => {
+    const registry = await writeLaneRegistry([
+      fixtureLane({
+        laneId: "identity-only",
+        laneClass: "draft-quality",
+        providerKey: "open:identity",
+        modelId: "open-identity",
+        usdPerSecond: 0.05,
+        gateway: { baseUrlEnv: "SG_LANE_IDENTITY_BASE_URL", apiKeyEnv: "SG_LANE_IDENTITY_API_KEY" },
+        gates: { HERO: UNQUALIFIED_GATE, IDENTITY: QUALIFIED_GATE, NON_IDENTITY: UNQUALIFIED_GATE },
+      }),
+    ]);
+    const story = await prisma.storyStructure.findFirstOrThrow({
+      where: { projectId, status: StoryStructureStatus.READY },
+    });
+    const original = story.payload;
+    const setFunction = async (dramaticFunction: "climax" | "exposition") => {
+      const document = structuredClone(original) as StoryDocument;
+      document.acts[0]!.scenes[0]!.dramaticFunction = dramaticFunction;
+      await prisma.storyStructure.update({
+        where: { id: story.id },
+        data: { payload: document as Prisma.InputJsonValue },
+      });
+    };
+    await withEnv(
+      {
+        SG_ROUTING_MODE: "ENFORCED",
+        SG_LANE_REGISTRY_PATH: registry.file,
+        SG_LANE_IDENTITY_BASE_URL: "http://127.0.0.1:9",
+        SG_LANE_IDENTITY_API_KEY: "test-key",
+      },
+      async () => {
+        const role = "stored_hero_clip";
+        const events: string[] = [];
+        const build = () =>
+          harness({
+            adapter: scriptedGenerator(async () => {
+              events.push("generate");
+              throw new Error("stored HERO must not generate");
+            }),
+            productionAvailable: true,
+            probeHealth: async () => true,
+            resolveLanes: routedLane({
+              events,
+              modelId: "open-identity",
+              adapter: scriptedGenerator(async () => {
+                events.push("generate");
+                throw new Error("stored HERO must not generate");
+              }),
+            }),
+          });
+        try {
+          await setFunction("climax");
+          const first = build();
+          const queued = await first.assets.requestGenerate(ownerId, projectId, {
+            roles: [{ role, storySceneId: "scene-arrive", kind: "VIDEO_CLIP" }],
+          });
+          await first.assets.processJob((await jobs.get(queued.jobId))!);
+          await jobs.complete(queued.jobId, {});
+          const stored = await prisma.shotFulfillment.findFirstOrThrow({ where: { projectId, role } });
+          expect(stored.requiredScopes).toContain("HERO");
+          await setFunction("exposition");
+          const second = build();
+          const again = await second.assets.requestGenerate(ownerId, projectId, {
+            roles: [{ role, storySceneId: "scene-arrive", kind: "VIDEO_CLIP" }],
+          });
+          await second.assets.processJob((await jobs.get(again.jobId))!);
+          await jobs.complete(again.jobId, {});
+          expect(events).toEqual([]);
+          await expectNoPaidAttempt(again.jobId);
+          const slot = await prisma.shotFulfillment.findFirstOrThrow({ where: { projectId, role } });
+          expect(slot.requiredScopes).toContain("HERO");
+          expect(slot.treatment).toBe("DEFER");
+          expect(slot.userMessageKey).toBe("SG_NO_QUALIFIED_LANE");
+          await finishQuietly(queued.jobId);
+        } finally {
+          await prisma.storyStructure.update({
+            where: { id: story.id },
+            data: { payload: original as Prisma.InputJsonValue },
+          });
+          await clearBudgetLedgers();
+        }
+      },
+    );
+    await rm(registry.dir, { recursive: true, force: true });
+  });
+
+  it("defers when only the stored dialogue-closeup role still applies", async () => {
+    const registry = await writeQualifiedRegistry();
+    const story = await prisma.storyStructure.findFirstOrThrow({
+      where: { projectId, status: StoryStructureStatus.READY },
+    });
+    const original = story.payload;
+    const writeOutline = async (outline: string) => {
+      const document = structuredClone(original) as StoryDocument;
+      document.acts[0]!.scenes[0]!.dialogueOutline = outline;
+      await prisma.storyStructure.update({
+        where: { id: story.id },
+        data: { payload: document as Prisma.InputJsonValue },
+      });
+    };
+    await withEnv(
+      {
+        SG_ROUTING_MODE: "ENFORCED",
+        SG_LANE_REGISTRY_PATH: registry.file,
+        SG_LANE_VEO_LITE_BASE_URL: "http://127.0.0.1:9",
+        SG_LANE_VEO_LITE_API_KEY: "test-key",
+      },
+      async () => {
+        const role = "stored_dialogue_only";
+        const photo = await seedAnalyzedPhoto("stored-dialogue", "PROCESSING", null);
+        const events: string[] = [];
+        const build = () =>
+          harness({
+            adapter: scriptedGenerator(async () => {
+              events.push("generate");
+              throw new Error("stored dialogue must not generate");
+            }),
+            productionAvailable: true,
+            probeHealth: async () => true,
+            resolveLanes: routedLane({
+              events,
+              adapter: scriptedGenerator(async () => {
+                events.push("generate");
+                throw new Error("stored dialogue must not generate");
+              }),
+            }),
+          });
+        try {
+          await writeOutline("They say hello.");
+          const first = build();
+          const queued = await first.assets.requestGenerate(ownerId, projectId, {
+            roles: [
+              {
+                role,
+                storySceneId: "scene-arrive",
+                kind: "ENHANCEMENT",
+                sourceMediaAssetId: photo.id,
+              },
+            ],
+          });
+          await first.assets.processJob((await jobs.get(queued.jobId))!);
+          await jobs.complete(queued.jobId, {});
+          const stored = await prisma.shotFulfillment.findFirstOrThrow({ where: { projectId, role } });
+          expect(stored.shotRole).toBe("dialogue-closeup");
+          await writeOutline("");
+          await prisma.mediaAsset.update({
+            where: { id: photo.id },
+            data: { analysisStatus: "COMPLETED" },
+          });
+          await prisma.mediaAnalysis.create({
+            data: {
+              assetId: photo.id,
+              providerKey: "test.analysis",
+              schemaVersion: "1.0",
+              status: "COMPLETED",
+              payload: EMPTY_ROOM as Prisma.InputJsonValue,
+            },
+          });
+          const second = build();
+          const again = await second.assets.requestGenerate(ownerId, projectId, {
+            roles: [
+              {
+                role,
+                storySceneId: "scene-arrive",
+                kind: "ENHANCEMENT",
+                sourceMediaAssetId: photo.id,
+              },
+            ],
+          });
+          await second.assets.processJob((await jobs.get(again.jobId))!);
+          await jobs.complete(again.jobId, {});
+          expect(events).toEqual([]);
+          await expectNoPaidAttempt(again.jobId);
+          const slot = await prisma.shotFulfillment.findFirstOrThrow({ where: { projectId, role } });
+          expect(slot.shotRole).toBe("dialogue-closeup");
+          expect(slot.treatment).toBe("DEFER");
+          expect(slot.userMessageKey).toBe("SG_WAITING");
+          await finishQuietly(queued.jobId);
+        } finally {
+          await prisma.storyStructure.update({
+            where: { id: story.id },
+            data: { payload: original as Prisma.InputJsonValue },
+          });
+          await clearBudgetLedgers();
+        }
+      },
+    );
+    await rm(registry.dir, { recursive: true, force: true });
   });
 
   async function seedReadyStory(document: StoryDocument) {

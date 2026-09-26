@@ -280,6 +280,8 @@ describe("payload identity proof", () => {
     expect(stricterIdentityState("ABSENT", "UNKNOWN")).toBe("UNKNOWN");
     expect(stricterIdentityState("PRESENT", "ABSENT")).toBe("PRESENT");
     expect(stricterIdentityState("ABSENT", "ABSENT")).toBe("ABSENT");
+    expect(stricterIdentityState("garbage", "ABSENT")).toBe("UNKNOWN");
+    expect(stricterIdentityState("absent", "ABSENT")).toBe("UNKNOWN");
   });
 
   it("pins v2.0 face evidence as UNKNOWN and a missing version face as PRESENT", () => {

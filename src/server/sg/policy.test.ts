@@ -368,7 +368,7 @@ describe("SG.0 policy contract", () => {
     const standard = lane({ laneId: "lane-std", laneClass: "standard", providerKey: "open:std" });
     const premium = lane({ laneId: "lane-prem", laneClass: "premium", providerKey: "open:prem" });
     const unhealthy = decide(
-      cues({ requiredScopes: ["NON_IDENTITY"], routingMode: "ENFORCED" }),
+      cues({ requiredScopes: ["IDENTITY"], routingMode: "ENFORCED" }),
       {
         lanes: [
           lane({ laneId: "lane-dq", laneClass: "draft-quality", providerKey: "open:dq", healthy: false }),
@@ -384,7 +384,7 @@ describe("SG.0 policy contract", () => {
     expect(unhealthy.messageKey).toBe(SG_MESSAGE_KEYS.CEILING_REACHED);
 
     const suspended = decide(
-      cues({ requiredScopes: ["NON_IDENTITY"], routingMode: "ENFORCED" }),
+      cues({ requiredScopes: ["IDENTITY"], routingMode: "ENFORCED" }),
       {
         lanes: [
           lane({
@@ -403,6 +403,50 @@ describe("SG.0 policy contract", () => {
     expect(suspended.treatment).not.toBe("GENERATE");
     expect(suspended.laneId).toBeNull();
     expect(suspended.messageKey).toBe(SG_MESSAGE_KEYS.CEILING_REACHED);
+  });
+
+  it("PH3 keeps NON_IDENTITY on draft-cost after two standard attempts", () => {
+    const decision = decide(
+      cues({ requiredScopes: ["NON_IDENTITY"], routingMode: "ENFORCED" }),
+      {
+        lanes: [
+          lane({ laneId: "lane-dc", laneClass: "draft-cost" }),
+          lane({ laneId: "lane-std", laneClass: "standard", providerKey: "open:std" }),
+          lane({ laneId: "lane-prem", laneClass: "premium", providerKey: "open:prem" }),
+        ],
+      },
+      budget,
+      [{ laneClass: "standard", outcome: "FAILED", classAttemptNo: 2 }],
+    );
+    expect(decision).toMatchObject({
+      treatment: "GENERATE",
+      laneId: "lane-dc",
+      laneClass: "draft-cost",
+    });
+    expect(decision.laneClass).not.toBe("premium");
+    expect(decision.laneClass).not.toBe("standard");
+  });
+
+  it("PH6 does not skip a draft-quality lane that has since qualified", () => {
+    const decision = decide(
+      cues({ requiredScopes: ["IDENTITY"], routingMode: "ENFORCED" }),
+      {
+        lanes: [
+          lane({ laneId: "lane-dq", laneClass: "draft-quality", providerKey: "open:dq" }),
+          lane({ laneId: "lane-std", laneClass: "standard", providerKey: "open:std" }),
+          lane({ laneId: "lane-prem", laneClass: "premium", providerKey: "open:prem" }),
+        ],
+      },
+      budget,
+      [{ laneClass: "standard", outcome: "FAILED", classAttemptNo: 1 }],
+    );
+    expect(decision).toMatchObject({
+      treatment: "GENERATE",
+      laneId: "lane-dq",
+      laneClass: "draft-quality",
+    });
+    expect(decision.laneId).not.toBe("lane-std");
+    expect(decision.laneId).not.toBe("lane-prem");
   });
 
   it("refuses forLane unless the decision is GENERATE for an eligible lane", () => {

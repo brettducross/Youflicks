@@ -316,11 +316,27 @@ function laneReady(lane: ParsedLane, scopes: readonly RoutingScope[]): boolean {
 }
 
 /**
- * With attempt history, the start class is the lowest class that holds a
- * non-CAP_DENIED attempt. Current health and suspension do not move it.
- * With no such attempt, identity-bearing scopes start at the lowest ready
- * class, and every other scope starts at draft-cost.
- * Escalation is only the immediate next class. An empty class is not skipped.
+ * NON_IDENTITY locks to draft-cost. HERO and IDENTITY lock to the lowest
+ * class that currently has a ready lane. -1 means no class is ready.
+ */
+function lockStartIndex(
+  order: readonly LaneClass[],
+  scopes: readonly RoutingScope[],
+  registry: ParsedRegistry,
+): number {
+  if (identityBearing(scopes)) {
+    return order.findIndex((laneClass) =>
+      registry.lanes.some((lane) => lane.laneClass === laneClass && laneReady(lane, scopes)),
+    );
+  }
+  return order.indexOf("draft-cost");
+}
+
+/**
+ * Start is the lower of the lock start and the lowest class that holds a
+ * non-CAP_DENIED attempt. History is used alone only when no class is ready,
+ * and it can pin the start lower, never higher. Health and suspension do not
+ * add a second escalation step. An empty class is not skipped.
  */
 function startClassIndex(
   order: readonly LaneClass[],
@@ -338,15 +354,14 @@ function startClassIndex(
       historical = index;
     }
   }
-  if (historical >= 0) {
+  const lockStart = lockStartIndex(order, scopes, registry);
+  if (lockStart < 0) {
     return historical;
   }
-  if (identityBearing(scopes)) {
-    return order.findIndex((laneClass) =>
-      registry.lanes.some((lane) => lane.laneClass === laneClass && laneReady(lane, scopes)),
-    );
+  if (historical < 0) {
+    return lockStart;
   }
-  return order.indexOf("draft-cost");
+  return Math.min(lockStart, historical);
 }
 
 function classExhausted(

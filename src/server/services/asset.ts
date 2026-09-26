@@ -71,7 +71,7 @@ import {
   type ShotCueInput,
 } from "@/server/sg/cues";
 import { probeEligibleLaneHealth, probeLaneHealth } from "@/server/sg/lane-health";
-import { readLaneHealthBaseUrl } from "@/server/assets/lane-resolver";
+import { GENERATIVE_LANE_CAPABILITIES, readLaneHealthBaseUrl } from "@/server/assets/lane-resolver";
 import {
   applyLaneSuspension,
   DEFAULT_SG_LANE_REGISTRY_PATH,
@@ -418,6 +418,8 @@ export class AssetService {
         storySceneId: role.storySceneId,
         storedShotRole: slot.shotRole,
         storedIdentityState: slot.identityState,
+        storedRequiredScopes: slot.requiredScopes,
+        kind,
         healthCache,
       });
       if (route.kind === "skip") {
@@ -427,12 +429,19 @@ export class AssetService {
         continue;
       }
       const runtime = route.kind === "enforced" ? route.runtime : resolved;
+      const releaseRouteHold = async () => {
+        if (route.kind === "enforced") {
+          await this.releaseHold(route.hold);
+        }
+      };
       if (!runtime) {
+        await releaseRouteHold();
         throw AppError.providerNotConfigured("AssetGeneratorPort");
       }
 
       const capability = capabilityForKind(kind);
       if (!runtime.supportedCapabilities.includes(capability)) {
+        await releaseRouteHold();
         const failed = await this.persistFailed({
           projectId,
           jobId: job.id,
@@ -446,7 +455,14 @@ export class AssetService {
         throw AppError.assetCapabilityUnavailable(capability);
       }
 
-      const input = await this.contract.assembleInput(userId, projectId, timeline, role, story);
+      let input;
+      try {
+        input = await this.contract.assembleInput(userId, projectId, timeline, role, story);
+      } catch (error) {
+        await releaseRouteHold();
+        await this.markSlotFailure(slot.id, projectId, job.id);
+        throw error;
+      }
       const inputFingerprint = fingerprintAssetGeneratorInput(input);
       const startedAt = Date.now();
       logger.info("asset.started", { projectId, jobId: job.id, role: role.role, kind });
@@ -459,6 +475,7 @@ export class AssetService {
             ? route.quote
             : this.legacyAttemptQuote(attribution.providerKey, attribution.modelId);
       } catch (error) {
+        await releaseRouteHold();
         await this.markSlotFailure(slot.id, projectId, job.id);
         throw AppError.assetProviderUnavailable(
           error instanceof Error ? error.message : "AI video lane registry failed closed.",
@@ -466,13 +483,11 @@ export class AssetService {
       }
       let budgetHold: AiVideoBudgetReservationRecord | null =
         route.kind === "enforced" ? route.hold : null;
-      if (route.kind === "enforced") {
-        if (this.availability().productionAvailable && !budgetHold) {
-          await this.markSlotFailure(slot.id, projectId, job.id);
-          throw AppError.assetProviderUnavailable(
-            "ENFORCED generation requires an app hold from the routed lane.",
-          );
-        }
+      if (route.kind === "enforced" && !budgetHold) {
+        await this.markSlotFailure(slot.id, projectId, job.id);
+        throw AppError.assetProviderUnavailable(
+          "ENFORCED generation requires an app hold from the routed lane.",
+        );
       }
       try {
         if (route.kind !== "enforced") {
@@ -1050,9 +1065,13 @@ export class AssetService {
     storySceneId?: string;
     storedShotRole: string | null;
     storedIdentityState: string;
+    storedRequiredScopes: readonly string[];
+    kind: GeneratedAssetKind;
     healthCache: Map<string, Promise<boolean>>;
   }): Promise<RoleRoute> {
-    const hero = input.extracted.requiredScopes.includes("HERO");
+    const hero =
+      input.extracted.requiredScopes.includes("HERO") ||
+      input.storedRequiredScopes.includes("HERO");
     const tightened = tightenIdentityForRoute({
       identityState: input.extracted.identityState,
       hero,
@@ -1189,6 +1208,7 @@ export class AssetService {
       job: input.job,
       role: input.role,
       storySceneId: input.storySceneId,
+      kind: input.kind,
     });
     return enforced;
   }
@@ -1210,7 +1230,8 @@ export class AssetService {
         resolved.caps.userWindowMaxSeconds,
         resolved.caps.userWindowMaxUsd,
       ),
-      // No separate global or per-lane ledger. The reservation is the price check.
+      // Gateway spend ledgers yf-asset and lane:<laneId> enforce global and per-lane
+      // caps at gateway reserve. A read-side pre-check is a PR-11 carry.
       globalBlocked: false,
       laneBlocked: false,
     };
@@ -1271,9 +1292,20 @@ export class AssetService {
     job: JobRecord;
     role: string;
     storySceneId?: string;
+    kind: GeneratedAssetKind;
   }): Promise<RoleRoute> {
     if (input.applied.treatment !== "GENERATE" || !input.registryLoad.ok) {
       await this.recordSkip(input.slotId, input.routingMode, input.shadow, honest("No eligible lane for the required scopes."));
+      return { kind: "skip", stopJob: false, requiredScopes: input.requiredScopes };
+    }
+    const roleCapability = capabilityForKind(input.kind);
+    if (!GENERATIVE_LANE_CAPABILITIES.some((item) => item === roleCapability)) {
+      await this.recordSkip(
+        input.slotId,
+        input.routingMode,
+        input.shadow,
+        honest(`No ready adapter can perform ${roleCapability}.`),
+      );
       return { kind: "skip", stopJob: false, requiredScopes: input.requiredScopes };
     }
     const eligible = listEligibleLanes({
@@ -1313,28 +1345,35 @@ export class AssetService {
       return { kind: "skip", stopJob: false, requiredScopes: input.requiredScopes };
     }
     let hold: AiVideoBudgetReservationRecord | null = null;
-    if (this.availability().productionAvailable) {
-      try {
-        hold = await this.reserveRoutedLane({
-          userId: input.userId,
-          projectId: input.projectId,
-          job: input.job,
-          role: input.role,
-          storySceneId: input.storySceneId,
-          quote,
-        });
-      } catch (error) {
-        if (isAppError(error) && error.code === "SPEND_CAP_REACHED") {
-          try {
-            await this.recordClosedAttempt(input.slotId, quote, input.job.id, error, null);
-          } catch (markError) {
-            this.logSlotMarkFailed(input.projectId, input.job.id, input.slotId, markError);
-          }
-        } else {
-          await this.markSlotFailure(input.slotId, input.projectId, input.job.id);
+    try {
+      hold = await this.reserveRoutedLane({
+        userId: input.userId,
+        projectId: input.projectId,
+        job: input.job,
+        role: input.role,
+        storySceneId: input.storySceneId,
+        quote,
+      });
+    } catch (error) {
+      if (isAppError(error) && error.code === "SPEND_CAP_REACHED") {
+        try {
+          await this.recordClosedAttempt(input.slotId, quote, input.job.id, error, null);
+        } catch (markError) {
+          this.logSlotMarkFailed(input.projectId, input.job.id, input.slotId, markError);
         }
-        throw error;
+      } else {
+        await this.markSlotFailure(input.slotId, input.projectId, input.job.id);
       }
+      throw error;
+    }
+    if (!hold) {
+      await this.recordSkip(
+        input.slotId,
+        input.routingMode,
+        input.shadow,
+        honest("ENFORCED generation requires an app hold from the routed lane."),
+      );
+      return { kind: "skip", stopJob: false, requiredScopes: input.requiredScopes };
     }
     const resolver = this.resolveLanes();
     if (!resolver) {
@@ -1387,7 +1426,7 @@ export class AssetService {
     role: string;
     storySceneId?: string;
     quote: AttemptQuote;
-  }): Promise<AiVideoBudgetReservationRecord> {
+  }): Promise<AiVideoBudgetReservationRecord | null> {
     const resolved = AiVideoBudgetSource.resolve(input.userId, input.projectId);
     try {
       return await this.budgets.reserve({

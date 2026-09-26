@@ -12,7 +12,7 @@ Dialogue close-ups are not generated in either mode. Until E12 is decided they a
 
 ## Ceilings
 
-Escalation moves at most one class above the start class. When any non-cap attempt exists, the start class is the lowest class that holds one of those attempts. Current health and suspension do not move that start. An empty class is never skipped: the next class is only the immediate neighbor, even when that neighbor has no qualified healthy lane. That is stricter than a reading that jumps to the next class that currently has a lane.
+Escalation moves at most one class above the start class. The start class is the lower of the lock start and the lowest class that holds a non-cap attempt. The lock start is draft-cost for NON_IDENTITY, and the lowest ready class for HERO or IDENTITY. History is used alone only when no class is ready, and it can pin the start lower, never higher. An unhealthy or suspended start class does not escalate a second class. An empty class is never skipped: the next class is only the immediate neighbor, even when that neighbor has no qualified healthy lane. That is stricter than a reading that jumps to the next class that currently has a lane.
 
 ## Suspension
 
@@ -32,4 +32,4 @@ The lane resolver is cached on the service container for the life of the process
 
 ## Budget
 
-Project and user cap flags passed to the policy come from the budget ledgers. There is no separate global or per-lane ledger, so those two flags stay clear. The reservation is still the exact price check, and an ENFORCED hold is booked from the routed lane's quote before `forLane`.
+Project and user cap flags passed to the policy come from the app budget ledgers. Global and per-lane caps live on the gateway spend ledgers (`yf-asset` and `lane:<laneId>`) and are enforced when the gateway reserves (429 before the backend call, lock L181 and L280). A read-side pre-check of those ledgers is a PR-11 carry. The app reservation is still the project and user price check, and an ENFORCED hold is booked from the routed lane's quote before `forLane`.

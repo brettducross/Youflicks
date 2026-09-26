@@ -46,7 +46,7 @@ import {
  */
 
 /** Generative lanes advertise video only. Enhancement is the processor hook. */
-const GENERATIVE_LANE_CAPABILITIES: readonly AssetCapabilityValue[] = [
+export const GENERATIVE_LANE_CAPABILITIES: readonly AssetCapabilityValue[] = [
   AssetCapability.VIDEO_GENERATION,
 ];
 
