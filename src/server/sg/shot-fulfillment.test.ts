@@ -216,7 +216,8 @@ describe("creative payloads and GeneratedAsset stay unchanged", () => {
     expect(readFileSync("src/server/sg/shot-fulfillment.ts", "utf8")).not.toContain(
       "@/server/sg/policy",
     );
-    expect(readFileSync("src/server/services/asset.ts", "utf8")).not.toContain("@/server/sg/policy");
+    // PR-8: AssetService is the production policy caller. The store stays free of it.
+    expect(readFileSync("src/server/services/asset.ts", "utf8")).toContain("@/server/sg/policy");
   });
 });
 

@@ -370,7 +370,7 @@ describe("live generate fail-closed and cap", () => {
       YF_GATEWAY_API_KEY: "gw-key",
       YF_GATEWAY_BACKEND_API_KEY: "backend-key",
       YF_GATEWAY_BACKEND: "http",
-      YF_GATEWAY_MODEL: "open.model",
+      YF_GATEWAY_MODEL: "wan-video/wan-2.7-i2v",
       YF_GATEWAY_LANE_ID: "r1-wan27-replicate",
       YF_GATEWAY_MAX_JOBS: "10",
       YF_GATEWAY_MAX_SPEND_USD: "1000",
@@ -391,7 +391,7 @@ describe("live generate fail-closed and cap", () => {
       new MemoryGatewayReservation(),
     );
     const body = {
-      model: "open.model",
+      model: "wan-video/wan-2.7-i2v",
       kind: "VIDEO_CLIP" as const,
       role: "broll",
       input: { kind: "VIDEO_CLIP", role: "broll" },
@@ -413,7 +413,7 @@ describe("live generate fail-closed and cap", () => {
       YF_GATEWAY_API_KEY: "gw-key",
       YF_GATEWAY_BACKEND_API_KEY: "backend-key",
       YF_GATEWAY_BACKEND: "http",
-      YF_GATEWAY_MODEL: "open.model",
+      YF_GATEWAY_MODEL: "wan-video/wan-2.7-i2v",
       YF_GATEWAY_LANE_ID: "r1-wan27-replicate",
       YF_GATEWAY_MAX_JOBS: "10",
       YF_GATEWAY_MAX_SPEND_USD: "100",
@@ -429,7 +429,7 @@ describe("live generate fail-closed and cap", () => {
       new MemoryGatewayReservation(),
     );
     const result = await generate.generate({
-      model: "open.model",
+      model: "wan-video/wan-2.7-i2v",
       kind: "VIDEO_CLIP",
       role: "broll",
       input: {},
@@ -608,7 +608,7 @@ describe("live submit and cancel settlement", () => {
       YF_GATEWAY_API_KEY: "gw-key",
       YF_GATEWAY_BACKEND_API_KEY: "backend-key",
       YF_GATEWAY_BACKEND: "http",
-      YF_GATEWAY_MODEL: "open.model",
+      YF_GATEWAY_MODEL: "wan-video/wan-2.7-i2v",
       YF_GATEWAY_LANE_ID: "r1-wan27-replicate",
       YF_GATEWAY_MAX_JOBS: "10",
       YF_GATEWAY_MAX_SPEND_USD: "100",
@@ -629,7 +629,7 @@ describe("live submit and cancel settlement", () => {
   }
 
   const body = {
-    model: "open.model",
+    model: "wan-video/wan-2.7-i2v",
     kind: "VIDEO_CLIP" as const,
     role: "broll",
     input: {},
@@ -847,7 +847,7 @@ describe("live submit and cancel settlement", () => {
       YF_GATEWAY_BACKEND_API_KEY: "backend-key",
       YF_GATEWAY_BACKEND: "http",
       YF_GATEWAY_BACKEND_BASE_URL: "https://queue.other.test",
-      YF_GATEWAY_MODEL: "open.model",
+      YF_GATEWAY_MODEL: "wan-video/wan-2.7-i2v",
       YF_GATEWAY_LANE_ID: "r1-wan27-replicate",
       YF_GATEWAY_MAX_JOBS: "10",
       YF_GATEWAY_MAX_SPEND_USD: "100",
