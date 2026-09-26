@@ -1,5 +1,11 @@
 import type { PrismaClient } from "@/generated/prisma/client";
 import { roundMeasure } from "@/server/sg/lane-rate";
+import {
+  LANE_ROLLUP_DEFAULT_DAYS,
+  LANE_ROLLUP_MAX_DAYS,
+  OpsQueryError,
+  rollupSince,
+} from "@/server/sg/ops-window";
 
 /**
  * One ops row: lane × scope × UTC day.
@@ -15,8 +21,9 @@ export type LaneScopeDayRow = {
   /** Estimate on reconciled, unreconciled, and still-reserved holds. Released holds are omitted. */
   estimatedUsd: number;
   /**
-   * Reconciled actual USD. Null when the group has unreconciled exposure and no reconciled actual,
-   * so an unknown outcome is not reported as $0.
+   * Reconciled actual USD. Null when the group has open RESERVED holds or unreconciled
+   * exposure and no reconciled actual, so an unknown outcome is not reported as $0.
+   * A group of only released holds is 0.
    */
   actualUsd: number | null;
   unreconciledBilledSeconds: number;
@@ -56,6 +63,7 @@ type Bucket = {
   actualUsdSum: number;
   actualKnown: boolean;
   sawUnreconciled: boolean;
+  sawReserved: boolean;
   unreconciledBilledSeconds: number;
   unreconciledUsd: number;
   reservedBilledSeconds: number;
@@ -94,10 +102,37 @@ export function buildLaneScopeDayRollups(
     .sort((a, b) => a.day.localeCompare(b.day) || a.laneId.localeCompare(b.laneId) || a.scope.localeCompare(b.scope));
 }
 
-export async function readLaneScopeDayRollups(db: PrismaClient): Promise<LaneScopeDayRow[]> {
-  const attempts = await db.shotFulfillmentAttempt.findMany({
-    include: { shot: { select: { scope: true } } },
+/**
+ * Attempts in the day window only.
+ * shot_fulfillment_attempt is indexed by (laneId, startedAt), not by startedAt alone.
+ * Distinct laneId reads that index's leading column. Each lane then uses
+ * laneId equality plus startedAt >= since, which the same index can range-scan.
+ * Holds are loaded by primary key for those attempts only.
+ * `days` outside 1..90 is rejected here as well as at the route.
+ */
+export async function readLaneScopeDayRollups(
+  db: PrismaClient,
+  days: number = LANE_ROLLUP_DEFAULT_DAYS,
+  now: Date = new Date(),
+): Promise<{ rows: LaneScopeDayRow[]; days: number; since: Date }> {
+  if (!Number.isInteger(days) || days < 1 || days > LANE_ROLLUP_MAX_DAYS) {
+    throw new OpsQueryError("days must be an integer from 1 to 90.");
+  }
+  const since = rollupSince(days, now);
+  const lanes = await db.shotFulfillmentAttempt.findMany({
+    distinct: ["laneId"],
+    select: { laneId: true },
   });
+  const attempts = (
+    await Promise.all(
+      lanes.map((lane) =>
+        db.shotFulfillmentAttempt.findMany({
+          where: { laneId: lane.laneId, startedAt: { gte: since } },
+          include: { shot: { select: { scope: true } } },
+        }),
+      ),
+    )
+  ).flat();
   const reservationIds = [
     ...new Set(
       attempts
@@ -111,26 +146,30 @@ export async function readLaneScopeDayRollups(db: PrismaClient): Promise<LaneSco
       : await db.aiVideoBudgetReservation.findMany({
           where: { id: { in: reservationIds } },
         });
-  return buildLaneScopeDayRollups(
-    attempts.map((attempt) => ({
-      laneId: attempt.laneId,
-      outcome: attempt.outcome,
-      startedAt: attempt.startedAt,
-      budgetReservationId: attempt.budgetReservationId,
-      scope: attempt.shot.scope,
-    })),
-    holds.map((hold) => ({
-      id: hold.id,
-      laneId: hold.laneId,
-      status: hold.status,
-      estimatedBilledSeconds: hold.estimatedBilledSeconds,
-      estimatedUsd: hold.estimatedUsd,
-      actualBilledSeconds: hold.actualBilledSeconds,
-      actualUsd: hold.actualUsd,
-      settledAt: hold.settledAt,
-      createdAt: hold.createdAt,
-    })),
-  );
+  return {
+    days,
+    since,
+    rows: buildLaneScopeDayRollups(
+      attempts.map((attempt) => ({
+        laneId: attempt.laneId,
+        outcome: attempt.outcome,
+        startedAt: attempt.startedAt,
+        budgetReservationId: attempt.budgetReservationId,
+        scope: attempt.shot.scope,
+      })),
+      holds.map((hold) => ({
+        id: hold.id,
+        laneId: hold.laneId,
+        status: hold.status,
+        estimatedBilledSeconds: hold.estimatedBilledSeconds,
+        estimatedUsd: hold.estimatedUsd,
+        actualBilledSeconds: hold.actualBilledSeconds,
+        actualUsd: hold.actualUsd,
+        settledAt: hold.settledAt,
+        createdAt: hold.createdAt,
+      })),
+    ),
+  };
 }
 
 function addHoldMoney(bucket: Bucket, hold: RollupHold) {
@@ -156,12 +195,13 @@ function addHoldMoney(bucket: Bucket, hold: RollupHold) {
     );
     bucket.reservedUsd = roundMeasure(bucket.reservedUsd + hold.estimatedUsd);
     bucket.estimatedUsd = roundMeasure(bucket.estimatedUsd + hold.estimatedUsd);
+    bucket.sawReserved = true;
   }
 }
 
 function toRow(bucket: Bucket): LaneScopeDayRow {
   let actualUsd: number | null;
-  if (bucket.sawUnreconciled && !bucket.actualKnown) {
+  if ((bucket.sawReserved || bucket.sawUnreconciled) && !bucket.actualKnown) {
     actualUsd = null;
   } else if (bucket.actualKnown) {
     actualUsd = bucket.actualUsdSum;
@@ -195,6 +235,7 @@ function emptyBucket(laneId: string, scope: string, day: string): Bucket {
     actualUsdSum: 0,
     actualKnown: false,
     sawUnreconciled: false,
+    sawReserved: false,
     unreconciledBilledSeconds: 0,
     unreconciledUsd: 0,
     reservedBilledSeconds: 0,

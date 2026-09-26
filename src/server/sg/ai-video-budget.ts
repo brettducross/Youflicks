@@ -140,6 +140,27 @@ function applyBudgetRelease(row: BudgetLedgerRow, reservation: AiVideoBudgetRese
   };
 }
 
+/** Rejects NaN, Infinity, and negatives before any ledger mutation. */
+function assertReconcileMeasure(
+  seconds: number,
+  usdPerSecond: number,
+): { actualBilledSeconds: number; actualUsd: number } {
+  if (!Number.isFinite(seconds) || seconds < 0 || !Number.isFinite(usdPerSecond) || usdPerSecond < 0) {
+    throw new Error("Billed seconds and USD must be finite and greater than or equal to 0.");
+  }
+  const actualBilledSeconds = roundMeasure(seconds);
+  const actualUsd = roundMeasure(actualBilledSeconds * usdPerSecond);
+  if (
+    !Number.isFinite(actualBilledSeconds) ||
+    actualBilledSeconds < 0 ||
+    !Number.isFinite(actualUsd) ||
+    actualUsd < 0
+  ) {
+    throw new Error("Billed seconds and USD must be finite and greater than or equal to 0.");
+  }
+  return { actualBilledSeconds, actualUsd };
+}
+
 function applyBudgetReconcile(
   row: BudgetLedgerRow,
   reservation: AiVideoBudgetReservationRecord,
@@ -261,13 +282,16 @@ export class MemoryAiVideoBudget implements AiVideoBudgetPort {
         if (ledger) this.ledgers.set(ledgerId, applyBudgetRelease(ledger, row));
       }
     } else if (action === "reconcile") {
-      const actual = actualBilledSeconds ?? row.estimatedBilledSeconds;
+      const measured = assertReconcileMeasure(
+        actualBilledSeconds ?? row.estimatedBilledSeconds,
+        row.usdPerSecond,
+      );
       for (const ledgerId of row.ledgerIds) {
         const ledger = this.ledgers.get(ledgerId);
-        if (ledger) this.ledgers.set(ledgerId, applyBudgetReconcile(ledger, row, actual));
+        if (ledger) this.ledgers.set(ledgerId, applyBudgetReconcile(ledger, row, measured.actualBilledSeconds));
       }
-      row.actualBilledSeconds = actual;
-      row.actualUsd = roundMeasure(actual * row.usdPerSecond);
+      row.actualBilledSeconds = measured.actualBilledSeconds;
+      row.actualUsd = measured.actualUsd;
     }
     row.status = transition.status;
     row.settleReason = reason;
@@ -458,10 +482,13 @@ export class PrismaAiVideoBudget implements AiVideoBudgetPort {
           });
         }
       } else if (action === "reconcile") {
-        const actual = actualBilledSeconds ?? reservation.estimatedBilledSeconds;
+        const measured = assertReconcileMeasure(
+          actualBilledSeconds ?? reservation.estimatedBilledSeconds,
+          reservation.usdPerSecond,
+        );
         for (const ledgerId of ledgerIds) {
           const ledger = await tx.aiVideoBudgetLedger.findUniqueOrThrow({ where: { id: ledgerId } });
-          const next = applyBudgetReconcile(toBudgetSnapshot(ledger), reservation, actual);
+          const next = applyBudgetReconcile(toBudgetSnapshot(ledger), reservation, measured.actualBilledSeconds);
           await tx.aiVideoBudgetLedger.update({
             where: { id: ledgerId },
             data: {
@@ -478,8 +505,8 @@ export class PrismaAiVideoBudget implements AiVideoBudgetPort {
             status: transition.status,
             settleReason: reason,
             settledAt: new Date(),
-            actualBilledSeconds: actual,
-            actualUsd: roundMeasure(actual * reservation.usdPerSecond),
+            actualBilledSeconds: measured.actualBilledSeconds,
+            actualUsd: measured.actualUsd,
           },
         });
       }

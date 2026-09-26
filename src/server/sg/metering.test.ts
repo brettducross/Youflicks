@@ -7,10 +7,12 @@ import { GET as lanesRoute } from "@/app/api/ops/sg/lanes/route";
 import { GET as spendRoute } from "@/app/api/ops/spend/route";
 import { env } from "@/lib/env";
 import { prisma } from "@/server/db";
-import { PrismaAiVideoBudget } from "@/server/sg/ai-video-budget";
+import { MemoryAiVideoBudget, PrismaAiVideoBudget } from "@/server/sg/ai-video-budget";
 import { buildLaneScopeDayRollups, readLaneScopeDayRollups } from "@/server/sg/lane-meter-rollup";
-import { requireLaneRate, requireLiveLane } from "@/server/sg/lane-rate";
+import { BUDGET_LEDGER_PAGE_SIZE, parseRollupDays } from "@/server/sg/ops-window";
+import { requireLaneRate, requireLiveLane, roundMeasure } from "@/server/sg/lane-rate";
 import {
+  aiVideoSecondsCostEventId,
   aiVideoSecondsUsageEventId,
   meterableBilledSeconds,
   recordSettledAiVideoSeconds,
@@ -61,6 +63,98 @@ describe("lane scope day rollup", () => {
         outcomes: { TIMEOUT_UNRECONCILED: 1 },
       },
     ]);
+  });
+
+  it("reports actualUsd null when a bucket has only open RESERVED holds", () => {
+    const rows = buildLaneScopeDayRollups(
+      [
+        {
+          laneId: "attempt-lane-ignored",
+          outcome: "PENDING",
+          startedAt: new Date("2026-09-25T12:00:00Z"),
+          budgetReservationId: "hold_open",
+          scope: "HERO",
+        },
+      ],
+      [
+        {
+          id: "hold_open",
+          laneId: "r1-wan27-replicate",
+          status: "RESERVED",
+          estimatedBilledSeconds: 5,
+          estimatedUsd: 0.5,
+          actualBilledSeconds: null,
+          actualUsd: null,
+          settledAt: null,
+          createdAt: new Date("2026-09-25T12:00:00Z"),
+        },
+      ],
+    );
+    expect(rows).toEqual([
+      {
+        laneId: "r1-wan27-replicate",
+        scope: "HERO",
+        day: "2026-09-25",
+        attempts: 1,
+        billedSeconds: 0,
+        estimatedUsd: 0.5,
+        actualUsd: null,
+        unreconciledBilledSeconds: 0,
+        unreconciledUsd: 0,
+        reservedBilledSeconds: 5,
+        reservedUsd: 0.5,
+        outcomes: { PENDING: 1 },
+      },
+    ]);
+  });
+
+  it("rejects NaN, Infinity, and a negative reconcile before any ledger write", async () => {
+    const budgets = new MemoryAiVideoBudget();
+    const held = await budgets.reserve({
+      idempotencyKey: "finite-memory",
+      projectId: "project-finite",
+      userId: "user-finite",
+      windowKey: "2026-09-25",
+      laneId: "r1-wan27-replicate",
+      providerKey: "open:finite",
+      estimatedBilledSeconds: 5,
+      usdPerSecond: 0.1,
+      estimatedUsd: 0.5,
+      caps: {},
+    });
+    const ledgerId = held.ledgerIds[0];
+    expect(ledgerId).toBeTruthy();
+    const before = await budgets.snapshot(ledgerId ?? "");
+    for (const actualBilledSeconds of [Number.NaN, Number.POSITIVE_INFINITY, Number.NEGATIVE_INFINITY, -1]) {
+      await expect(
+        budgets.reconcile(held.id, { actualBilledSeconds, reason: "SUCCEEDED" }),
+      ).rejects.toThrow(/finite/);
+    }
+    expect(await budgets.snapshot(ledgerId ?? "")).toEqual(before);
+    const open = await budgets.snapshot(ledgerId ?? "");
+    expect(open?.committedSeconds).toBe(0);
+    expect(Number.isFinite(open?.committedUsd)).toBe(true);
+    const settled = await budgets.reconcile(held.id, { actualBilledSeconds: 0.1 + 0.2, reason: "SUCCEEDED" });
+    expect(settled.status).toBe("RECONCILED");
+    expect(settled.actualBilledSeconds).toBe(0.3);
+    expect(settled.actualUsd).toBe(0.03);
+    expect((await budgets.snapshot(ledgerId ?? ""))?.committedSeconds).toBe(0.3);
+  });
+
+  it("meters a rounded finite quantity and skips NaN, Infinity, and negative seconds", () => {
+    const base = {
+      id: "h",
+      userId: "u",
+      projectId: "p",
+      providerKey: "open:x",
+      status: "RECONCILED",
+      settleReason: "SUCCEEDED",
+    };
+    expect(meterableBilledSeconds({ ...base, actualBilledSeconds: Number.NaN })).toBeNull();
+    expect(meterableBilledSeconds({ ...base, actualBilledSeconds: Number.POSITIVE_INFINITY })).toBeNull();
+    expect(meterableBilledSeconds({ ...base, actualBilledSeconds: Number.NEGATIVE_INFINITY })).toBeNull();
+    expect(meterableBilledSeconds({ ...base, actualBilledSeconds: -1 })).toBeNull();
+    expect(meterableBilledSeconds({ ...base, actualBilledSeconds: 0.1 + 0.2 })).toBe(0.3);
   });
 
   it("does not meter a release, a zero-second reconcile, or an open hold", () => {
@@ -202,7 +296,7 @@ describe("SG PR-5 per-shot metering", () => {
     expect(failedSlot.status).toBe("FAILED");
     expect(await countMeter(held.id)).toBe(0);
 
-    const exposed = (await readLaneScopeDayRollups(prisma)).find((row) => row.laneId === laneId);
+    const exposed = (await readLaneScopeDayRollups(prisma)).rows.find((row) => row.laneId === laneId);
     expect(exposed).toMatchObject({
       scope: "HERO",
       attempts: 1,
@@ -249,7 +343,7 @@ describe("SG PR-5 per-shot metering", () => {
     expect(usage.engineCosts[0]?.providerKey).not.toBe(linked.providerKey);
     expect(await prisma.usageEvent.count({ where: { userId, kind: UsageKind.ASSET_CALL } })).toBe(0);
 
-    const traced = (await readLaneScopeDayRollups(prisma)).find((row) => row.laneId === laneId);
+    const traced = (await readLaneScopeDayRollups(prisma)).rows.find((row) => row.laneId === laneId);
     expect(traced).toMatchObject({
       scope: "HERO",
       billedSeconds: 6,
@@ -431,9 +525,171 @@ describe("SG PR-5 per-shot metering", () => {
       expect(lanes.status).toBe(200);
       const lanesBody = (await lanes.json()) as { rows: Array<{ laneId: string }> };
       expect(Array.isArray(lanesBody.rows)).toBe(true);
+      expect(lanesBody).toMatchObject({ days: 14 });
     } finally {
       (env as { BETA_OPS_SECRET?: string }).BETA_OPS_SECRET = previous;
       await prisma.gatewaySpendLedger.deleteMany({ where: { id: laneLedgerId } });
+    }
+  });
+
+  it("rejects an invalid days window and enforces the default of 14 and the max of 90", async () => {
+    expect(parseRollupDays(null)).toBe(14);
+    for (const raw of ["0", "-1", "1.5", "91", "90.0", "abc", "14abc", "00", ""]) {
+      expect(() => parseRollupDays(raw)).toThrow(/1 to 90/);
+    }
+    expect(parseRollupDays("90")).toBe(90);
+    await expect(readLaneScopeDayRollups(prisma, 91)).rejects.toThrow(/1 to 90/);
+    await expect(readLaneScopeDayRollups(prisma, 0)).rejects.toThrow(/1 to 90/);
+
+    const previous = env.BETA_OPS_SECRET;
+    const laneId = `pr5-${userId}-window`;
+    const now = Date.now();
+    const day = 86_400_000;
+    try {
+      const recent = await openHold("window-recent", laneId);
+      const withinMax = await openHold("window-within-max", laneId);
+      const ancient = await openHold("window-ancient", laneId);
+      await prisma.shotFulfillmentAttempt.update({
+        where: { id: recent.attempt.id },
+        data: { startedAt: new Date(now) },
+      });
+      await prisma.shotFulfillmentAttempt.update({
+        where: { id: withinMax.attempt.id },
+        data: { startedAt: new Date(now - 20 * day) },
+      });
+      await prisma.shotFulfillmentAttempt.update({
+        where: { id: ancient.attempt.id },
+        data: { startedAt: new Date(now - 100 * day) },
+      });
+
+      (env as { BETA_OPS_SECRET?: string }).BETA_OPS_SECRET = opsSecret;
+      const auth = { authorization: `Bearer ${opsSecret}` };
+      const attemptsFor = (rows: Array<{ laneId: string; attempts: number }>) =>
+        rows.filter((row) => row.laneId === laneId).reduce((sum, row) => sum + row.attempts, 0);
+
+      const defaultResponse = await lanesRoute(
+        new Request("http://localhost/api/ops/sg/lanes", { headers: auth }),
+      );
+      expect(defaultResponse.status).toBe(200);
+      const defaultBody = (await defaultResponse.json()) as {
+        days: number;
+        since: string;
+        rows: Array<{ laneId: string; attempts: number }>;
+      };
+      expect(defaultBody.days).toBe(14);
+      const defaultAge = Date.now() - new Date(defaultBody.since).getTime();
+      expect(defaultAge).toBeGreaterThan(13 * day);
+      expect(defaultAge).toBeLessThan(15 * day);
+      expect(attemptsFor(defaultBody.rows)).toBe(1);
+
+      const maxResponse = await lanesRoute(
+        new Request("http://localhost/api/ops/sg/lanes?days=90", { headers: auth }),
+      );
+      expect(maxResponse.status).toBe(200);
+      const maxBody = (await maxResponse.json()) as {
+        days: number;
+        rows: Array<{ laneId: string; attempts: number }>;
+      };
+      expect(maxBody.days).toBe(90);
+      expect(attemptsFor(maxBody.rows)).toBe(2);
+
+      for (const raw of ["0", "91", "1.5", "abc", ""]) {
+        const rejected = await lanesRoute(
+          new Request(`http://localhost/api/ops/sg/lanes?days=${encodeURIComponent(raw)}`, { headers: auth }),
+        );
+        expect(rejected.status).toBe(400);
+      }
+    } finally {
+      (env as { BETA_OPS_SECRET?: string }).BETA_OPS_SECRET = previous;
+    }
+  });
+
+  it("rejects NaN, Infinity, and a negative reconcile on the database before any ledger write", async () => {
+    const laneId = `pr5-${userId}-finite`;
+    const { held } = await openHold("finite", laneId);
+    const ledger = await prisma.aiVideoBudgetLedger.findFirstOrThrow({
+      where: { projectId, scopeKind: "PROJECT" },
+    });
+    for (const actualBilledSeconds of [Number.NaN, Number.POSITIVE_INFINITY, Number.NEGATIVE_INFINITY, -1]) {
+      await expect(
+        budgets.reconcile(held.id, { actualBilledSeconds, reason: "SUCCEEDED" }),
+      ).rejects.toThrow(/finite/);
+    }
+    const after = await prisma.aiVideoBudgetLedger.findUniqueOrThrow({ where: { id: ledger.id } });
+    expect(after.committedSeconds).toBe(ledger.committedSeconds);
+    expect(after.committedUsd).toBe(ledger.committedUsd);
+    expect(Number.isFinite(after.committedSeconds)).toBe(true);
+    expect(Number.isFinite(after.committedUsd)).toBe(true);
+    const still = await prisma.aiVideoBudgetReservation.findUniqueOrThrow({ where: { id: held.id } });
+    expect(still.status).toBe("RESERVED");
+    expect(still.actualBilledSeconds).toBeNull();
+    expect(await countMeter(held.id)).toBe(0);
+
+    const settled = await budgets.reconcile(held.id, { actualBilledSeconds: 0.1 + 0.2, reason: "SUCCEEDED" });
+    expect(settled.actualBilledSeconds).toBe(0.3);
+    expect(settled.actualUsd).toBe(0.03);
+    const committed = await prisma.aiVideoBudgetLedger.findUniqueOrThrow({ where: { id: ledger.id } });
+    expect(committed.committedSeconds).toBe(roundMeasure(ledger.committedSeconds + 0.3));
+    expect(Number.isFinite(committed.committedUsd)).toBe(true);
+    const event = await prisma.usageEvent.findUniqueOrThrow({
+      where: { id: aiVideoSecondsUsageEventId(held.id) },
+    });
+    expect(event.quantity).toBe(0.3);
+    const cost = await prisma.engineCostEvent.findUniqueOrThrow({
+      where: { id: aiVideoSecondsCostEventId(held.id) },
+    });
+    expect(cost.costUnits).toBe(0.3);
+  });
+
+  it("pages budget ledger rows with a fixed cap and an id cursor", async () => {
+    const previous = env.BETA_OPS_SECRET;
+    const prefix = `~mf1-${userId}-`;
+    const ids = Array.from({ length: BUDGET_LEDGER_PAGE_SIZE + 1 }, (_, index) => {
+      return `${prefix}${String(index).padStart(3, "0")}`;
+    });
+    try {
+      await readyProject();
+      await prisma.aiVideoBudgetLedger.createMany({
+        data: ids.map((id) => ({ id, scopeKind: "PROJECT", reservedSeconds: 1 })),
+      });
+      (env as { BETA_OPS_SECRET?: string }).BETA_OPS_SECRET = opsSecret;
+      const auth = { authorization: `Bearer ${opsSecret}` };
+
+      const blank = await spendRoute(
+        new Request("http://localhost/api/ops/spend?ledgerCursor=", { headers: auth }),
+      );
+      expect(blank.status).toBe(400);
+
+      const first = await spendRoute(
+        new Request(`http://localhost/api/ops/spend?ledgerCursor=${encodeURIComponent(prefix)}`, {
+          headers: auth,
+        }),
+      );
+      expect(first.status).toBe(200);
+      const firstBody = (await first.json()) as {
+        budgetLedgers: Array<{ id: string }>;
+        budgetLedgerNextCursor: string | null;
+      };
+      expect(firstBody.budgetLedgers).toHaveLength(BUDGET_LEDGER_PAGE_SIZE);
+      expect(firstBody.budgetLedgers.every((row) => row.id.startsWith(prefix))).toBe(true);
+      expect(firstBody.budgetLedgerNextCursor).toBe(ids[BUDGET_LEDGER_PAGE_SIZE - 1]);
+
+      const second = await spendRoute(
+        new Request(
+          `http://localhost/api/ops/spend?ledgerCursor=${encodeURIComponent(firstBody.budgetLedgerNextCursor ?? "")}`,
+          { headers: auth },
+        ),
+      );
+      expect(second.status).toBe(200);
+      const secondBody = (await second.json()) as {
+        budgetLedgers: Array<{ id: string }>;
+        budgetLedgerNextCursor: string | null;
+      };
+      expect(secondBody.budgetLedgers.map((row) => row.id)).toEqual([ids[BUDGET_LEDGER_PAGE_SIZE]]);
+      expect(secondBody.budgetLedgerNextCursor).toBeNull();
+    } finally {
+      (env as { BETA_OPS_SECRET?: string }).BETA_OPS_SECRET = previous;
+      await prisma.aiVideoBudgetLedger.deleteMany({ where: { id: { startsWith: prefix } } });
     }
   });
 });

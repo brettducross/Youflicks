@@ -1,6 +1,7 @@
 import { logger } from "@/lib/logger";
 import { prisma } from "@/server/db";
 import { AssetCapability } from "@/server/ports/capabilities";
+import { roundMeasure } from "@/server/sg/lane-rate";
 import { EngineCostKind, UsageKind } from "@/server/usage/types";
 
 /**
@@ -39,10 +40,11 @@ export function meterableBilledSeconds(hold: MeteredBudgetHold): number | null {
   if (hold.status !== "RECONCILED") {
     return null;
   }
-  if (hold.actualBilledSeconds == null || !(hold.actualBilledSeconds > 0)) {
+  const seconds = hold.actualBilledSeconds;
+  if (seconds == null || !Number.isFinite(seconds) || seconds <= 0) {
     return null;
   }
-  return hold.actualBilledSeconds;
+  return roundMeasure(seconds);
 }
 
 /**

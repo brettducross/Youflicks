@@ -2,6 +2,11 @@ import { NextResponse } from "next/server";
 import { env } from "@/lib/env";
 import { prisma } from "@/server/db";
 import { GATEWAY_SPEND_LEDGER_ID } from "@/server/beta/defaults";
+import {
+  BUDGET_LEDGER_PAGE_SIZE,
+  OpsQueryError,
+  parseBudgetLedgerCursor,
+} from "@/server/sg/ops-window";
 
 export const runtime = "nodejs";
 
@@ -10,7 +15,14 @@ export async function GET(request: Request) {
   if (!secret || request.headers.get("authorization") !== `Bearer ${secret}`) {
     return NextResponse.json({ error: { code: "NOT_FOUND", message: "Not found." } }, { status: 404 });
   }
-  const [row, lanes, budgetLedgers] = await Promise.all([
+  let ledgerCursor: string | null;
+  try {
+    ledgerCursor = parseBudgetLedgerCursor(new URL(request.url).searchParams.get("ledgerCursor"));
+  } catch (error) {
+    const message = error instanceof OpsQueryError ? error.message : "Invalid ledger cursor.";
+    return NextResponse.json({ error: { code: "BAD_REQUEST", message } }, { status: 400 });
+  }
+  const [row, lanes, budgetLedgerPage] = await Promise.all([
     prisma.gatewaySpendLedger.findUnique({
       where: { id: GATEWAY_SPEND_LEDGER_ID },
     }),
@@ -19,9 +31,14 @@ export async function GET(request: Request) {
       orderBy: { id: "asc" },
     }),
     prisma.aiVideoBudgetLedger.findMany({
+      where: ledgerCursor ? { id: { gt: ledgerCursor } } : undefined,
       orderBy: { id: "asc" },
+      take: BUDGET_LEDGER_PAGE_SIZE + 1,
     }),
   ]);
+  const budgetLedgers = budgetLedgerPage.slice(0, BUDGET_LEDGER_PAGE_SIZE);
+  const budgetLedgerNextCursor =
+    budgetLedgerPage.length > BUDGET_LEDGER_PAGE_SIZE ? (budgetLedgers[budgetLedgers.length - 1]?.id ?? null) : null;
   return NextResponse.json({
     ledgerId: GATEWAY_SPEND_LEDGER_ID,
     jobsAccepted: row?.jobsAccepted ?? 0,
@@ -54,5 +71,6 @@ export async function GET(request: Request) {
       attempts: ledger.attempts,
       updatedAt: ledger.updatedAt.toISOString(),
     })),
+    budgetLedgerNextCursor,
   });
 }
