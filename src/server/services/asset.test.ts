@@ -40,7 +40,8 @@ import { AttributionService } from "@/server/services/attribution";
 import { ConsentService } from "@/server/services/consent";
 import { AnalysisService } from "@/server/services/analysis";
 import { AssetContractService } from "@/server/services/asset-contract";
-import { AssetService } from "@/server/services/asset";
+import { collectShotCueInput } from "@/server/sg/cue-context";
+import { AssetService, type ShotCueCollector } from "@/server/services/asset";
 import { AssetWorker } from "@/server/services/asset-worker";
 import { IntentService } from "@/server/services/intent";
 import { MediaService } from "@/server/services/media";
@@ -236,6 +237,7 @@ describe("AssetService M3", () => {
     supportedCapabilities?: AssetCapabilityValue[];
     budgets?: AiVideoBudgetPort;
     fulfillments?: PrismaShotFulfillment;
+    collectCues?: ShotCueCollector;
   }) {
     const productionAvailable = options.productionAvailable ?? Boolean(options.adapter);
     const localDevAvailable = options.localDevAvailable ?? false;
@@ -278,6 +280,7 @@ describe("AssetService M3", () => {
       undefined,
       options.budgets,
       options.fulfillments,
+      options.collectCues,
     );
     return { assets, worker: new AssetWorker(jobs, assets) };
   }
@@ -1758,6 +1761,211 @@ describe("AssetService M3", () => {
       where: { projectId, type: JobType.AI_ASSET },
     });
     expect(assetJobs.some((job) => job.status === JobStatus.SUCCEEDED)).toBe(true);
+  });
+
+  it("writes extracted cues onto the slot for a non-enhancement job that names a source", async () => {
+    const photo = await prisma.mediaAsset.create({
+      data: {
+        projectId,
+        kind: "PHOTO",
+        filename: "empty-room.png",
+        mimeType: "image/png",
+        byteSize: 8,
+        storageKey: `pr6-mf2/${projectId}/empty-room`,
+        status: "READY",
+        analysisStatus: "COMPLETED",
+      },
+    });
+    await prisma.mediaAnalysis.create({
+      data: {
+        assetId: photo.id,
+        providerKey: "test.analysis",
+        schemaVersion: "1.0",
+        status: "COMPLETED",
+        payload: {
+          people: { count: 0, people: [], recurringPersonIds: [] },
+        } as Prisma.InputJsonValue,
+      },
+    });
+    const { assets } = harness({
+      adapter: scriptedGenerator(async () => {
+        throw new Error("stop after cues");
+      }),
+      productionAvailable: false,
+      localDevAvailable: true,
+    });
+    const queued = await assets.requestGenerate(ownerId, projectId, {
+      roles: [
+        {
+          role: "empty_room_clip",
+          storySceneId: "scene-arrive",
+          kind: "VIDEO_CLIP",
+          sourceMediaAssetId: photo.id,
+        },
+      ],
+    });
+    try {
+      const job = await jobs.get(queued.jobId);
+      await expect(assets.processJob(job!)).rejects.toThrow("stop after cues");
+      const slot = await prisma.shotFulfillment.findFirst({
+        where: { projectId, role: "empty_room_clip", storySceneId: "scene-arrive" },
+      });
+      expect(slot?.identityState).toBe("UNKNOWN");
+      expect(slot?.scope).toBe("IDENTITY");
+      expect(slot?.requiredScopes).toEqual(["IDENTITY"]);
+      expect(slot?.shotRole).toBe("other");
+      expect(slot?.identityEvidence).toEqual({
+        faceCount: 0,
+        faceDetected: false,
+        recurringPersonCount: 0,
+        analysisCompleted: false,
+      });
+      expect(slot?.treatment).toBe("GENERATE");
+    } finally {
+      await jobs.cancel(queued.jobId);
+    }
+  });
+
+  it("still proves ABSENT for an ENHANCEMENT of a completed empty-room photo", async () => {
+    const photo = await prisma.mediaAsset.create({
+      data: {
+        projectId,
+        kind: "PHOTO",
+        filename: "empty-room-enhance.png",
+        mimeType: "image/png",
+        byteSize: 8,
+        storageKey: `pr6-mf2/${projectId}/empty-room-enhance`,
+        status: "READY",
+        analysisStatus: "COMPLETED",
+      },
+    });
+    await prisma.mediaAnalysis.create({
+      data: {
+        assetId: photo.id,
+        providerKey: "test.analysis",
+        schemaVersion: "1.0",
+        status: "COMPLETED",
+        payload: {
+          people: { count: 0, people: [], recurringPersonIds: [] },
+        } as Prisma.InputJsonValue,
+      },
+    });
+    const { assets } = harness({
+      adapter: scriptedGenerator(async () => {
+        throw new Error("stop after cues");
+      }),
+      productionAvailable: false,
+      localDevAvailable: true,
+    });
+    const queued = await assets.requestGenerate(ownerId, projectId, {
+      roles: [
+        {
+          role: "room_enhance",
+          storySceneId: "scene-arrive",
+          kind: "ENHANCEMENT",
+          sourceMediaAssetId: photo.id,
+        },
+      ],
+    });
+    try {
+      const job = await jobs.get(queued.jobId);
+      await expect(assets.processJob(job!)).rejects.toThrow("stop after cues");
+      const slot = await prisma.shotFulfillment.findFirst({
+        where: { projectId, role: "room_enhance", storySceneId: "scene-arrive" },
+      });
+      expect(slot?.identityState).toBe("ABSENT");
+      expect(slot?.scope).toBe("NON_IDENTITY");
+      expect(slot?.requiredScopes).toEqual(["NON_IDENTITY"]);
+      expect(slot?.shotRole).toBe("other");
+      expect(slot?.identityEvidence).toEqual({
+        faceCount: 0,
+        faceDetected: false,
+        recurringPersonCount: 0,
+        analysisCompleted: true,
+      });
+    } finally {
+      await jobs.cancel(queued.jobId);
+    }
+  });
+
+  it("does not generate, reserve, or open a slot when cue extraction throws", async () => {
+    let generateCalls = 0;
+    const { assets } = harness({
+      adapter: scriptedGenerator(async () => {
+        generateCalls += 1;
+        throw new Error("generated");
+      }),
+      productionAvailable: false,
+      localDevAvailable: true,
+      collectCues: async () => {
+        throw new Error("cue read failed");
+      },
+    });
+    const queued = await assets.requestGenerate(ownerId, projectId, {
+      roles: [{ role: "cue_throw_still", storySceneId: "scene-arrive", kind: "IMAGE" }],
+    });
+    try {
+      const job = await jobs.get(queued.jobId);
+      await expect(assets.processJob(job!)).rejects.toThrow("cue read failed");
+      expect(generateCalls).toBe(0);
+      expect(
+        await prisma.shotFulfillment.count({
+          where: { projectId, role: "cue_throw_still" },
+        }),
+      ).toBe(0);
+      expect(await prisma.shotFulfillmentAttempt.count({ where: { jobId: queued.jobId } })).toBe(0);
+      expect(await prisma.usageEvent.count({ where: { jobId: queued.jobId } })).toBe(0);
+      expect(
+        await prisma.aiVideoBudgetReservation.count({
+          where: { idempotencyKey: { startsWith: `asset:${queued.jobId}:` } },
+        }),
+      ).toBe(0);
+      const after = await jobs.get(queued.jobId);
+      expect(after?.attempts).toBe(0);
+      expect(after?.status).toBe(JobStatus.PENDING);
+    } finally {
+      await jobs.cancel(queued.jobId);
+    }
+  });
+
+  it("loads scene emphasis once and passes that same list to every role", async () => {
+    const seen: unknown[] = [];
+    const { assets } = harness({
+      adapter: new LocalDeterministicAssetGenerator(storage),
+      productionAvailable: false,
+      localDevAvailable: true,
+      collectCues: async (db, args) => {
+        seen.push(args.sceneEmphasis);
+        return collectShotCueInput(db, args);
+      },
+    });
+    const queued = await assets.requestGenerate(ownerId, projectId, {
+      roles: [
+        { role: "plan_once_wide", storySceneId: "scene-arrive", kind: "IMAGE" },
+        { role: "plan_once_tight", storySceneId: "scene-arrive", kind: "IMAGE" },
+      ],
+    });
+    const job = await jobs.get(queued.jobId);
+    await assets.processJob(job!);
+    await jobs.complete(queued.jobId, { assetIds: [] });
+    expect(seen).toHaveLength(2);
+    expect(seen[0]).toBe(seen[1]);
+    expect(Array.isArray(seen[0])).toBe(true);
+    const slots = await prisma.shotFulfillment.findMany({
+      where: { projectId, role: { in: ["plan_once_wide", "plan_once_tight"] } },
+    });
+    expect(slots).toHaveLength(2);
+    for (const slot of slots) {
+      expect(slot.shotRole).toBe("other");
+      expect(slot.identityEvidence).toEqual({
+        faceCount: 0,
+        faceDetected: false,
+        recurringPersonCount: 0,
+        analysisCompleted: false,
+      });
+    }
+    const finished = await jobs.get(queued.jobId);
+    expect(finished?.status).toBe(JobStatus.SUCCEEDED);
   });
 
   async function seedReadyStory(document: StoryDocument) {

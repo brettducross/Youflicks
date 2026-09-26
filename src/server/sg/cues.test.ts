@@ -6,6 +6,7 @@ import { prisma } from "@/server/db";
 import { walkCostFieldPaths } from "@/server/sg/cost-boundary";
 import { collectShotCueInput, type CueReadDb } from "@/server/sg/cue-context";
 import {
+  assertPersistableCues,
   DIALOGUE_INTERIM_TREATMENTS,
   extractShotCues,
   persistableShotCues,
@@ -28,12 +29,15 @@ import type { IdentityState } from "@/server/sg/constants";
 function analysis(overrides: Partial<ShotCueAnalysis> = {}): ShotCueAnalysis {
   return {
     status: "COMPLETED",
+    assetStatus: "COMPLETED",
     faceDetected: false,
     faceCount: 0,
     peopleCount: 0,
     recurringPersonCount: 0,
     cameraMovement: null,
     locations: [],
+    peopleParsed: true,
+    personListed: false,
     ...overrides,
   };
 }
@@ -149,10 +153,11 @@ describe("identity truth table", () => {
 
   it("reads faces and recurring ids from a MediaAnalysis payload without keeping the ids", () => {
     const fields = readAnalysisFields("COMPLETED", {
+      analysisSchemaVersion: "1.0",
       people: {
         count: 1,
         faceDetected: false,
-        recurringPersonIds: ["person-secret-id", "  "],
+        recurringPersonIds: ["person-secret-id"],
         people: [{ anonymousPersonId: "person-secret-id", faceDetected: true, embedding: [0.12, -0.4] }],
       },
       visual: {
@@ -166,6 +171,7 @@ describe("identity truth table", () => {
     expect(fields.faceCount).toBe(1);
     expect(fields.recurringPersonCount).toBe(1);
     expect(fields.peopleCount).toBe(1);
+    expect(fields.peopleParsed).toBe(true);
     expect(fields.cameraMovement).toBe("static");
     expect(JSON.stringify(fields)).not.toContain("person-secret-id");
     expect(JSON.stringify(fields)).not.toContain("0.12");
@@ -182,6 +188,140 @@ describe("identity truth table", () => {
     expect(stored).not.toContain("faces.example");
     expect(walkCostFieldPaths(cues)).toEqual([]);
     expect(cues.motionNeed).toBe("none");
+  });
+});
+
+describe("payload identity proof", () => {
+  const absentRoom = { people: { count: 0, people: [], recurringPersonIds: [] } };
+
+  function stateFor(
+    payload: unknown,
+    status: string | null = "COMPLETED",
+    assetStatus: string | null = "COMPLETED",
+  ) {
+    const fields = readAnalysisFields(status, payload, assetStatus);
+    return extractShotCues(cueInput({ analysis: fields }));
+  }
+
+  it("marks ABSENT when COMPLETED count is 0 and both person lists are empty", () => {
+    const cues = stateFor(absentRoom);
+    expect(cues.identityState).toBe("ABSENT");
+    expect(cues.scope).toBe("NON_IDENTITY");
+    expect(cues.requiredScopes).toEqual(["NON_IDENTITY"]);
+    expect(cues.identityEvidence.analysisCompleted).toBe(true);
+  });
+
+  it("marks ABSENT when COMPLETED count is 0 and the person array is omitted", () => {
+    const cues = stateFor({ people: { count: 0 } });
+    expect(cues.identityState).toBe("ABSENT");
+    expect(cues.scope).toBe("NON_IDENTITY");
+  });
+
+  it("marks ABSENT when analysisSchemaVersion is absent or 1.0 on an empty room", () => {
+    expect(stateFor({ people: { count: 0, people: [] } }).identityState).toBe("ABSENT");
+    expect(
+      stateFor({ analysisSchemaVersion: "1.0", people: { count: 0, people: [] } }).identityState,
+    ).toBe("ABSENT");
+  });
+
+  it("marks PRESENT for a boolean face or a non-blank recurring id even when count is 0", () => {
+    expect(stateFor({ people: { count: 0, faceDetected: true } }).identityState).toBe("PRESENT");
+    expect(
+      stateFor({
+        people: {
+          count: 0,
+          people: [{ anonymousPersonId: "a", faceDetected: true }],
+        },
+      }).identityState,
+    ).toBe("PRESENT");
+    expect(stateFor({ people: { count: 0, recurringPersonIds: ["p1"] } }).identityState).toBe("PRESENT");
+  });
+
+  it("marks UNKNOWN when count is 0 but a person is listed", () => {
+    const cues = stateFor({
+      people: { count: 0, people: [{ anonymousPersonId: "a", faceDetected: false }] },
+    });
+    expect(cues.identityState).toBe("UNKNOWN");
+    expect(cues.scope).toBe("IDENTITY");
+    expect(cues.requiredScopes).toEqual(["IDENTITY"]);
+  });
+
+  it("marks UNKNOWN when faceDetected is the string true", () => {
+    const top = stateFor({ people: { count: 0, faceDetected: "true", people: [] } });
+    const person = stateFor({
+      people: { count: 0, people: [{ anonymousPersonId: "a", faceDetected: "true" }] },
+    });
+    expect(top.identityState).toBe("UNKNOWN");
+    expect(person.identityState).toBe("UNKNOWN");
+    expect(top.requiredScopes).not.toContain("NON_IDENTITY");
+    expect(person.scope).not.toBe("NON_IDENTITY");
+  });
+
+  it("marks UNKNOWN when faceDetected is the number 1", () => {
+    const top = stateFor({ people: { count: 0, faceDetected: 1, people: [] } });
+    const person = stateFor({
+      people: { count: 0, people: [{ anonymousPersonId: "a", faceDetected: 1 }] },
+    });
+    expect(top.identityState).toBe("UNKNOWN");
+    expect(person.identityState).toBe("UNKNOWN");
+    expect(top.scope).toBe("IDENTITY");
+    expect(person.scope).toBe("IDENTITY");
+  });
+
+  it("marks UNKNOWN when people.people is an object", () => {
+    const cues = stateFor({ people: { count: 0, people: { anonymousPersonId: "a" } } });
+    expect(cues.identityState).toBe("UNKNOWN");
+    expect(cues.scope).toBe("IDENTITY");
+  });
+
+  it("marks UNKNOWN when recurringPersonIds are blank", () => {
+    expect(stateFor({ people: { count: 0, recurringPersonIds: [""] } }).identityState).toBe("UNKNOWN");
+    expect(stateFor({ people: { count: 0, recurringPersonIds: ["  "] } }).identityState).toBe("UNKNOWN");
+    expect(stateFor({ people: { count: 0, recurringPersonIds: ["p1", ""] } }).identityState).toBe(
+      "UNKNOWN",
+    );
+  });
+
+  it("marks UNKNOWN when recurringPersonIds are numeric", () => {
+    const cues = stateFor({ people: { count: 0, recurringPersonIds: [1] } });
+    expect(cues.identityState).toBe("UNKNOWN");
+    expect(cues.requiredScopes).toEqual(["IDENTITY"]);
+  });
+
+  it("marks UNKNOWN when recurringPersonIds is a bare string", () => {
+    const cues = stateFor({ people: { count: 0, recurringPersonIds: "p1" } });
+    expect(cues.identityState).toBe("UNKNOWN");
+    expect(cues.scope).toBe("IDENTITY");
+  });
+
+  it("marks UNKNOWN when a COMPLETED row is stale because the asset is QUEUED or PROCESSING", () => {
+    for (const assetStatus of ["QUEUED", "PROCESSING"]) {
+      const cues = stateFor(absentRoom, "COMPLETED", assetStatus);
+      expect(cues.identityState).toBe("UNKNOWN");
+      expect(cues.scope).toBe("IDENTITY");
+      expect(cues.identityEvidence.analysisCompleted).toBe(false);
+    }
+  });
+
+  it("marks UNKNOWN when analysisSchemaVersion is not 1.0", () => {
+    const cues = stateFor({ analysisSchemaVersion: "9.9", people: { count: 0, people: [] } });
+    expect(cues.identityState).toBe("UNKNOWN");
+    expect(cues.scope).toBe("IDENTITY");
+    expect(cues.identityEvidence).toEqual({
+      faceCount: 0,
+      faceDetected: false,
+      recurringPersonCount: 0,
+      analysisCompleted: false,
+    });
+  });
+
+  it("marks UNKNOWN for a missing, empty, or non-object people section and for a bad count", () => {
+    for (const payload of [null, {}, [], "room", { people: [] }, { people: { people: [] } }]) {
+      expect(stateFor(payload).identityState).toBe("UNKNOWN");
+    }
+    for (const count of ["0", -1, Number.NaN, Number.POSITIVE_INFINITY, 0.5, true, 2]) {
+      expect(stateFor({ people: { count, people: [] } }).identityState).toBe("UNKNOWN");
+    }
   });
 });
 
@@ -440,6 +580,8 @@ describe("shot role and motion", () => {
     ).toBeNull();
     expect(extractShotCues(cueInput({ slotDurationMs: 0 })).slotDurationMs).toBeNull();
     expect(extractShotCues(cueInput({ slotDurationMs: 4500 })).slotDurationMs).toBe(4500);
+    expect(extractShotCues(cueInput({ slotDurationMs: 3_000_000_000 })).slotDurationMs).toBeNull();
+    expect(extractShotCues(cueInput({ slotDurationMs: 2_147_483_647 })).slotDurationMs).toBe(2_147_483_647);
   });
 });
 
@@ -476,8 +618,8 @@ describe("cue extraction spy", () => {
         delete: forbid("mediaAnalysis.delete"),
       },
       creativePlan: {
-        findUnique: async () => {
-          calls.push("creativePlan.findUnique");
+        findFirst: async () => {
+          calls.push("creativePlan.findFirst");
           return {
             plan: {
               schemaVersion: CREATIVE_PLAN_SCHEMA_VERSION,
@@ -517,7 +659,7 @@ describe("cue extraction spy", () => {
     expect(calls).toEqual([
       "mediaAsset.findFirst",
       "mediaAnalysis.findFirst",
-      "creativePlan.findUnique",
+      "creativePlan.findFirst",
     ]);
     expect(cues.hero).toBe(true);
     expect(cues.identityState).toBe("ABSENT");
@@ -525,6 +667,156 @@ describe("cue extraction spy", () => {
     expect(JSON.stringify(cues)).not.toContain("usdPerSecond");
     expect(JSON.stringify(input.sceneEmphasis)).not.toContain("embedding");
     expect(JSON.stringify(input.sceneEmphasis)).not.toContain("faces.example");
+  });
+
+  it("treats a COMPLETED empty-room row as UNKNOWN while the asset is QUEUED or PROCESSING", async () => {
+    for (const analysisStatus of ["QUEUED", "PROCESSING"]) {
+      const db = {
+        mediaAsset: {
+          findFirst: async () => ({ id: "media-1", analysisStatus }),
+        },
+        mediaAnalysis: {
+          findFirst: async () => ({
+            status: "COMPLETED",
+            payload: { people: { count: 0, people: [], recurringPersonIds: [] } },
+          }),
+        },
+        creativePlan: {
+          findFirst: async () => {
+            throw new Error("plan should not be required");
+          },
+        },
+      };
+      const input = await collectShotCueInput(db as unknown as CueReadDb, {
+        projectId: "project-1",
+        story: null,
+        timeline: sampleTimeline(),
+        role: "empty_room_clip",
+        sourceMediaAssetId: "media-1",
+      });
+      const cues = extractShotCues(input);
+      expect(cues.identityState).toBe("UNKNOWN");
+      expect(cues.scope).toBe("IDENTITY");
+      expect(cues.requiredScopes).toEqual(["IDENTITY"]);
+    }
+  });
+
+  it("reads scene emphasis only for the plan in this project", async () => {
+    let where: { id?: string; projectId?: string } | undefined;
+    const db = {
+      mediaAsset: { findFirst: async () => null },
+      mediaAnalysis: { findFirst: async () => null },
+      creativePlan: {
+        findFirst: async (args: { where?: { id?: string; projectId?: string } }) => {
+          where = args.where;
+          if (args.where?.projectId !== "project-1" || args.where?.id !== "plan-1") {
+            return {
+              plan: {
+                decisions: [{ kind: "scene_emphasis", subject: "scene-other", summary: "Wrong project." }],
+              },
+            };
+          }
+          return {
+            plan: {
+              decisions: [{ kind: "scene_emphasis", subject: "scene-1", summary: "This project." }],
+            },
+          };
+        },
+      },
+    };
+    const input = await collectShotCueInput(db as unknown as CueReadDb, {
+      projectId: "project-1",
+      story: sampleStory("plan-1"),
+      timeline: sampleTimeline(),
+      role: "establishing_visual",
+      storySceneId: "scene-1",
+    });
+    expect(where).toEqual({ id: "plan-1", projectId: "project-1" });
+    expect(extractShotCues(input).hero).toBe(true);
+    expect(extractShotCues(input).shotRole).toBe("hero");
+  });
+
+  it("keeps a valid scene_emphasis when another decision does not parse", async () => {
+    const db = {
+      mediaAsset: { findFirst: async () => null },
+      mediaAnalysis: { findFirst: async () => null },
+      creativePlan: {
+        findFirst: async () => ({
+          plan: {
+            schemaVersion: "not-a-real-version",
+            decisions: [
+              { kind: "scene_emphasis", subject: "scene-1" },
+              { kind: "scene_emphasis", subject: "scene-1", summary: "Hold the arrival." },
+              { decisions: "nope" },
+            ],
+          },
+        }),
+      },
+    };
+    const input = await collectShotCueInput(db as unknown as CueReadDb, {
+      projectId: "project-1",
+      story: sampleStory("plan-1"),
+      timeline: sampleTimeline(),
+      role: "establishing_visual",
+      storySceneId: "scene-1",
+    });
+    expect(extractShotCues(input).hero).toBe(true);
+
+    const dropped = {
+      mediaAsset: { findFirst: async () => null },
+      mediaAnalysis: { findFirst: async () => null },
+      creativePlan: {
+        findFirst: async () => ({ plan: { decisions: "nope" } }),
+      },
+    };
+    const empty = await collectShotCueInput(dropped as unknown as CueReadDb, {
+      projectId: "project-1",
+      story: sampleStory("plan-1"),
+      timeline: sampleTimeline(),
+      role: "establishing_visual",
+      storySceneId: "scene-1",
+    });
+    expect(extractShotCues(empty).hero).toBe(false);
+  });
+
+  it("does not read the plan again when scene emphasis is already loaded", async () => {
+    const db = {
+      mediaAsset: { findFirst: async () => null },
+      mediaAnalysis: { findFirst: async () => null },
+      creativePlan: {
+        findFirst: async () => {
+          throw new Error("plan read");
+        },
+      },
+    };
+    const input = await collectShotCueInput(db as unknown as CueReadDb, {
+      projectId: "project-1",
+      story: sampleStory("plan-1"),
+      timeline: sampleTimeline(),
+      role: "establishing_visual",
+      storySceneId: "scene-1",
+      sceneEmphasis: [{ kind: "scene_emphasis", subject: "scene-1" }],
+    });
+    expect(extractShotCues(input).hero).toBe(true);
+  });
+
+  it("rejects a slot duration outside the int4 range", () => {
+    expect(() =>
+      assertPersistableCues({
+        scope: "IDENTITY",
+        requiredScopes: ["IDENTITY"],
+        identityState: "UNKNOWN",
+        shotRole: "other",
+        motionNeed: null,
+        slotDurationMs: 3_000_000_000,
+        identityEvidence: {
+          faceCount: 0,
+          faceDetected: false,
+          recurringPersonCount: 0,
+          analysisCompleted: false,
+        },
+      }),
+    ).toThrow(ShotCueError);
   });
 
   it("does not route and does not reference a database write", () => {
@@ -635,7 +927,7 @@ describe("persisted cues", () => {
           people: {
             count: 1,
             recurringPersonIds: ["person-secret-id"],
-            people: [{ faceDetected: true, embedding: [0.25, 0.5] }],
+            people: [{ anonymousPersonId: "anon-face", faceDetected: true, embedding: [0.25, 0.5] }],
           },
           visual: { locations: ["secret-harbor-lane"], cameraMovement: "locked" },
         } as Prisma.InputJsonValue,
@@ -690,6 +982,7 @@ describe("persisted cues", () => {
       }
       expect(slot.treatment).toBe("GENERATE");
       expect(JSON.stringify(slot.identityEvidence)).not.toContain("person-secret-id");
+      expect(JSON.stringify(slot.identityEvidence)).not.toContain("anon-face");
       expect(JSON.stringify(slot.identityEvidence)).not.toContain("secret-harbor-lane");
       expect(JSON.stringify(slot.identityEvidence)).not.toContain("embedding");
       expect(walkCostFieldPaths(slot.identityEvidence)).toEqual([]);

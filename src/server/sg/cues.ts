@@ -1,3 +1,4 @@
+import { ANALYSIS_SCHEMA_VERSION, peopleAnalysisSchema } from "@/server/analysis/schema";
 import {
   IDENTITY_STATES,
   MOTION_NEEDS,
@@ -26,6 +27,9 @@ export const HERO_DRAMATIC_FUNCTIONS = ["climax", "turning", "inciting"] as cons
 export const DIALOGUE_INTERIM_TREATMENTS = ["ORIGINAL", "STATIC", "KEN_BURNS"] as const satisfies readonly Treatment[];
 
 const ANALYSIS_COMPLETED = "COMPLETED";
+
+/** Postgres INTEGER upper bound. A larger slot duration makes Prisma throw. */
+const MAX_SLOT_DURATION_MS = 2_147_483_647;
 
 const MOTION_NONE = new Set(["none", "static", "locked", "still", "fixed", "tripod"]);
 const MOTION_LOW = new Set(["low", "pan", "tilt", "slow", "dolly", "push", "drift", "gentle"]);
@@ -62,6 +66,8 @@ export type CueUnmetRole = {
 export type ShotCueAnalysis = {
   /** MediaAnalysis.status. Null when there is no analysis row. */
   status: string | null;
+  /** MediaAsset.analysisStatus. A QUEUED or PROCESSING re-analysis makes the row stale. */
+  assetStatus: string | null;
   faceDetected: boolean;
   faceCount: number;
   /** people.count when it is an integer in range; otherwise null (not zero). */
@@ -69,6 +75,14 @@ export type ShotCueAnalysis = {
   recurringPersonCount: number;
   cameraMovement: string | null;
   locations: readonly string[];
+  /**
+   * True only when the people section parsed under peopleAnalysisSchema,
+   * ids are non-blank strings, and faceDetected is boolean wherever present.
+   * A failed parse is never ABSENT.
+   */
+  peopleParsed: boolean;
+  /** True when people.people lists at least one person. Count 0 plus a person is UNKNOWN. */
+  personListed: boolean;
 };
 
 export type SceneEmphasisCue = {
@@ -149,7 +163,7 @@ export function slotDurationMsForRole(
     item.timelineStartMs < earliest.timelineStartMs ? item : earliest,
   );
   const duration = clip.timelineEndMs - clip.timelineStartMs;
-  if (!Number.isInteger(duration) || duration <= 0) {
+  if (!isSlotDuration(duration)) {
     return null;
   }
   return duration;
@@ -176,34 +190,46 @@ export function primaryScopeFor(scopes: readonly RoutingScope[]): RoutingScope {
 
 /**
  * Reduce a MediaAnalysis payload to counts and booleans.
- * Person ids, embeddings, crops, URLs, and raw location text are not copied
- * into the returned evidence. Location strings are returned only so the
- * extractor can prove it does not persist them.
+ * ABSENT is not decided here. A people section that does not parse is marked
+ * unparsed so identity stays UNKNOWN. Person ids, embeddings, crops, URLs,
+ * and raw location text are not copied into the returned evidence. Location
+ * strings are returned only so the extractor can prove it does not persist them.
  */
-export function readAnalysisFields(status: string | null, payload: unknown): ShotCueAnalysis {
+export function readAnalysisFields(
+  status: string | null,
+  payload: unknown,
+  assetStatus: string | null = status,
+): ShotCueAnalysis {
   const root = asRecord(payload);
-  const people = asRecord(root?.people);
   const visual = asRecord(root?.visual);
-  const personList = Array.isArray(people?.people) ? people.people : [];
-  let faceCount = 0;
-  for (const person of personList) {
-    const record = asRecord(person);
-    if (record?.faceDetected === true) {
-      faceCount += 1;
-    }
-  }
-  const topLevelFace = people?.faceDetected === true;
-  if (faceCount === 0 && topLevelFace) {
-    faceCount = 1;
+  const cameraMovement = readCameraMovement(visual?.cameraMovement ?? root?.cameraMovement);
+  const locations = readLocations(visual?.locations ?? root?.locations);
+  const parsed = parsePeopleSection(root);
+  if (!parsed.ok) {
+    return {
+      status,
+      assetStatus,
+      faceDetected: false,
+      faceCount: 0,
+      peopleCount: null,
+      recurringPersonCount: 0,
+      cameraMovement,
+      locations,
+      peopleParsed: false,
+      personListed: false,
+    };
   }
   return {
     status,
-    faceDetected: faceCount > 0 || topLevelFace,
-    faceCount: capCount(faceCount),
-    peopleCount: readPeopleCount(people?.count),
-    recurringPersonCount: countRecurringIds(people?.recurringPersonIds),
-    cameraMovement: readCameraMovement(visual?.cameraMovement ?? root?.cameraMovement),
-    locations: readLocations(visual?.locations ?? root?.locations),
+    assetStatus,
+    faceDetected: parsed.faceDetected,
+    faceCount: capCount(parsed.faceCount),
+    peopleCount: parsed.peopleCount,
+    recurringPersonCount: capCount(parsed.recurringPersonCount),
+    cameraMovement,
+    locations,
+    peopleParsed: true,
+    personListed: parsed.personListed,
   };
 }
 
@@ -267,11 +293,8 @@ export function assertPersistableCues(value: {
   if (value.motionNeed !== null && !isOneOf(value.motionNeed, MOTION_NEEDS)) {
     throw new ShotCueError("motionNeed is outside none, low, and high.");
   }
-  if (
-    value.slotDurationMs !== null &&
-    (!Number.isInteger(value.slotDurationMs) || value.slotDurationMs <= 0)
-  ) {
-    throw new ShotCueError("slotDurationMs must be a positive integer or null.");
+  if (value.slotDurationMs !== null && !isSlotDuration(value.slotDurationMs)) {
+    throw new ShotCueError("slotDurationMs must be a positive integer up to 2147483647 or null.");
   }
   if (!Array.isArray(value.requiredScopes) || value.requiredScopes.length === 0) {
     throw new ShotCueError("requiredScopes must be a non-empty scope set.");
@@ -316,21 +339,26 @@ export function assertPersistableCues(value: {
   };
 }
 
+/**
+ * ABSENT must be positively proven. Every other case is UNKNOWN.
+ * PRESENT is a parsed face or a parsed non-blank recurring id, and only
+ * while both the analysis row and the asset are COMPLETED.
+ */
 function identityStateFrom(analysis: ShotCueAnalysis | null): IdentityState {
-  if (!analysis || analysis.status !== ANALYSIS_COMPLETED) {
+  if (!analysisProved(analysis)) {
     return "UNKNOWN";
   }
   if (analysis.faceDetected || analysis.recurringPersonCount > 0) {
     return "PRESENT";
   }
-  if (analysis.peopleCount === 0 && analysis.recurringPersonCount === 0) {
+  if (analysis.peopleCount === 0 && !analysis.personListed && analysis.recurringPersonCount === 0) {
     return "ABSENT";
   }
   return "UNKNOWN";
 }
 
 function evidenceFor(analysis: ShotCueAnalysis | null): ShotCueEvidence {
-  if (!analysis || analysis.status !== ANALYSIS_COMPLETED) {
+  if (!analysisProved(analysis)) {
     return {
       faceCount: 0,
       faceDetected: false,
@@ -344,6 +372,15 @@ function evidenceFor(analysis: ShotCueAnalysis | null): ShotCueEvidence {
     recurringPersonCount: capCount(analysis.recurringPersonCount),
     analysisCompleted: true,
   };
+}
+
+function analysisProved(analysis: ShotCueAnalysis | null): analysis is ShotCueAnalysis {
+  return (
+    !!analysis &&
+    analysis.status === ANALYSIS_COMPLETED &&
+    analysis.assetStatus === ANALYSIS_COMPLETED &&
+    analysis.peopleParsed
+  );
 }
 
 function isHero(scene: CueScene | null, emphasis: readonly SceneEmphasisCue[]): boolean {
@@ -468,24 +505,73 @@ function assertNoForbiddenCueKeys(value: unknown) {
   }
 }
 
+type ParsedPeople = {
+  ok: true;
+  faceDetected: boolean;
+  faceCount: number;
+  peopleCount: number | null;
+  recurringPersonCount: number;
+  personListed: boolean;
+};
+
+/**
+ * Positive parse of the people section. Failure is not an empty room:
+ * the caller must treat it as UNKNOWN.
+ */
+function parsePeopleSection(root: Record<string, unknown> | null): ParsedPeople | { ok: false } {
+  if (!root || !Object.hasOwn(root, "people")) {
+    return { ok: false };
+  }
+  if (Object.hasOwn(root, "analysisSchemaVersion") && root.analysisSchemaVersion !== ANALYSIS_SCHEMA_VERSION) {
+    return { ok: false };
+  }
+  const parsed = peopleAnalysisSchema.safeParse(root.people);
+  if (!parsed.success) {
+    return { ok: false };
+  }
+  const people = asRecord(root.people);
+  if (!people) {
+    return { ok: false };
+  }
+  if (Object.hasOwn(people, "faceDetected") && typeof people.faceDetected !== "boolean") {
+    return { ok: false };
+  }
+  const personList = parsed.data.people ?? [];
+  for (const person of personList) {
+    if (person.anonymousPersonId.trim().length === 0) {
+      return { ok: false };
+    }
+  }
+  const recurring = parsed.data.recurringPersonIds ?? [];
+  for (const id of recurring) {
+    if (id.trim().length === 0) {
+      return { ok: false };
+    }
+  }
+  let faceCount = 0;
+  for (const person of personList) {
+    if (person.faceDetected === true) {
+      faceCount += 1;
+    }
+  }
+  if (faceCount === 0 && people.faceDetected === true) {
+    faceCount = 1;
+  }
+  return {
+    ok: true,
+    faceDetected: faceCount > 0,
+    faceCount,
+    peopleCount: readPeopleCount(parsed.data.count),
+    recurringPersonCount: recurring.length,
+    personListed: personList.length > 0,
+  };
+}
+
 function readPeopleCount(value: unknown): number | null {
   if (typeof value !== "number" || !Number.isInteger(value) || value < 0 || value > 10_000) {
     return null;
   }
   return value;
-}
-
-function countRecurringIds(value: unknown): number {
-  if (!Array.isArray(value)) {
-    return 0;
-  }
-  let count = 0;
-  for (const item of value) {
-    if (typeof item === "string" && item.trim().length > 0) {
-      count += 1;
-    }
-  }
-  return capCount(count);
 }
 
 function readCameraMovement(value: unknown): string | null {
@@ -509,8 +595,12 @@ function readLocations(value: unknown): string[] {
   return locations;
 }
 
+function isSlotDuration(value: number): boolean {
+  return Number.isInteger(value) && value > 0 && value <= MAX_SLOT_DURATION_MS;
+}
+
 function normalizeDuration(value: number | null): number | null {
-  if (value === null || !Number.isInteger(value) || value <= 0) {
+  if (value === null || !isSlotDuration(value)) {
     return null;
   }
   return value;

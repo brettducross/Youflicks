@@ -1,5 +1,5 @@
 import type { PrismaClient } from "@/generated/prisma/client";
-import { creativePlanSchema } from "@/server/director/schema";
+import { directorDecisionSchema } from "@/server/director/schema";
 import {
   readAnalysisFields,
   slotDurationMsForRole,
@@ -25,6 +25,11 @@ export type CollectShotCueArgs = {
   role: string;
   storySceneId?: string | null;
   sourceMediaAssetId?: string | null;
+  /**
+   * When set, the plan is not read again. processJob loads this once per job.
+   * An empty array is a real preload (no scene_emphasis), not a missing read.
+   */
+  sceneEmphasis?: readonly SceneEmphasisCue[];
 };
 
 export async function collectShotCueInput(
@@ -33,7 +38,8 @@ export async function collectShotCueInput(
 ): Promise<ShotCueInput> {
   const scene = findCueScene(args.story, args.storySceneId);
   const analysis = await readStartFrame(db, args.projectId, args.sourceMediaAssetId);
-  const sceneEmphasis = await readSceneEmphasis(db, args.story);
+  const sceneEmphasis =
+    args.sceneEmphasis ?? (await loadSceneEmphasis(db, args.projectId, args.story));
   return {
     scene,
     unmetRole: {
@@ -90,39 +96,53 @@ async function readStartFrame(
     select: { status: true, payload: true },
   });
   if (!row) {
-    return readAnalysisFields(asset.analysisStatus, null);
+    return readAnalysisFields(asset.analysisStatus, null, asset.analysisStatus);
   }
-  return readAnalysisFields(row.status, row.payload);
+  return readAnalysisFields(row.status, row.payload, asset.analysisStatus);
 }
 
-async function readSceneEmphasis(
+/**
+ * Director scene_emphasis for this project only.
+ * One invalid decision is skipped. A plan schemaVersion other than the
+ * current literal does not drop decisions that still parse on their own.
+ */
+export async function loadSceneEmphasis(
   db: CueReadDb,
+  projectId: string,
   story: StoryDocument | null,
 ): Promise<SceneEmphasisCue[]> {
   const planId = story?.source.creativePlanId;
   if (!planId) {
     return [];
   }
-  const row = await db.creativePlan.findUnique({
-    where: { id: planId },
+  const row = await db.creativePlan.findFirst({
+    where: { id: planId, projectId },
     select: { plan: true },
   });
   if (!row) {
     return [];
   }
-  const parsed = creativePlanSchema.safeParse(row.plan);
-  if (!parsed.success || !parsed.data.decisions) {
+  return emphasisFromPlan(row.plan);
+}
+
+function emphasisFromPlan(plan: unknown): SceneEmphasisCue[] {
+  if (!plan || typeof plan !== "object" || Array.isArray(plan)) {
+    return [];
+  }
+  const decisions = (plan as { decisions?: unknown }).decisions;
+  if (!Array.isArray(decisions)) {
     return [];
   }
   const emphasis: SceneEmphasisCue[] = [];
-  for (const decision of parsed.data.decisions) {
-    if (decision.kind !== "scene_emphasis") {
+  for (const item of decisions) {
+    const parsed = directorDecisionSchema.safeParse(item);
+    if (!parsed.success || parsed.data.kind !== "scene_emphasis") {
       continue;
     }
     emphasis.push({
-      kind: decision.kind,
-      subject: decision.subject,
-      detail: copyIdDetail(decision.detail),
+      kind: parsed.data.kind,
+      subject: parsed.data.subject,
+      detail: copyIdDetail(parsed.data.detail),
     });
   }
   return emphasis;
