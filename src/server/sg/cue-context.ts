@@ -1,5 +1,6 @@
 import type { PrismaClient } from "@/generated/prisma/client";
-import { directorDecisionSchema } from "@/server/director/schema";
+import { logger } from "@/lib/logger";
+import { CREATIVE_PLAN_SCHEMA_VERSION, directorDecisionSchema } from "@/server/director/schema";
 import {
   readAnalysisFields,
   slotDurationMsForRole,
@@ -90,21 +91,27 @@ async function readStartFrame(
   if (!asset) {
     return null;
   }
-  const row = await db.mediaAnalysis.findFirst({
+  const rows = await db.mediaAnalysis.findMany({
     where: { assetId: asset.id },
-    orderBy: { createdAt: "desc" },
-    select: { status: true, payload: true },
+    orderBy: [{ createdAt: "desc" }, { id: "desc" }],
+    take: 2,
+    select: { id: true, status: true, payload: true, createdAt: true },
   });
-  if (!row) {
+  const latest = rows[0];
+  if (!latest) {
     return readAnalysisFields(asset.analysisStatus, null, asset.analysisStatus);
   }
-  return readAnalysisFields(row.status, row.payload, asset.analysisStatus);
+  const previous = rows[1];
+  if (previous && latest.createdAt.getTime() === previous.createdAt.getTime()) {
+    return readAnalysisFields(null, null, asset.analysisStatus);
+  }
+  return readAnalysisFields(latest.status, latest.payload, asset.analysisStatus);
 }
 
 /**
  * Director scene_emphasis for this project only.
- * One invalid decision is skipped. A plan schemaVersion other than the
- * current literal does not drop decisions that still parse on their own.
+ * An unknown or missing plan schemaVersion drops every emphasis.
+ * Inside a 1.0 plan, one invalid decision is skipped.
  */
 export async function loadSceneEmphasis(
   db: CueReadDb,
@@ -122,11 +129,19 @@ export async function loadSceneEmphasis(
   if (!row) {
     return [];
   }
-  return emphasisFromPlan(row.plan);
+  return emphasisFromPlan(row.plan, planId);
 }
 
-function emphasisFromPlan(plan: unknown): SceneEmphasisCue[] {
+function emphasisFromPlan(plan: unknown, planId: string): SceneEmphasisCue[] {
   if (!plan || typeof plan !== "object" || Array.isArray(plan)) {
+    return [];
+  }
+  const version = (plan as { schemaVersion?: unknown }).schemaVersion;
+  if (version !== CREATIVE_PLAN_SCHEMA_VERSION) {
+    logger.warn("cue.plan_version_dropped", {
+      planId,
+      schemaVersion: version === undefined || version === null ? "missing" : String(version),
+    });
     return [];
   }
   const decisions = (plan as { decisions?: unknown }).decisions;

@@ -1,3 +1,4 @@
+import { z } from "zod";
 import { ANALYSIS_SCHEMA_VERSION, peopleAnalysisSchema } from "@/server/analysis/schema";
 import {
   IDENTITY_STATES,
@@ -27,6 +28,16 @@ export const HERO_DRAMATIC_FUNCTIONS = ["climax", "turning", "inciting"] as cons
 export const DIALOGUE_INTERIM_TREATMENTS = ["ORIGINAL", "STATIC", "KEN_BURNS"] as const satisfies readonly Treatment[];
 
 const ANALYSIS_COMPLETED = "COMPLETED";
+
+/**
+ * Proof-only strict people section. The shared peopleAnalysisSchema stays
+ * passthrough for the analyzer. ABSENT may use only these keys.
+ */
+const peopleAbsenceProofSchema = peopleAnalysisSchema
+  .extend({
+    faceDetected: z.boolean().optional(),
+  })
+  .strict();
 
 /** Postgres INTEGER upper bound. A larger slot duration makes Prisma throw. */
 const MAX_SLOT_DURATION_MS = 2_147_483_647;
@@ -198,7 +209,7 @@ export function primaryScopeFor(scopes: readonly RoutingScope[]): RoutingScope {
 export function readAnalysisFields(
   status: string | null,
   payload: unknown,
-  assetStatus: string | null = status,
+  assetStatus: string | null,
 ): ShotCueAnalysis {
   const root = asRecord(payload);
   const visual = asRecord(root?.visual);
@@ -522,6 +533,7 @@ function parsePeopleSection(root: Record<string, unknown> | null): ParsedPeople 
   if (!root || !Object.hasOwn(root, "people")) {
     return { ok: false };
   }
+  // A present version other than the normalized literal is not evidence at all.
   if (Object.hasOwn(root, "analysisSchemaVersion") && root.analysisSchemaVersion !== ANALYSIS_SCHEMA_VERSION) {
     return { ok: false };
   }
@@ -556,6 +568,14 @@ function parsePeopleSection(root: Record<string, unknown> | null): ParsedPeople 
   }
   if (faceCount === 0 && people.faceDetected === true) {
     faceCount = 1;
+  }
+  const hasSignal = faceCount > 0 || recurring.length > 0;
+  const versionProven = root.analysisSchemaVersion === ANALYSIS_SCHEMA_VERSION;
+  const strict = peopleAbsenceProofSchema.safeParse(root.people);
+  // ABSENT needs a normalized version and no keys outside the proof set.
+  // A face or recurring id in an extended or unversioned section may still be PRESENT.
+  if ((!versionProven || !strict.success) && !hasSignal) {
+    return { ok: false };
   }
   return {
     ok: true,

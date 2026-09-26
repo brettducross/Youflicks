@@ -1783,6 +1783,7 @@ describe("AssetService M3", () => {
         schemaVersion: "1.0",
         status: "COMPLETED",
         payload: {
+          analysisSchemaVersion: "1.0",
           people: { count: 0, people: [], recurringPersonIds: [] },
         } as Prisma.InputJsonValue,
       },
@@ -1846,6 +1847,7 @@ describe("AssetService M3", () => {
         schemaVersion: "1.0",
         status: "COMPLETED",
         payload: {
+          analysisSchemaVersion: "1.0",
           people: { count: 0, people: [], recurringPersonIds: [] },
         } as Prisma.InputJsonValue,
       },
@@ -1885,6 +1887,102 @@ describe("AssetService M3", () => {
       });
     } finally {
       await jobs.cancel(queued.jobId);
+    }
+  });
+
+  it("does not prove ABSENT for an ENHANCEMENT whose people section is extended or unversioned", async () => {
+    const cases = [
+      {
+        role: "proof_face_count",
+        payload: {
+          analysisSchemaVersion: "1.0",
+          people: { count: 0, people: [], recurringPersonIds: [], faceCount: 2 },
+        },
+      },
+      {
+        role: "proof_faces",
+        payload: {
+          analysisSchemaVersion: "1.0",
+          people: { count: 0, people: [], recurringPersonIds: [], faces: [{}] },
+        },
+      },
+      {
+        role: "proof_persons",
+        payload: {
+          analysisSchemaVersion: "1.0",
+          people: { count: 0, people: [], recurringPersonIds: [], persons: 1 },
+        },
+      },
+      {
+        role: "proof_notes",
+        payload: {
+          analysisSchemaVersion: "1.0",
+          people: { count: 0, people: [], recurringPersonIds: [], notes: "a woman partly visible" },
+        },
+      },
+      {
+        role: "proof_no_version",
+        payload: { people: { count: 0, people: [], recurringPersonIds: [] } },
+      },
+    ];
+    const { assets } = harness({
+      adapter: scriptedGenerator(async () => {
+        throw new Error("stop after cues");
+      }),
+      productionAvailable: false,
+      localDevAvailable: true,
+    });
+    for (const item of cases) {
+      const photo = await prisma.mediaAsset.create({
+        data: {
+          projectId,
+          kind: "PHOTO",
+          filename: `${item.role}.png`,
+          mimeType: "image/png",
+          byteSize: 8,
+          storageKey: `pr6-r2/${projectId}/${item.role}`,
+          status: "READY",
+          analysisStatus: "COMPLETED",
+        },
+      });
+      await prisma.mediaAnalysis.create({
+        data: {
+          assetId: photo.id,
+          providerKey: "test.analysis",
+          schemaVersion: "1.0",
+          status: "COMPLETED",
+          payload: item.payload as Prisma.InputJsonValue,
+        },
+      });
+      const queued = await assets.requestGenerate(ownerId, projectId, {
+        roles: [
+          {
+            role: item.role,
+            storySceneId: "scene-arrive",
+            kind: "ENHANCEMENT",
+            sourceMediaAssetId: photo.id,
+          },
+        ],
+      });
+      try {
+        const job = await jobs.get(queued.jobId);
+        await expect(assets.processJob(job!)).rejects.toThrow("stop after cues");
+        const slot = await prisma.shotFulfillment.findFirst({
+          where: { projectId, role: item.role, storySceneId: "scene-arrive" },
+        });
+        expect(slot?.identityState).toBe("UNKNOWN");
+        expect(slot?.scope).toBe("IDENTITY");
+        expect(slot?.requiredScopes).toEqual(["IDENTITY"]);
+        expect(slot?.shotRole).toBe("other");
+        expect(slot?.identityEvidence).toEqual({
+          faceCount: 0,
+          faceDetected: false,
+          recurringPersonCount: 0,
+          analysisCompleted: false,
+        });
+      } finally {
+        await jobs.cancel(queued.jobId);
+      }
     }
   });
 

@@ -166,7 +166,7 @@ describe("identity truth table", () => {
       },
       crop: "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJ",
       url: "https://faces.example/crop.jpg",
-    });
+    }, "COMPLETED");
     expect(fields.faceDetected).toBe(true);
     expect(fields.faceCount).toBe(1);
     expect(fields.recurringPersonCount).toBe(1);
@@ -192,7 +192,10 @@ describe("identity truth table", () => {
 });
 
 describe("payload identity proof", () => {
-  const absentRoom = { people: { count: 0, people: [], recurringPersonIds: [] } };
+  const provenEmpty = {
+    analysisSchemaVersion: "1.0",
+    people: { count: 0, people: [], recurringPersonIds: [] },
+  };
 
   function stateFor(
     payload: unknown,
@@ -204,7 +207,7 @@ describe("payload identity proof", () => {
   }
 
   it("marks ABSENT when COMPLETED count is 0 and both person lists are empty", () => {
-    const cues = stateFor(absentRoom);
+    const cues = stateFor(provenEmpty);
     expect(cues.identityState).toBe("ABSENT");
     expect(cues.scope).toBe("NON_IDENTITY");
     expect(cues.requiredScopes).toEqual(["NON_IDENTITY"]);
@@ -212,20 +215,57 @@ describe("payload identity proof", () => {
   });
 
   it("marks ABSENT when COMPLETED count is 0 and the person array is omitted", () => {
-    const cues = stateFor({ people: { count: 0 } });
+    const cues = stateFor({ analysisSchemaVersion: "1.0", people: { count: 0 } });
     expect(cues.identityState).toBe("ABSENT");
     expect(cues.scope).toBe("NON_IDENTITY");
   });
 
-  it("marks ABSENT when analysisSchemaVersion is absent or 1.0 on an empty room", () => {
-    expect(stateFor({ people: { count: 0, people: [] } }).identityState).toBe("ABSENT");
+  it("marks UNKNOWN when analysisSchemaVersion is absent and ABSENT only when it is 1.0", () => {
+    const absent = stateFor({ people: { count: 0, people: [], recurringPersonIds: [] } });
+    expect(absent.identityState).toBe("UNKNOWN");
+    expect(absent.scope).toBe("IDENTITY");
+    expect(absent.identityEvidence.analysisCompleted).toBe(false);
     expect(
       stateFor({ analysisSchemaVersion: "1.0", people: { count: 0, people: [] } }).identityState,
     ).toBe("ABSENT");
   });
 
+  it("marks UNKNOWN when the people section has keys outside the proof set", () => {
+    const extras = [
+      { faceCount: 2 },
+      { faces: [{}] },
+      { persons: 1 },
+      { notes: "a woman partly visible" },
+    ];
+    for (const extra of extras) {
+      const cues = stateFor({
+        analysisSchemaVersion: "1.0",
+        people: { count: 0, people: [], recurringPersonIds: [], ...extra },
+      });
+      expect(cues.identityState).toBe("UNKNOWN");
+      expect(cues.scope).toBe("IDENTITY");
+      expect(cues.requiredScopes).toEqual(["IDENTITY"]);
+      expect(cues.identityEvidence.analysisCompleted).toBe(false);
+    }
+  });
+
+  it("keeps PRESENT when an extended people section still names a face or recurring id", () => {
+    const faced = stateFor({
+      analysisSchemaVersion: "1.0",
+      people: { count: 0, people: [], recurringPersonIds: [], faceDetected: true, faceCount: 2 },
+    });
+    const recurring = stateFor({
+      people: { count: 0, recurringPersonIds: ["p1"], notes: "a woman partly visible" },
+    });
+    expect(faced.identityState).toBe("PRESENT");
+    expect(faced.scope).toBe("IDENTITY");
+    expect(recurring.identityState).toBe("PRESENT");
+  });
+
   it("marks PRESENT for a boolean face or a non-blank recurring id even when count is 0", () => {
-    expect(stateFor({ people: { count: 0, faceDetected: true } }).identityState).toBe("PRESENT");
+    expect(stateFor({ analysisSchemaVersion: "1.0", people: { count: 0, faceDetected: true } }).identityState).toBe(
+      "PRESENT",
+    );
     expect(
       stateFor({
         people: {
@@ -239,6 +279,7 @@ describe("payload identity proof", () => {
 
   it("marks UNKNOWN when count is 0 but a person is listed", () => {
     const cues = stateFor({
+      analysisSchemaVersion: "1.0",
       people: { count: 0, people: [{ anonymousPersonId: "a", faceDetected: false }] },
     });
     expect(cues.identityState).toBe("UNKNOWN");
@@ -247,8 +288,12 @@ describe("payload identity proof", () => {
   });
 
   it("marks UNKNOWN when faceDetected is the string true", () => {
-    const top = stateFor({ people: { count: 0, faceDetected: "true", people: [] } });
+    const top = stateFor({
+      analysisSchemaVersion: "1.0",
+      people: { count: 0, faceDetected: "true", people: [] },
+    });
     const person = stateFor({
+      analysisSchemaVersion: "1.0",
       people: { count: 0, people: [{ anonymousPersonId: "a", faceDetected: "true" }] },
     });
     expect(top.identityState).toBe("UNKNOWN");
@@ -258,8 +303,9 @@ describe("payload identity proof", () => {
   });
 
   it("marks UNKNOWN when faceDetected is the number 1", () => {
-    const top = stateFor({ people: { count: 0, faceDetected: 1, people: [] } });
+    const top = stateFor({ analysisSchemaVersion: "1.0", people: { count: 0, faceDetected: 1, people: [] } });
     const person = stateFor({
+      analysisSchemaVersion: "1.0",
       people: { count: 0, people: [{ anonymousPersonId: "a", faceDetected: 1 }] },
     });
     expect(top.identityState).toBe("UNKNOWN");
@@ -269,34 +315,42 @@ describe("payload identity proof", () => {
   });
 
   it("marks UNKNOWN when people.people is an object", () => {
-    const cues = stateFor({ people: { count: 0, people: { anonymousPersonId: "a" } } });
+    const cues = stateFor({
+      analysisSchemaVersion: "1.0",
+      people: { count: 0, people: { anonymousPersonId: "a" } },
+    });
     expect(cues.identityState).toBe("UNKNOWN");
     expect(cues.scope).toBe("IDENTITY");
   });
 
   it("marks UNKNOWN when recurringPersonIds are blank", () => {
-    expect(stateFor({ people: { count: 0, recurringPersonIds: [""] } }).identityState).toBe("UNKNOWN");
-    expect(stateFor({ people: { count: 0, recurringPersonIds: ["  "] } }).identityState).toBe("UNKNOWN");
-    expect(stateFor({ people: { count: 0, recurringPersonIds: ["p1", ""] } }).identityState).toBe(
-      "UNKNOWN",
-    );
+    expect(
+      stateFor({ analysisSchemaVersion: "1.0", people: { count: 0, recurringPersonIds: [""] } }).identityState,
+    ).toBe("UNKNOWN");
+    expect(
+      stateFor({ analysisSchemaVersion: "1.0", people: { count: 0, recurringPersonIds: ["  "] } }).identityState,
+    ).toBe("UNKNOWN");
+    expect(
+      stateFor({ analysisSchemaVersion: "1.0", people: { count: 0, recurringPersonIds: ["p1", ""] } })
+        .identityState,
+    ).toBe("UNKNOWN");
   });
 
   it("marks UNKNOWN when recurringPersonIds are numeric", () => {
-    const cues = stateFor({ people: { count: 0, recurringPersonIds: [1] } });
+    const cues = stateFor({ analysisSchemaVersion: "1.0", people: { count: 0, recurringPersonIds: [1] } });
     expect(cues.identityState).toBe("UNKNOWN");
     expect(cues.requiredScopes).toEqual(["IDENTITY"]);
   });
 
   it("marks UNKNOWN when recurringPersonIds is a bare string", () => {
-    const cues = stateFor({ people: { count: 0, recurringPersonIds: "p1" } });
+    const cues = stateFor({ analysisSchemaVersion: "1.0", people: { count: 0, recurringPersonIds: "p1" } });
     expect(cues.identityState).toBe("UNKNOWN");
     expect(cues.scope).toBe("IDENTITY");
   });
 
   it("marks UNKNOWN when a COMPLETED row is stale because the asset is QUEUED or PROCESSING", () => {
     for (const assetStatus of ["QUEUED", "PROCESSING"]) {
-      const cues = stateFor(absentRoom, "COMPLETED", assetStatus);
+      const cues = stateFor(provenEmpty, "COMPLETED", assetStatus);
       expect(cues.identityState).toBe("UNKNOWN");
       expect(cues.scope).toBe("IDENTITY");
       expect(cues.identityEvidence.analysisCompleted).toBe(false);
@@ -320,7 +374,9 @@ describe("payload identity proof", () => {
       expect(stateFor(payload).identityState).toBe("UNKNOWN");
     }
     for (const count of ["0", -1, Number.NaN, Number.POSITIVE_INFINITY, 0.5, true, 2]) {
-      expect(stateFor({ people: { count, people: [] } }).identityState).toBe("UNKNOWN");
+      expect(
+        stateFor({ analysisSchemaVersion: "1.0", people: { count, people: [] } }).identityState,
+      ).toBe("UNKNOWN");
     }
   });
 });
@@ -603,15 +659,20 @@ describe("cue extraction spy", () => {
         delete: forbid("mediaAsset.delete"),
       },
       mediaAnalysis: {
-        findFirst: async () => {
-          calls.push("mediaAnalysis.findFirst");
-          return {
-            status: "COMPLETED",
-            payload: {
-              people: { count: 0, people: [], recurringPersonIds: [] },
-              visual: { locations: ["secret-harbor-lane"], cameraMovement: "static" },
+        findMany: async () => {
+          calls.push("mediaAnalysis.findMany");
+          return [
+            {
+              id: "analysis-1",
+              status: "COMPLETED",
+              createdAt: new Date("2026-09-26T00:00:00.000Z"),
+              payload: {
+                analysisSchemaVersion: "1.0",
+                people: { count: 0, people: [], recurringPersonIds: [] },
+                visual: { locations: ["secret-harbor-lane"], cameraMovement: "static" },
+              },
             },
-          };
+          ];
         },
         update: forbid("mediaAnalysis.update"),
         create: forbid("mediaAnalysis.create"),
@@ -658,7 +719,7 @@ describe("cue extraction spy", () => {
     const cues = extractShotCues(input);
     expect(calls).toEqual([
       "mediaAsset.findFirst",
-      "mediaAnalysis.findFirst",
+      "mediaAnalysis.findMany",
       "creativePlan.findFirst",
     ]);
     expect(cues.hero).toBe(true);
@@ -676,10 +737,17 @@ describe("cue extraction spy", () => {
           findFirst: async () => ({ id: "media-1", analysisStatus }),
         },
         mediaAnalysis: {
-          findFirst: async () => ({
-            status: "COMPLETED",
-            payload: { people: { count: 0, people: [], recurringPersonIds: [] } },
-          }),
+          findMany: async () => [
+            {
+              id: "analysis-1",
+              status: "COMPLETED",
+              createdAt: new Date("2026-09-26T00:00:00.000Z"),
+              payload: {
+                analysisSchemaVersion: "1.0",
+                people: { count: 0, people: [], recurringPersonIds: [] },
+              },
+            },
+          ],
         },
         creativePlan: {
           findFirst: async () => {
@@ -712,12 +780,14 @@ describe("cue extraction spy", () => {
           if (args.where?.projectId !== "project-1" || args.where?.id !== "plan-1") {
             return {
               plan: {
+                schemaVersion: CREATIVE_PLAN_SCHEMA_VERSION,
                 decisions: [{ kind: "scene_emphasis", subject: "scene-other", summary: "Wrong project." }],
               },
             };
           }
           return {
             plan: {
+              schemaVersion: CREATIVE_PLAN_SCHEMA_VERSION,
               decisions: [{ kind: "scene_emphasis", subject: "scene-1", summary: "This project." }],
             },
           };
@@ -743,7 +813,7 @@ describe("cue extraction spy", () => {
       creativePlan: {
         findFirst: async () => ({
           plan: {
-            schemaVersion: "not-a-real-version",
+            schemaVersion: CREATIVE_PLAN_SCHEMA_VERSION,
             decisions: [
               { kind: "scene_emphasis", subject: "scene-1" },
               { kind: "scene_emphasis", subject: "scene-1", summary: "Hold the arrival." },
@@ -777,6 +847,164 @@ describe("cue extraction spy", () => {
       storySceneId: "scene-1",
     });
     expect(extractShotCues(empty).hero).toBe(false);
+  });
+
+  it("drops every scene_emphasis when the plan schemaVersion is unknown or missing", async () => {
+    const versions: Array<{ schemaVersion?: unknown; logged: string }> = [
+      { schemaVersion: "2.0", logged: "2.0" },
+      { logged: "missing" },
+      { schemaVersion: 1, logged: "1" },
+    ];
+    const warnings: string[] = [];
+    const originalWarn = console.warn;
+    console.warn = (...args: unknown[]) => {
+      warnings.push(args.map((arg) => String(arg)).join(" "));
+    };
+    try {
+      for (const version of versions) {
+        warnings.length = 0;
+        const plan: Record<string, unknown> = {
+          decisions: [{ kind: "scene_emphasis", subject: "scene-1", summary: "Hold the arrival." }],
+        };
+        if ("schemaVersion" in version) {
+          plan.schemaVersion = version.schemaVersion;
+        }
+        const db = {
+          mediaAsset: { findFirst: async () => null },
+          mediaAnalysis: { findFirst: async () => null },
+          creativePlan: { findFirst: async () => ({ plan }) },
+        };
+        const input = await collectShotCueInput(db as unknown as CueReadDb, {
+          projectId: "project-1",
+          story: sampleStory("plan-1"),
+          timeline: sampleTimeline(),
+          role: "establishing_visual",
+          storySceneId: "scene-1",
+        });
+        const cues = extractShotCues(input);
+        expect(input.sceneEmphasis).toEqual([]);
+        expect(cues.hero).toBe(false);
+        expect(cues.shotRole).not.toBe("hero");
+        expect(warnings).toHaveLength(1);
+        const entry = JSON.parse(warnings[0]!) as { message: string; planId: string; schemaVersion: string };
+        expect(entry.message).toBe("cue.plan_version_dropped");
+        expect(entry.planId).toBe("plan-1");
+        expect(entry.schemaVersion).toBe(version.logged);
+        expect(warnings[0]).not.toContain("Hold the arrival");
+      }
+    } finally {
+      console.warn = originalWarn;
+    }
+
+    const climax = sampleStory("plan-1");
+    climax.acts[0]!.scenes[0]!.dramaticFunction = "climax";
+    const stillHero = await collectShotCueInput(
+      {
+        mediaAsset: { findFirst: async () => null },
+        mediaAnalysis: { findFirst: async () => null },
+        creativePlan: {
+          findFirst: async () => ({
+            plan: {
+              schemaVersion: "2.0",
+              decisions: [{ kind: "scene_emphasis", subject: "scene-1", summary: "Hold the arrival." }],
+            },
+          }),
+        },
+      } as unknown as CueReadDb,
+      {
+        projectId: "project-1",
+        story: climax,
+        timeline: sampleTimeline(),
+        role: "establishing_visual",
+        storySceneId: "scene-1",
+      },
+    );
+    expect(stillHero.sceneEmphasis).toEqual([]);
+    expect(extractShotCues(stillHero).hero).toBe(true);
+    expect(extractShotCues(stillHero).shotRole).toBe("hero");
+  });
+
+  it("returns UNKNOWN when two analysis rows share a createdAt", async () => {
+    const createdAt = new Date("2026-09-26T00:00:00.000Z");
+    let orderBy: unknown;
+    const db = {
+      mediaAsset: {
+        findFirst: async () => ({ id: "media-1", analysisStatus: "COMPLETED" }),
+      },
+      mediaAnalysis: {
+        findMany: async (args: { orderBy?: unknown; take?: number }) => {
+          orderBy = args.orderBy;
+          expect(args.take).toBe(2);
+          return [
+            {
+              id: "row-b",
+              status: "COMPLETED",
+              createdAt,
+              payload: {
+                analysisSchemaVersion: "1.0",
+                people: { count: 0, people: [], recurringPersonIds: [] },
+              },
+            },
+            {
+              id: "row-a",
+              status: "FAILED",
+              createdAt,
+              payload: { analysisSchemaVersion: "1.0", people: { count: 1, faceDetected: true } },
+            },
+          ];
+        },
+      },
+      creativePlan: { findFirst: async () => null },
+    };
+    const input = await collectShotCueInput(db as unknown as CueReadDb, {
+      projectId: "project-1",
+      story: null,
+      timeline: sampleTimeline(),
+      role: "empty_room_clip",
+      sourceMediaAssetId: "media-1",
+    });
+    const cues = extractShotCues(input);
+    expect(orderBy).toEqual([{ createdAt: "desc" }, { id: "desc" }]);
+    expect(cues.identityState).toBe("UNKNOWN");
+    expect(cues.scope).toBe("IDENTITY");
+    expect(cues.requiredScopes).toEqual(["IDENTITY"]);
+  });
+
+  it("uses the newer analysis row when createdAt values differ", async () => {
+    const db = {
+      mediaAsset: {
+        findFirst: async () => ({ id: "media-1", analysisStatus: "COMPLETED" }),
+      },
+      mediaAnalysis: {
+        findMany: async () => [
+          {
+            id: "newer",
+            status: "COMPLETED",
+            createdAt: new Date("2026-09-26T00:00:02.000Z"),
+            payload: {
+              analysisSchemaVersion: "1.0",
+              people: { count: 0, people: [], recurringPersonIds: [] },
+            },
+          },
+          {
+            id: "older",
+            status: "FAILED",
+            createdAt: new Date("2026-09-26T00:00:01.000Z"),
+            payload: { analysisSchemaVersion: "1.0", people: { count: 1, faceDetected: true } },
+          },
+        ],
+      },
+      creativePlan: { findFirst: async () => null },
+    };
+    const input = await collectShotCueInput(db as unknown as CueReadDb, {
+      projectId: "project-1",
+      story: null,
+      timeline: sampleTimeline(),
+      role: "empty_room_clip",
+      sourceMediaAssetId: "media-1",
+    });
+    expect(extractShotCues(input).identityState).toBe("ABSENT");
+    expect(extractShotCues(input).scope).toBe("NON_IDENTITY");
   });
 
   it("does not read the plan again when scene emphasis is already loaded", async () => {
