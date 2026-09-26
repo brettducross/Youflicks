@@ -61,10 +61,30 @@ export const FULFILLMENT_STATUSES = [
 export type FulfillmentStatus = (typeof FULFILLMENT_STATUSES)[number];
 export const fulfillmentStatusSchema = z.enum(FULFILLMENT_STATUSES);
 
-/** ShotFulfillment.identityState. UNKNOWN counts as IDENTITY (D3). Cues are PR-6. */
+/** ShotFulfillment.identityState. UNKNOWN counts as IDENTITY (D3). */
 export const IDENTITY_STATES = ["PRESENT", "ABSENT", "UNKNOWN"] as const;
 export type IdentityState = (typeof IDENTITY_STATES)[number];
 export const identityStateSchema = z.enum(IDENTITY_STATES);
+
+/**
+ * ShotFulfillment.shotRole. Cue vocabulary from the lock (PR-6).
+ * Not a Prisma enum (D9).
+ */
+export const SHOT_ROLES = [
+  "hero",
+  "establishing",
+  "insert",
+  "transition",
+  "dialogue-closeup",
+  "other",
+] as const;
+export type ShotRole = (typeof SHOT_ROLES)[number];
+export const shotRoleSchema = z.enum(SHOT_ROLES);
+
+/** ShotFulfillment.motionNeed. Cue only; not a routing decision. */
+export const MOTION_NEEDS = ["none", "low", "high"] as const;
+export type MotionNeed = (typeof MOTION_NEEDS)[number];
+export const motionNeedSchema = z.enum(MOTION_NEEDS);
 
 /**
  * ShotFulfillment.routingMode (D12).

@@ -52,6 +52,8 @@ import {
   requireLaneRate,
   requireLiveLane,
 } from "@/server/sg/lane-rate";
+import { collectShotCueInput } from "@/server/sg/cue-context";
+import { extractShotCues, persistableShotCues } from "@/server/sg/cues";
 import {
   PrismaShotFulfillment,
   UNCLASSIFIED_LANE_CLASS,
@@ -311,6 +313,15 @@ export class AssetService {
         return { cancelled: true, assetIds };
       }
 
+      const cueInput = await collectShotCueInput(prisma, {
+        projectId,
+        story,
+        timeline: timeline.document,
+        role: role.role,
+        storySceneId: role.storySceneId,
+        sourceMediaAssetId: role.sourceMediaAssetId,
+      });
+      const cues = persistableShotCues(extractShotCues(cueInput));
       const slot = await this.fulfillments.ensureSlot({
         projectId,
         timelineId: timeline.id,
@@ -318,6 +329,7 @@ export class AssetService {
         role: role.role,
         storySceneId: role.storySceneId,
         sourceMediaAssetId: role.sourceMediaAssetId,
+        cues,
       });
 
       const alreadyReady = await prisma.generatedAsset.findFirst({
