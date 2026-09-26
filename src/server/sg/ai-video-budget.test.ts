@@ -234,7 +234,8 @@ describe("GET /api/ops/spend", () => {
         scopeKind: expect.any(String),
       });
       expect(body).not.toHaveProperty("creativePlan");
-      expect(body).not.toHaveProperty("lanes");
+      expect(Array.isArray(body.lanes)).toBe(true);
+      expect(Array.isArray(body.budgetLedgers)).toBe(true);
     } finally {
       setOpsSecret(previous);
     }

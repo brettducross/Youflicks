@@ -1,6 +1,7 @@
 import {
   DEFAULT_SG_LANE_REGISTRY_PATH,
   LaneRegistryError,
+  isTbdProviderKey,
   loadSgLaneRegistry,
   type RegistryLane,
 } from "@/server/sg/lane-registry";
@@ -186,7 +187,7 @@ export function requireLaneRate(laneId: string, path?: string): RegistryLane {
  */
 export function requireLiveLane(laneId: string, path?: string): RegistryLane {
   const lane = requireLaneRate(laneId, path);
-  if (/^\s*tbd:/i.test(lane.providerKey)) {
+  if (isTbdProviderKey(lane.providerKey)) {
     throw new LaneRegistryError(
       `Lane ${lane.laneId} providerKey starts with TBD:. A live gateway fails closed until the transport is set.`,
     );

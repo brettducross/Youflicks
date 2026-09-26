@@ -95,7 +95,7 @@ describe("lane-priced estimate fixtures", () => {
   it("loads the committed registry without secrets and matches the Wan and Kling fixtures", () => {
     const filePath = path.join(process.cwd(), "config/sg-lane-registry.json");
     const text = readFileSync(filePath, "utf8");
-    expect(text).not.toMatch(/sk-|r8_|BEGIN PRIVATE/i);
+    expect(text).not.toMatch(/\bsk-[A-Za-z0-9_-]{16,}|\br8_[A-Za-z0-9]{16,}|BEGIN PRIVATE/i);
     const values: string[] = [];
     const walk = (value: unknown) => {
       if (typeof value === "string") {
@@ -112,7 +112,7 @@ describe("lane-priced estimate fixtures", () => {
     };
     walk(JSON.parse(text) as unknown);
     for (const value of values) {
-      expect(value).not.toMatch(/sk-|r8_|BEGIN PRIVATE/i);
+      expect(value).not.toMatch(/\bsk-[A-Za-z0-9_-]{16,}|\br8_[A-Za-z0-9]{16,}|BEGIN PRIVATE/i);
     }
     const lanes = loadLaneRegistry(filePath);
     const wan = lanes.find((item) => item.laneId === "r1-wan27-replicate");
@@ -217,5 +217,16 @@ describe("lane registry fail-closed", () => {
     const lowerFile = path.join(dir, "lower.json");
     await writeFile(lowerFile, JSON.stringify(lower), "utf8");
     expect(() => requireLiveLane("lower", lowerFile)).toThrow(/TBD:/);
+
+    const bypassKeys = ["TBD :x", "\u200bTBD:x", " tbd:x"];
+    for (const [index, providerKey] of bypassKeys.entries()) {
+      const bypass = rateProbeRegistry("bypass", 0.05);
+      const bypassRow = bypass.lanes[0] as { providerKey: string; enabled: boolean };
+      bypassRow.providerKey = providerKey;
+      bypassRow.enabled = true;
+      const bypassFile = path.join(dir, `bypass-${index}.json`);
+      await writeFile(bypassFile, JSON.stringify(bypass), "utf8");
+      expect(() => requireLiveLane("bypass", bypassFile)).toThrow();
+    }
   });
 });

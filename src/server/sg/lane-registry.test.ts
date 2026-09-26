@@ -263,6 +263,18 @@ describe("lane registry validators", () => {
         ]),
       ),
     ).toThrow(/whitespace|non-TBD/);
+    for (const providerKey of ["TBD :x", "\u200bTBD:x", " tbd:x"]) {
+      expect(() =>
+        parseLaneRegistry(
+          document([
+            lane({
+              enabled: true,
+              providerKey,
+            }),
+          ]),
+        ),
+      ).toThrow(/whitespace|zero-width|non-TBD|providerKey/);
+    }
     expect(() =>
       parseLaneRegistry(
         document([
@@ -347,7 +359,7 @@ describe("lane registry validators", () => {
       parseLaneRegistry(
         document([
           lane({
-            gateway: { baseUrlEnv: "SG_LANE_A_BASE_URL", apiKeyEnv: "R8_ABC123" },
+            gateway: { baseUrlEnv: "SG_LANE_A_BASE_URL", apiKeyEnv: "R8_ABCDEFGHIJKLMNOP" },
           }),
         ]),
       ),
@@ -357,6 +369,51 @@ describe("lane registry validators", () => {
         document([
           lane({
             rateRef: "token abcDEF1234567890abcdefABCD1234 buried in prose",
+          }),
+        ]),
+      ),
+    ).toThrow(/secret-like/);
+  });
+
+  it("accepts risk-adjusted, task-123, and 40/64-hex shas, and rejects real secret shapes", () => {
+    const hex40 = "a".repeat(20) + "b".repeat(20);
+    const hex64 = "ab".repeat(32);
+    expect(hex40).toHaveLength(40);
+    expect(hex64).toHaveLength(64);
+    expect(() =>
+      parseLaneRegistry(
+        document([
+          lane({
+            rateRef: "risk-adjusted task-123 planning note",
+          }),
+        ]),
+      ),
+    ).not.toThrow();
+    expect(() =>
+      parseLaneRegistry(
+        document([
+          lane({
+            rateRef: `citation ${hex40} and evidence ${hex64}`,
+          }),
+        ]),
+      ),
+    ).not.toThrow();
+    const upper40 = `A1${"B2".repeat(19)}`;
+    expect(upper40).toHaveLength(40);
+    expect(() =>
+      parseLaneRegistry(
+        document([
+          lane({
+            rateRef: `token ${upper40} in a note`,
+          }),
+        ]),
+      ),
+    ).toThrow(/secret-like/);
+    expect(() =>
+      parseLaneRegistry(
+        document([
+          lane({
+            rateRef: "rotated sk-1234567890abcdef extra",
           }),
         ]),
       ),
@@ -727,7 +784,7 @@ describe("committed lane registry", () => {
 
   it("records no secret-like values in the registry file", () => {
     const text = readFileSync(filePath, "utf8");
-    expect(text).not.toMatch(/sk-|r8_|BEGIN PRIVATE/i);
+    expect(text).not.toMatch(/\bsk-[A-Za-z0-9_-]{16,}|\br8_[A-Za-z0-9]{16,}|BEGIN PRIVATE/i);
     const values: string[] = [];
     const walk = (value: unknown) => {
       if (typeof value === "string") {
@@ -744,15 +801,22 @@ describe("committed lane registry", () => {
     };
     walk(JSON.parse(text) as unknown);
     for (const value of values) {
-      expect(value).not.toMatch(/sk-|r8_|BEGIN PRIVATE|AKIA[0-9A-Z]{16}/i);
+      expect(value).not.toMatch(/\bsk-[A-Za-z0-9_-]{16,}|\br8_[A-Za-z0-9]{16,}|BEGIN PRIVATE|\bAKIA[0-9A-Z]{16}\b/);
       expect(value).not.toMatch(/^https?:\/\//);
       expect(value).not.toMatch(/\bkey_[A-Za-z0-9]{8,}/);
-      if (/^[A-Z][A-Z0-9_]*$/.test(value) || /^[a-f0-9]{64}$/.test(value)) {
+      if (/^[a-f0-9]{40}$/.test(value) || /^[a-f0-9]{64}$/.test(value)) {
+        continue;
+      }
+      if (/^[A-Z0-9]{40}$/.test(value) && /[A-Z]/.test(value) && /[0-9]/.test(value)) {
+        throw new Error(`registry value looks like a 40-character uppercase token: ${value}`);
+      }
+      if (/^[A-Z][A-Z0-9_]*$/.test(value)) {
         continue;
       }
       const tokens = value.match(/[A-Za-z0-9]{24,}/g) ?? [];
       for (const token of tokens) {
-        const highEntropy = /[0-9]/.test(token) && /[A-Za-z]/.test(token) && !/^[a-f0-9]{64}$/.test(token);
+        const hexSha = /^[a-f0-9]{40}$/.test(token) || /^[a-f0-9]{64}$/.test(token);
+        const highEntropy = /[0-9]/.test(token) && /[A-Za-z]/.test(token) && !hexSha;
         expect(highEntropy).toBe(false);
       }
     }
