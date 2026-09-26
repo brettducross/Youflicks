@@ -104,9 +104,11 @@ export function buildLaneScopeDayRollups(
 
 /**
  * Attempts in the day window only.
- * shot_fulfillment_attempt is indexed by (laneId, startedAt), not by startedAt alone.
- * Distinct laneId reads that index's leading column. Each lane then uses
- * laneId equality plus startedAt >= since, which the same index can range-scan.
+ * Lane ids are a server-side DISTINCT bounded by startedAt. Prisma's
+ * findMany({ distinct }) selects every attempt row and dedupes in Node.
+ * @@map is "shot_fulfillment_attempt"; laneId and startedAt have no @map.
+ * Each returned lane then uses laneId equality plus startedAt >= since,
+ * which @@index([laneId, startedAt]) can range-scan.
  * Holds are loaded by primary key for those attempts only.
  * `days` outside 1..90 is rejected here as well as at the route.
  */
@@ -119,10 +121,9 @@ export async function readLaneScopeDayRollups(
     throw new OpsQueryError("days must be an integer from 1 to 90.");
   }
   const since = rollupSince(days, now);
-  const lanes = await db.shotFulfillmentAttempt.findMany({
-    distinct: ["laneId"],
-    select: { laneId: true },
-  });
+  const lanes = await db.$queryRaw<Array<{ laneId: string }>>`
+    SELECT DISTINCT "laneId" FROM "shot_fulfillment_attempt" WHERE "startedAt" >= ${since}
+  `;
   const attempts = (
     await Promise.all(
       lanes.map((lane) =>

@@ -2,7 +2,9 @@ import { readFileSync } from "node:fs";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
+import { PrismaPg } from "@prisma/adapter-pg";
 import { afterAll, describe, expect, it } from "vitest";
+import { PrismaClient } from "@/generated/prisma/client";
 import { GET as lanesRoute } from "@/app/api/ops/sg/lanes/route";
 import { GET as spendRoute } from "@/app/api/ops/spend/route";
 import { env } from "@/lib/env";
@@ -690,6 +692,51 @@ describe("SG PR-5 per-shot metering", () => {
     } finally {
       (env as { BETA_OPS_SECRET?: string }).BETA_OPS_SECRET = previous;
       await prisma.aiVideoBudgetLedger.deleteMany({ where: { id: { startsWith: prefix } } });
+    }
+  });
+
+  it("issues no unfiltered attempt query when discovering lanes in the window", async () => {
+    const laneIn = `pr5-${userId}-sql-in`;
+    const laneOut = `pr5-${userId}-sql-out`;
+    const inside = await openHold("sql-in", laneIn);
+    const outside = await openHold("sql-out", laneOut);
+    const now = Date.now();
+    const day = 86_400_000;
+    await prisma.shotFulfillmentAttempt.update({
+      where: { id: inside.attempt.id },
+      data: { startedAt: new Date(now) },
+    });
+    await prisma.shotFulfillmentAttempt.update({
+      where: { id: outside.attempt.id },
+      data: { startedAt: new Date(now - 100 * day) },
+    });
+
+    const logged = new PrismaClient({
+      adapter: new PrismaPg({ connectionString: env.DATABASE_URL }),
+      log: [{ emit: "event", level: "query" }],
+    });
+    const queries: string[] = [];
+    logged.$on("query", (event) => {
+      queries.push(event.query);
+    });
+    try {
+      const rolled = await readLaneScopeDayRollups(logged, 14);
+      const attemptQueries = queries.filter((query) => query.includes("shot_fulfillment_attempt"));
+      expect(attemptQueries.length).toBeGreaterThan(0);
+      for (const query of attemptQueries) {
+        expect(query).toContain('"startedAt"');
+        expect(query).not.toMatch(/WHERE 1=1/);
+      }
+      const discovery = attemptQueries.find((query) => query.includes("DISTINCT"));
+      expect(discovery?.replace(/\s+/g, " ").trim()).toBe(
+        'SELECT DISTINCT "laneId" FROM "shot_fulfillment_attempt" WHERE "startedAt" >= $1',
+      );
+      const attemptsFor = (laneId: string) =>
+        rolled.rows.filter((row) => row.laneId === laneId).reduce((sum, row) => sum + row.attempts, 0);
+      expect(attemptsFor(laneIn)).toBe(1);
+      expect(attemptsFor(laneOut)).toBe(0);
+    } finally {
+      await logged.$disconnect();
     }
   });
 });
