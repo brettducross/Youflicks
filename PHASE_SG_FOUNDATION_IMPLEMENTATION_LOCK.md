@@ -1,6 +1,6 @@
 # Phase SG Implementation Lock — Selective Generation Foundation
 
-**Status:** DRAFT r2 for docs-lock PR; Architect-authored; PO-approved scope per `PO_SG_FOUNDATION_DECISION_2026-09-25.md` (sha256 `d15179548865da69b2afcfcdfbe45b1083fc9d9a5333581bc5ad1dc5d21971e1`).  
+**Status:** r3 for docs-lock PR; Architect-authored; PO-approved scope per `PO_SG_FOUNDATION_DECISION_2026-09-25.md` (sha256 `d15179548865da69b2afcfcdfbe45b1083fc9d9a5333581bc5ad1dc5d21971e1`).  
 **Lock type:** **Non-Constitution implementation lock.** This document does **not** amend the Product Constitution, PHASE_2F, PHASE_M1–M8 (incl. M8.5 / M8.6), the R1 motion recipe lock, or LAUNCH_GATE. The PO decision calls the regen ceilings and provisional gates "initial policy values, not permanent Constitution locks"; this lock encodes them as **config values**.  
 **Milestone name:** SG — Selective Generation foundation (fulfillment-side routing, lane registry, lane-priced reservation, budget/regen accounting, quality-gate telemetry, Ken Burns/static fallback, honest messaging, multi-lane resolver).  
 **Basis:**
@@ -36,9 +36,9 @@
 | D9 | Open strings, no enums | `providerKey` stays an open `String`. Scope, lane class, treatment, gate status, and outcome are `String` columns validated in app code (TS `as const` arrays + zod). Main's `prisma/schema.prisma` has **zero** `enum` blocks, per its own convention that status/provider fields are strings. These policy concepts may gain values additively (e.g. a new lane class) without enum migrations. **No Prisma enums, vendor or otherwise.** |
 | D10 | GeneratedAsset untouched | No column, relation field, or semantic change on `GeneratedAsset` (M3). SG records reference GeneratedAsset rows through plain `String?` ids with app-level integrity checks. |
 | D11 | Reservation (PO item 3) | Reservation = **estimated billed seconds × lane $/s from the registry**. Reconcile on completion. Release on definitive, non-billable failure. Unknown outcomes stay counted (`UNRECONCILED`). The flat `$0.50/job` reservation is retired for live backends. |
-| D12 | Enforcement flag | `SG_ROUTING_MODE = LEGACY \| ENFORCED`. `LEGACY` = today's single-lane R1 behavior plus SG records and shadow decisions. `ENFORCED` = D3–D6 applied strictly. The default and any flip in a hosted environment are gated on **E-R1** (§7). |
+| D12 | Enforcement flag | `SG_ROUTING_MODE = LEGACY \| ENFORCED`. `LEGACY` = today's single-lane R1 behavior plus SG records and shadow decisions, except that dialogue close-ups are never generated (PR-8 step 2). `ENFORCED` = D3–D6 applied strictly. The default and any flip in a hosted environment are gated on **E-R1** (§7). |
 | D13 | Gate-status authority (proposed; PO to confirm, §7 P-1) | A lane becomes `QUALIFIED` only through a reviewed registry change PR that cites signed bake-off evidence (CD verdict → Architect conformance → PO sign-off). Runtime may only **downgrade** to `SUSPENDED`, never upgrade. |
-| D14 | Contracts untouched | `AssetGeneratorPort.generate(input) → GeneratedAssetDocument`, `AssetGeneratorInput`, `GeneratedAssetDocument` v1, `TimelineDocument`/`TimelineClip`, `StoryDocument`, `RenderManifest` v1 / `RendererPort`, `EntitlementSnapshot`, M8.5 billing models, `UsageEvent`/`EngineCostEvent` columns. The only CreativePlan change is the non-breaking write-path denylist extension in §5.1. |
+| D14 | Contracts untouched | `AssetGeneratorPort.generate(input) → GeneratedAssetDocument`, `AssetGeneratorInput`, `GeneratedAssetDocument` v1, `TimelineDocument`/`TimelineClip`, `StoryDocument`, `RenderManifest` v1 / `RendererPort`, `EntitlementSnapshot`, M8.5 billing models, `UsageEvent`/`EngineCostEvent` columns. CreativePlan has exactly two allowed changes, both non-breaking write-path denylist extensions in §5.1: (1) the routing-key set `SG_ROUTING_PLAN_KEYS` (PR-3); (2) the cost-key set `SG_COST_PLAN_KEYS` (lock r3, amendment A1; PR-8). No other CreativePlan change is allowed. |
 
 ---
 
@@ -504,7 +504,8 @@ Rules:
   - otherwise `UNKNOWN`, which is treated as `IDENTITY`.
 - **Hero:** `dramaticFunction ∈ {climax, turning, inciting}`, or a Director `scene_emphasis` decision names the scene.
 - **Required scopes:** per D3.
-- **Dialogue close-ups** (scene has a `dialogueOutline` and identity is PRESENT or UNKNOWN): **interim non-generation treatment** (ORIGINAL, STATIC, or KEN_BURNS) pending **E12**.
+- **Dialogue close-ups** (scene has a `dialogueOutline` and identity is PRESENT or UNKNOWN; recorded as `shotRole = "dialogue-closeup"`): **never generated, in either `LEGACY` or `ENFORCED` mode** (PR-8 step 2). The treatment comes only from the PO's **E12** decision; a generated dialogue/talking-face treatment remains a possible later E12 decision, subject to quality/safety gates and a further lock amendment. Until E12 is decided: ORIGINAL if the original media covers the slot, otherwise `DEFER`.
+- **Known limitation (r3, A2):** identity is UNKNOWN for every non-ENHANCEMENT role, so today every automatic role in a scene with a `dialogueOutline` counts as a dialogue close-up. This is a known classification limitation, not a rule that wide or establishing shots containing dialogue are dialogue close-ups. It is flagged for future SG work (PR-8 / follow-up).
 - Cues persist **only** on `ShotFulfillment`.
 
 **Tests:**
@@ -538,7 +539,7 @@ Rules:
 
 **Decision order:**
 1. If the original media covers the slot → `ORIGINAL`.
-2. If the dialogue interim applies (E12) → non-generation treatment.
+2. If the slot is a dialogue close-up (PR-6 `shotRole = "dialogue-closeup"`) → **no generation, in either `LEGACY` or `ENFORCED` mode.** The treatment is the one set by the PO's E12 decision. Until E12 is decided, it is ORIGINAL when the original media covers the slot (step 1) and `DEFER` otherwise. If the E12 treatment cannot be applied to the slot (for example, STATIC or KEN_BURNS with no source still), it is `DEFER`. A dialogue close-up never makes a gateway or provider call, never takes a spend reservation (hold), and never opens a paid attempt.
 3. Otherwise, **eligible lanes** are those that are:
    - enabled and healthy (gateway `/health` ok);
    - not SUSPENDED;
@@ -560,7 +561,7 @@ Rules:
 - User-initiated regenerations count toward the same ceilings. Whether they are metered or charged is open (P-3).
 
 **Mode:**
-- `LEGACY`: the call goes to the `LEGACY_R1` lane exactly as today; the slot record stores `routingMode=LEGACY` plus `shadowDecision`.
+- `LEGACY`: the call goes to the `LEGACY_R1` lane exactly as today, **except dialogue close-ups, which are never generated (step 2)**; the slot record stores `routingMode=LEGACY` plus `shadowDecision`.
 - `ENFORCED`: D3–D6 applied strictly.
 - The shipped default and any hosted flip require **E-R1** (§7). Under LAUNCH_GATE HOLD there are no invited users.
 
@@ -575,7 +576,8 @@ Rules:
   - SUSPENDED lanes are skipped;
   - unhealthy lanes are skipped without falling to an unqualified lane.
 - Cap hit: no retry and no alternate lane.
-- LEGACY behavior is unchanged versus the current `AssetService` (golden test).
+- Dialogue close-up, in both LEGACY and ENFORCED: zero generate calls, zero spend reservations (holds), zero paid attempts; treatment = the E12 value, or ORIGINAL / `DEFER` until E12 is decided.
+- LEGACY behavior is unchanged versus the current `AssetService` (golden test), except that dialogue close-ups are not generated (step 2).
 
 **Acceptance:** in ENFORCED mode with the initial registry (nothing QUALIFIED), zero generation calls are made and every slot gets an honest fallback or defer.
 
@@ -755,11 +757,17 @@ The PO text reads "NON_IDENTITY may use **qualified** draft-cost lanes". Draft-c
 **Approach:**
 - Add a separate `SG_ROUTING_PLAN_KEYS` set to the same recursive walk: `laneClass`, `laneId`, `providerKey`, `routingScope`, `requiredScopes`, `treatmentClass`, `gateStatus`, `usdPerSecond`, `usdPerS`, `billedSeconds`, `reservedUsd`, `estimatedUsd`, `regenCeiling`, `spendCapUsd`, `aiVideoSeconds`.
   - Generic words (e.g. `cost`, `treatment`) are deliberately excluded to avoid false positives on creative text keys.
+- **(r3, A1)** Add a second set, `SG_COST_PLAN_KEYS`, to the same recursive walk: `actualUsd`, `spendUsd`, `committedUsd`, `unreconciledUsd`, `actualBilledSeconds`, `estimatedBilledSeconds`, `reservedSeconds`, `committedSeconds`, `unreconciledBilledSeconds`, `reservedBilledSeconds`, `costKind`, `usd`.
+  - Matching is by exact key name, at any depth (nested objects and arrays), exactly like the existing walk. Values and free text are never matched.
+  - Any hit is rejected on write with the typed `directorPlanInvalid` (next bullet), the same as routing and commercial keys.
+  - Together with `SG_ROUTING_PLAN_KEYS` and the M8/M8.5 commercial keys, the write-path denylist then covers every fulfillment-cost key already listed in `COST_FIELD_KEYS` (`src/server/sg/cost-boundary.ts`, SG PR-5).
+  - The check runs in the Director service write path (`validateCreativePlan`), **not** inside `AiDirectorPort` or any other creative port contract (PHASE_M8 D5: commercial policy is enforced at gates around the pipeline). No port, schema, or document signature changes (D14).
+  - Implemented in **PR-8**. It must be merged before `SG_ROUTING_MODE=ENFORCED` is enabled in any environment.
 - **Reject on write** with the typed `directorPlanInvalid`, the same UX as commercial keys.
 - **Do not strip or reject on read:**
   - stripping would change the bytes hashed by `fingerprintStoredPlan` and break provenance;
   - rejecting on read could fail historical plans.
-- An optional log-only metric may detect routing keys on read.
+- An optional log-only metric may detect routing or cost keys (`SG_ROUTING_PLAN_KEYS`, `SG_COST_PLAN_KEYS`) on read; PR-11 may implement it. It never strips, rejects, or alters a stored plan.
 - Do **not** switch the schema to `.strict()`; that would break the Director's passthrough fields.
 
 This extends an M8-locked mechanism in the direction the PO mandated ("Do not place routing economics inside CreativePlan"). **No M-lock change.**
@@ -1123,6 +1131,7 @@ The CoS summary of what remains is confirmed, with additions:
 | Brett (PO) | SG foundation decision (items 1–11; D3–D8 policy) | 2026-09-25 07:09 PT | **APPROVED** (scope) |
 | Architect | Drafted this lock against main `d0bf0d8`; incorporated the Economics addendum (Veo durations, reservation evidence, audio condition, bake-off envelope) | 2026-09-25 PT | **DRAFT for docs-lock PR** |
 | Architect | r2 reconciliation with Economics formal-cells costing: ceiling rule clarified (draft-quality = 2), failure/outage reserve defined outside per-cell caps, P-7 set confirmed + CSV column, audio-capable lane transport rule (Veo) | 2026-09-25 PT | **DRAFT r2 for docs-lock PR** |
+| Brett (PO) | r3 amendment: A1 (cost-key denylist `SG_COST_PLAN_KEYS`, incl. `usd`) and A2 (dialogue close-ups never generated, in LEGACY or ENFORCED) approved; A2.6 struck (E12 row unchanged); known-limitation note added (r3, A2); proposal `PROPOSED_SG_LOCK_R3_AMENDMENT_2026-09-25.md` sha256 `86a14515ca939c695c090e20ee02564b194f7351155fe327dd216b63e3d968a6` | 2026-09-25 21:40 PT | **APPROVED — r3** |
 | Chief of Staff | Docs-lock PR + Engineer gate | — | **PENDING** |
 
 ## Document control
