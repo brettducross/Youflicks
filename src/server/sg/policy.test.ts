@@ -320,6 +320,43 @@ describe("SG.0 policy contract", () => {
     expect(plan.applied.laneId).toBeNull();
   });
 
+  it("refuses LEGACY_R1 for identity scopes, unclassified attempts, and timeout or cancel", () => {
+    const legacy = decide(
+      cues({ requiredScopes: ["IDENTITY", "HERO"], routingMode: "ENFORCED" }),
+      registry({ designation: "LEGACY_R1", resolutionTier: "1080p", laneClass: "premium" }),
+      budget,
+      [],
+    );
+    expect(legacy.treatment).not.toBe("GENERATE");
+    expect(legacy.laneId).toBeNull();
+
+    for (const extra of [
+      { unclassifiedAttemptCount: 1 },
+      { registryUnavailable: true },
+    ] as const) {
+      const refused = decide(
+        cues({ requiredScopes: ["NON_IDENTITY"], routingMode: "ENFORCED" }),
+        registry({}, extra),
+        budget,
+        [],
+      );
+      expect(refused.treatment).not.toBe("GENERATE");
+      expect(refused.laneId).toBeNull();
+    }
+
+    for (const outcome of ["TIMEOUT_UNRECONCILED", "CANCELLED"] as const) {
+      const blocked = decide(
+        cues({ requiredScopes: ["NON_IDENTITY"], routingMode: "ENFORCED" }),
+        registry(),
+        budget,
+        [{ laneClass: "draft-cost", outcome, classAttemptNo: 1 }],
+      );
+      expect(blocked.treatment).toBe("DEFER");
+      expect(blocked.laneId).toBeNull();
+      expect(blocked.messageKey).toBe(SG_MESSAGE_KEYS.FAILED_HONEST);
+    }
+  });
+
   it("never generates a dialogue close-up in LEGACY or ENFORCED", () => {
     for (const routingMode of ["LEGACY", "ENFORCED"] as const) {
       const decision = decide(
