@@ -85,11 +85,33 @@ type InputHasNoLaneOrModel = Expect<
 
 const SHARED_MODEL_ID = "shared-swap-model";
 const PROVIDER_KEY_BY_BACKEND = {
-  fal: "fal:fal-ai/ltx-video",
+  fal: "fal:shared-swap-model",
   replicate: "replicate:shared-swap-model",
   http: "http.asset",
   mock: "mock.asset",
 } as const satisfies Record<(typeof YF_ASSET_GATEWAY_BACKENDS)[number], string>;
+
+const COST_BODY_KEYS = [
+  "usdPerSecond",
+  "usd",
+  "estimatedUsd",
+  "laneClass",
+  "laneId",
+  "registryVersion",
+] as const;
+
+function collectKeys(value: unknown, found: string[]): void {
+  if (Array.isArray(value)) {
+    for (const item of value) collectKeys(item, found);
+    return;
+  }
+  if (value && typeof value === "object") {
+    for (const [key, child] of Object.entries(value)) {
+      found.push(key);
+      collectKeys(child, found);
+    }
+  }
+}
 
 function notQualified() {
   return { status: "NOT_QUALIFIED" as const };
@@ -241,20 +263,26 @@ describe("resolveAssetGeneratorLanes", () => {
       lane({
         laneId: "lane-b",
         laneClass: "premium",
-        providerKey: "fal:fal-ai/ltx-video",
-        modelId: "fal-ai/ltx-video",
+        providerKey: "fal:open-video",
+        modelId: "open-fal-video",
         gateway: { baseUrlEnv: "SG_LANE_B_BASE_URL", apiKeyEnv: "SG_LANE_B_API_KEY" },
         usdPerSecond: 0.2,
       }),
+      lane({
+        laneId: "legacy-r1",
+        designation: "LEGACY_R1",
+        providerKey: "open:legacy",
+        modelId: "legacy-model",
+        gateway: { baseUrlEnv: "ASSET_HTTP_BASE_URL", apiKeyEnv: "ASSET_HTTP_API_KEY" },
+      }),
     ]);
-    const seen: Array<{ url: string; authorization: string | null; model: string; laneId?: unknown }> = [];
+    const seen: Array<{ url: string; authorization: string | null; body: Record<string, unknown> }> = [];
     const fetchImpl = vi.fn<typeof fetch>(async (url, init) => {
-      const body = JSON.parse(String(init?.body)) as { model?: string; laneId?: unknown };
+      const body = JSON.parse(String(init?.body)) as Record<string, unknown>;
       seen.push({
         url: String(url),
         authorization: new Headers(init?.headers).get("authorization"),
-        model: body.model ?? "",
-        laneId: body.laneId,
+        body,
       });
       return okGenerateResponse();
     });
@@ -264,6 +292,8 @@ describe("resolveAssetGeneratorLanes", () => {
         SG_LANE_A_API_KEY: "key-a",
         SG_LANE_B_BASE_URL: "http://127.0.0.1:4402",
         SG_LANE_B_API_KEY: "key-b",
+        ASSET_HTTP_BASE_URL: "http://127.0.0.1:4399",
+        ASSET_HTTP_API_KEY: "legacy-key",
         ASSET_HTTP_PROVIDER_KEY: "http.asset",
         ASSET_HTTP_MODEL: "request-override-model",
         ASSET_HTTP_CAPABILITIES: "IMAGE_GENERATION,VOICE_SYNTHESIS,VIDEO_GENERATION",
@@ -286,22 +316,65 @@ describe("resolveAssetGeneratorLanes", () => {
       modelId: "open-video",
       modelVersion: null,
     });
-    expect(laneB.attribution(AssetCapability.VIDEO_GENERATION).providerKey).toBe("fal:fal-ai/ltx-video");
-    expect(laneB.attribution(AssetCapability.VIDEO_GENERATION).modelId).toBe("fal-ai/ltx-video");
+    expect(laneB.attribution(AssetCapability.VIDEO_GENERATION).providerKey).toBe("fal:open-video");
+    expect(laneB.attribution(AssetCapability.VIDEO_GENERATION).modelId).toBe("open-fal-video");
     expect(
       (laneA.adapter as HttpAssetGeneratorAdapter).executionAttribution(AssetCapability.VIDEO_GENERATION),
     ).toEqual(laneA.attribution(AssetCapability.VIDEO_GENERATION));
 
+    const legacy = resolver.forLane("legacy-r1");
+    expect(legacy.adapter).not.toBe(laneA.adapter);
+    expect(legacy.adapter).not.toBe(laneB.adapter);
+    expect(legacy.attribution(AssetCapability.VIDEO_GENERATION)).toEqual({
+      providerKey: "open:legacy",
+      capability: AssetCapability.VIDEO_GENERATION,
+      modelId: "legacy-model",
+      modelVersion: null,
+    });
+
     await laneA.adapter.generate(baseInput());
     await laneB.adapter.generate(baseInput({ role: "broll_other" }));
+    await legacy.adapter.generate(baseInput({ role: "broll_legacy" }));
     expect(seen.map((call) => call.url)).toEqual([
       "http://127.0.0.1:4401/v1/generate",
       "http://127.0.0.1:4402/v1/generate",
+      "http://127.0.0.1:4399/v1/generate",
     ]);
-    expect(seen.map((call) => call.authorization)).toEqual(["Bearer key-a", "Bearer key-b"]);
-    expect(seen.map((call) => call.model)).toEqual(["open-video", "fal-ai/ltx-video"]);
-    expect(seen.every((call) => call.laneId === undefined)).toBe(true);
-    expect(seen.every((call) => call.model !== "request-override-model")).toBe(true);
+    expect(seen.map((call) => call.authorization)).toEqual([
+      "Bearer key-a",
+      "Bearer key-b",
+      "Bearer legacy-key",
+    ]);
+    expect(seen.map((call) => call.body.model)).toEqual(["open-video", "open-fal-video", "legacy-model"]);
+    expect(seen.every((call) => call.body.model !== "request-override-model")).toBe(true);
+    for (const call of seen) {
+      expect(Object.keys(call.body).sort()).toEqual(["input", "kind", "model", "role"]);
+      const found: string[] = [];
+      collectKeys(call.body, found);
+      for (const key of COST_BODY_KEYS) {
+        expect(found).not.toContain(key);
+      }
+    }
+  });
+
+  it("refuses IMAGE on a lane adapter even when ASSET_HTTP_CAPABILITIES lists IMAGE_GENERATION", async () => {
+    const store = await useStorage();
+    const fetchImpl = vi.fn<typeof fetch>(async () => okGenerateResponse());
+    const resolved = resolveAssetGeneratorLanes(store, document([lane()]), {
+      env: {
+        SG_LANE_A_BASE_URL: "http://127.0.0.1:4420",
+        SG_LANE_A_API_KEY: "key-a",
+        ASSET_HTTP_CAPABILITIES: "IMAGE_GENERATION,VIDEO_GENERATION",
+      },
+      fetchImpl,
+    }).forLane("lane-a");
+    const adapter = resolved.adapter as HttpAssetGeneratorAdapter;
+    expect(adapter.supports(AssetCapability.IMAGE_GENERATION)).toBe(false);
+    expect(adapter.supports(AssetCapability.VIDEO_GENERATION)).toBe(true);
+    await expect(adapter.generate(baseInput({ kind: "IMAGE" }))).rejects.toMatchObject({
+      code: "ASSET_CAPABILITY_UNAVAILABLE",
+    });
+    expect(fetchImpl).not.toHaveBeenCalled();
   });
 
   it("refuses disabled lanes, TBD lanes, unknown lanes, and lanes with no gateway env", async () => {
@@ -311,7 +384,7 @@ describe("resolveAssetGeneratorLanes", () => {
         laneId: "live-lane",
         providerKey: "open:live",
         modelId: "live-model",
-        gateway: { baseUrlEnv: "SG_LIVE_BASE_URL", apiKeyEnv: "SG_LIVE_API_KEY" },
+        gateway: { baseUrlEnv: "SG_LANE_LIVE_BASE_URL", apiKeyEnv: "SG_LANE_LIVE_API_KEY" },
       }),
       lane({
         laneId: "paused-lane",
@@ -329,8 +402,8 @@ describe("resolveAssetGeneratorLanes", () => {
       }),
     ]);
     const env = {
-      SG_LIVE_BASE_URL: "http://127.0.0.1:4403",
-      SG_LIVE_API_KEY: "live-key",
+      SG_LANE_LIVE_BASE_URL: "http://127.0.0.1:4403",
+      SG_LANE_LIVE_API_KEY: "live-key",
       SG_PAUSED_BASE_URL: "http://127.0.0.1:4404",
       SG_PAUSED_API_KEY: "paused-key",
       SG_LANE_BOREAL_720_BASE_URL: "http://127.0.0.1:4405",
@@ -353,13 +426,121 @@ describe("resolveAssetGeneratorLanes", () => {
     expect(() => resolver.forLane("missing")).toThrow(LaneResolverError);
 
     const bare = resolveAssetGeneratorLanes(store, registry, {
-      env: { SG_LIVE_BASE_URL: "  ", SG_LIVE_API_KEY: "live-key" },
+      env: { SG_LANE_LIVE_BASE_URL: "  ", SG_LANE_LIVE_API_KEY: "live-key" },
     });
-    expect(() => bare.forLane("live-lane")).toThrow(/SG_LIVE_BASE_URL/);
+    expect(() => bare.forLane("live-lane")).toThrow(/SG_LANE_LIVE_BASE_URL/);
     const noKey = resolveAssetGeneratorLanes(store, registry, {
-      env: { SG_LIVE_BASE_URL: "http://127.0.0.1:4403" },
+      env: { SG_LANE_LIVE_BASE_URL: "http://127.0.0.1:4403" },
     });
-    expect(() => noKey.forLane("live-lane")).toThrow(/SG_LIVE_API_KEY/);
+    expect(() => noKey.forLane("live-lane")).toThrow(/SG_LANE_LIVE_API_KEY/);
+  });
+
+  it("refuses disallowed gateway env names and non-http base URLs", async () => {
+    const store = await useStorage();
+    const secret = "super-secret-value-should-not-leak";
+    const stolen = document([
+      lane({
+        laneId: "stolen",
+        gateway: { baseUrlEnv: "SG_LANE_STOLEN_BASE_URL", apiKeyEnv: "BETTER_AUTH_SECRET" },
+      }),
+    ]);
+    expect(() =>
+      resolveAssetGeneratorLanes(store, stolen, {
+        env: {
+          SG_LANE_STOLEN_BASE_URL: "http://127.0.0.1:4490",
+          BETTER_AUTH_SECRET: secret,
+        },
+      }).forLane("stolen"),
+    ).toThrow(LaneResolverError);
+    try {
+      resolveAssetGeneratorLanes(store, stolen, {
+        env: {
+          SG_LANE_STOLEN_BASE_URL: "http://127.0.0.1:4490",
+          BETTER_AUTH_SECRET: secret,
+        },
+      }).forLane("stolen");
+      expect.unreachable();
+    } catch (error) {
+      expect(error).toBeInstanceOf(LaneResolverError);
+      const message = (error as Error).message;
+      expect(message).toMatch(/stolen/);
+      expect(message).toMatch(/BETTER_AUTH_SECRET/);
+      expect(message).not.toContain(secret);
+    }
+
+    const fileUrl = "file:///etc/passwd";
+    const fileLane = document([
+      lane({
+        laneId: "file-lane",
+        gateway: { baseUrlEnv: "SG_LANE_FILE_BASE_URL", apiKeyEnv: "SG_LANE_FILE_API_KEY" },
+      }),
+    ]);
+    try {
+      resolveAssetGeneratorLanes(store, fileLane, {
+        env: {
+          SG_LANE_FILE_BASE_URL: fileUrl,
+          SG_LANE_FILE_API_KEY: "file-key",
+        },
+      }).forLane("file-lane");
+      expect.unreachable();
+    } catch (error) {
+      expect(error).toBeInstanceOf(LaneResolverError);
+      const message = (error as Error).message;
+      expect(message).toMatch(/file-lane/);
+      expect(message).toMatch(/SG_LANE_FILE_BASE_URL/);
+      expect(message).not.toContain(fileUrl);
+      expect(message).not.toContain("file-key");
+    }
+
+    const garbage = "not a url";
+    const garbageLane = document([
+      lane({
+        laneId: "garbage-lane",
+        gateway: { baseUrlEnv: "SG_LANE_GARBAGE_BASE_URL", apiKeyEnv: "SG_LANE_GARBAGE_API_KEY" },
+      }),
+    ]);
+    try {
+      resolveAssetGeneratorLanes(store, garbageLane, {
+        env: {
+          SG_LANE_GARBAGE_BASE_URL: garbage,
+          SG_LANE_GARBAGE_API_KEY: "garbage-key",
+        },
+      }).forLane("garbage-lane");
+      expect.unreachable();
+    } catch (error) {
+      expect(error).toBeInstanceOf(LaneResolverError);
+      const message = (error as Error).message;
+      expect(message).toMatch(/garbage-lane/);
+      expect(message).toMatch(/SG_LANE_GARBAGE_BASE_URL/);
+      expect(message).not.toContain(garbage);
+      expect(message).not.toContain("garbage-key");
+    }
+
+    const misnamed = document([
+      lane({
+        laneId: "not-legacy",
+        designation: "NONE",
+        gateway: { baseUrlEnv: "ASSET_HTTP_BASE_URL", apiKeyEnv: "ASSET_HTTP_API_KEY" },
+      }),
+    ]);
+    try {
+      resolveAssetGeneratorLanes(store, misnamed, {
+        env: {
+          ASSET_HTTP_BASE_URL: "http://127.0.0.1:4491",
+          ASSET_HTTP_API_KEY: "should-not-leak",
+        },
+      }).forLane("not-legacy");
+      expect.unreachable();
+    } catch (error) {
+      expect(error).toBeInstanceOf(LaneResolverError);
+      const message = (error as Error).message;
+      expect(message).toMatch(/not-legacy/);
+      expect(message).toMatch(/ASSET_HTTP_BASE_URL/);
+      expect(message).toMatch(/ASSET_HTTP_API_KEY/);
+      expect(message).toMatch(/NONE/);
+      expect(message).not.toContain("should-not-leak");
+      expect(message).not.toContain("4491");
+    }
   });
 
   it("maps legacy ASSET_HTTP_* env names to the LEGACY_R1 lane and ignores model overrides", async () => {
@@ -415,9 +596,21 @@ describe("resolveAssetGeneratorLanes", () => {
     await resolved.adapter.generate(baseInput());
     expect(fetchImpl).toHaveBeenCalledOnce();
 
-    const availability = describeAssetAvailability(
-      resolvedAssetGeneratorForLanes([resolved], resolver.processors(AssetCapability.MEDIA_ENHANCEMENT)),
+    const availability = resolvedAssetGeneratorForLanes(
+      [resolved],
+      resolver.processors(AssetCapability.MEDIA_ENHANCEMENT),
     );
+    expect(availability).not.toHaveProperty("adapter");
+    expect(availability).not.toHaveProperty("attributionFor");
+    const described = describeAssetAvailability({
+      adapter: resolved.adapter,
+      attributionFor: (capability) => resolved.attribution(capability),
+      productionAvailable: true,
+      localDevAvailable: false,
+      supportedCapabilities: [...resolved.supportedCapabilities],
+    });
+    expect(described.capabilities).toEqual(availability.capabilities);
+    expect(described.localDevAvailable).toBe(false);
     expect(availability.productionAvailable).toBe(true);
     expect(availability.localDevAvailable).toBe(false);
     expect(availability.capabilities.VIDEO_GENERATION).toEqual({
@@ -476,14 +669,15 @@ describe("resolveAssetGeneratorLanes", () => {
       },
     ]);
     expect(resolver.processors(AssetCapability.VIDEO_GENERATION)).toEqual([]);
-    expect(() => resolver.forLane("yf.kenburns.v1")).toThrow(LaneResolverError);
+    expect(() => resolver.forLane("yf.kenburns.v1")).toThrow(/not a generative registry lane/);
 
     const lanes = [resolver.forLane("lane-a"), resolver.forLane("lane-b")];
-    const availability = describeAssetAvailability(resolvedAssetGeneratorForLanes(lanes, hooks));
+    const availability = resolvedAssetGeneratorForLanes(lanes, hooks);
+    expect(availability).not.toHaveProperty("adapter");
     expect(availability.capabilities.VIDEO_GENERATION.canGenerate).toBe(true);
     expect(availability.capabilities.MEDIA_ENHANCEMENT.canGenerate).toBe(false);
     expect(availability.localDevAvailable).toBe(false);
-    expect(describeAssetAvailability(resolvedAssetGeneratorForLanes([], hooks)).canGenerate).toBe(false);
+    expect(resolvedAssetGeneratorForLanes([], hooks).canGenerate).toBe(false);
 
     const installed: EnhancementProcessorHook = {
       ...hooks[0]!,
@@ -493,7 +687,8 @@ describe("resolveAssetGeneratorLanes", () => {
         },
       },
     };
-    const withProcessor = describeAssetAvailability(resolvedAssetGeneratorForLanes([], [installed]));
+    const withProcessor = resolvedAssetGeneratorForLanes([], [installed]);
+    expect(withProcessor).not.toHaveProperty("adapter");
     expect(withProcessor.capabilities.MEDIA_ENHANCEMENT).toEqual({
       productionAvailable: true,
       localDevAvailable: false,
@@ -502,12 +697,30 @@ describe("resolveAssetGeneratorLanes", () => {
     expect(withProcessor.capabilities.VIDEO_GENERATION.canGenerate).toBe(false);
   });
 
-  it("rejects a non-positive timeout override before any lane is built", async () => {
+  it("rejects a non-positive timeout override and an invalid ASSET_HTTP_TIMEOUT_MS", async () => {
     const store = await useStorage();
     const registry = document([lane()]);
     expect(() => resolveAssetGeneratorLanes(store, registry, { env: {}, timeoutMs: 0 })).toThrow(
       /timeoutMs/,
     );
+    const invalid = "abc";
+    expect(() =>
+      resolveAssetGeneratorLanes(store, registry, { env: { ASSET_HTTP_TIMEOUT_MS: invalid } }),
+    ).toThrow(LaneResolverError);
+    try {
+      resolveAssetGeneratorLanes(store, registry, { env: { ASSET_HTTP_TIMEOUT_MS: invalid } });
+      expect.unreachable();
+    } catch (error) {
+      const message = (error as Error).message;
+      expect(message).toMatch(/ASSET_HTTP_TIMEOUT_MS/);
+      expect(message).not.toContain(invalid);
+    }
+    expect(() =>
+      resolveAssetGeneratorLanes(store, registry, { env: { ASSET_HTTP_TIMEOUT_MS: "  " } }),
+    ).not.toThrow();
+    expect(() =>
+      resolveAssetGeneratorLanes(store, registry, { env: { ASSET_HTTP_TIMEOUT_MS: "90000" } }),
+    ).not.toThrow();
   });
 
   it("runs the same policy decision on fal, replicate, http, and mock and changes only providerKey", async () => {
@@ -558,8 +771,8 @@ describe("resolveAssetGeneratorLanes", () => {
       for (const backend of YF_ASSET_GATEWAY_BACKENDS) {
         expect(decide(cues, registrySnapshot, budgetSnapshot, attemptsSoFar)).toEqual(decision);
         const providerKey = PROVIDER_KEY_BY_BACKEND[backend];
-        const baseEnv = `SG_SWAP_${backend.toUpperCase()}_BASE_URL`;
-        const keyEnv = `SG_SWAP_${backend.toUpperCase()}_API_KEY`;
+        const baseEnv = `SG_LANE_SWAP_${backend.toUpperCase()}_BASE_URL`;
+        const keyEnv = `SG_LANE_SWAP_${backend.toUpperCase()}_API_KEY`;
         const port = 4500 + YF_ASSET_GATEWAY_BACKENDS.indexOf(backend);
         const fetchImpl = vi.fn<typeof fetch>(async (url, init) => {
           expect(String(url)).toBe(`http://127.0.0.1:${port}/v1/generate`);

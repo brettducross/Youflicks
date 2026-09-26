@@ -1,7 +1,14 @@
 import type { AssetExecutionAttribution } from "@/server/adapters/assets/attribution";
 import { HttpAssetGeneratorAdapter } from "@/server/adapters/assets/http-asset";
-import type { ResolvedAssetGenerator } from "@/server/assets/provider-config";
-import { AssetCapability, type AssetCapabilityValue } from "@/server/ports/capabilities";
+import type {
+  AssetAvailability,
+  AssetCapabilityAvailability,
+} from "@/server/assets/provider-config";
+import {
+  ALL_ASSET_CAPABILITIES,
+  AssetCapability,
+  type AssetCapabilityValue,
+} from "@/server/ports/capabilities";
 import type { AssetGeneratorPort } from "@/server/ports/asset-generator";
 import type { StoragePort } from "@/server/ports/storage";
 import {
@@ -28,7 +35,8 @@ import {
  * Gateway processes stay single-lane. Each enabled lane is still identified
  * by YF_GATEWAY_LANE_ID on its own gateway process. This module does not
  * rewrite the gateway. The shipped LEGACY_R1 row names ASSET_HTTP_BASE_URL
- * and ASSET_HTTP_API_KEY, so the legacy config maps to that lane.
+ * and ASSET_HTTP_API_KEY, so the legacy config maps to that lane. Any other
+ * lane must name SG_LANE_* env vars. A resolved baseUrl must be http or https.
  *
  * processors() is the MEDIA_ENHANCEMENT hook only. The Ken Burns processor
  * is PR-9 and is not implemented here.
@@ -42,6 +50,11 @@ const GENERATIVE_LANE_CAPABILITIES: readonly AssetCapabilityValue[] = [
 ];
 
 const DEFAULT_TIMEOUT_MS = 90_000;
+const LEGACY_BASE_URL_ENV = "ASSET_HTTP_BASE_URL";
+const LEGACY_API_KEY_ENV = "ASSET_HTTP_API_KEY";
+const LANE_BASE_URL_ENV = /^SG_LANE_[A-Z0-9_]+_BASE_URL$/;
+const LANE_API_KEY_ENV = /^SG_LANE_[A-Z0-9_]+_API_KEY$/;
+const TIMEOUT_ENV = "ASSET_HTTP_TIMEOUT_MS";
 
 export class LaneResolverError extends Error {
   readonly code = "LANE_NOT_RESOLVABLE" as const;
@@ -122,14 +135,15 @@ export function resolveAssetGeneratorLanes(
 }
 
 /**
- * Input for describeAssetAvailability. A capability is listed only when a
- * resolved adapter supports it. Processor hooks with a null adapter do not
- * advertise MEDIA_ENHANCEMENT. Local deterministic is never a lane.
+ * Availability only. A capability is listed when a resolved lane supports it,
+ * or when a processor hook has a non-null adapter. This is not a generation
+ * path and not an attribution source: it returns no adapter and no providerKey.
+ * Local deterministic is never a lane.
  */
 export function resolvedAssetGeneratorForLanes(
   lanes: readonly ResolvedLaneGenerator[],
   processors: readonly EnhancementProcessorHook[] = [],
-): ResolvedAssetGenerator | null {
+): AssetAvailability {
   const supported = new Set<AssetCapabilityValue>();
   for (const lane of lanes) {
     for (const capability of lane.supportedCapabilities) {
@@ -141,26 +155,25 @@ export function resolvedAssetGeneratorForLanes(
       supported.add(processor.capability);
     }
   }
-  const adapter =
-    lanes[0]?.adapter ?? processors.find((processor) => processor.adapter)?.adapter ?? null;
-  if (!adapter || supported.size === 0) {
-    return null;
-  }
-  const attributionSource = lanes[0];
+  const productionAvailable = supported.size > 0;
+  const capabilities = Object.fromEntries(
+    ALL_ASSET_CAPABILITIES.map((capability) => {
+      const listed = supported.has(capability);
+      return [
+        capability,
+        {
+          productionAvailable: productionAvailable && listed,
+          localDevAvailable: false,
+          canGenerate: productionAvailable && listed,
+        } satisfies AssetCapabilityAvailability,
+      ];
+    }),
+  ) as Record<AssetCapabilityValue, AssetCapabilityAvailability>;
   return {
-    adapter,
-    attributionFor: (capability) =>
-      attributionSource
-        ? attributionSource.attribution(capability)
-        : {
-            providerKey: "none",
-            capability,
-            modelId: null,
-            modelVersion: null,
-          },
-    productionAvailable: true,
+    productionAvailable,
     localDevAvailable: false,
-    supportedCapabilities: [...supported],
+    canGenerate: productionAvailable,
+    capabilities,
   };
 }
 
@@ -184,12 +197,14 @@ function buildLaneAdapter(
       `Lane ${lane.laneId} has no positive usdPerSecond and cannot be resolved.`,
     );
   }
+  assertGatewayEnvNames(lane);
   const baseUrl = readNamedEnv(env, lane.gateway.baseUrlEnv);
   if (!baseUrl) {
     throw new LaneResolverError(
       `Lane ${lane.laneId} is missing gateway env ${lane.gateway.baseUrlEnv} and cannot be resolved.`,
     );
   }
+  assertHttpBaseUrl(lane.laneId, lane.gateway.baseUrlEnv, baseUrl);
   const apiKey = readNamedEnv(env, lane.gateway.apiKeyEnv);
   if (!apiKey) {
     throw new LaneResolverError(
@@ -237,6 +252,44 @@ function toProcessorHook(processor: RegistryProcessor): EnhancementProcessorHook
   };
 }
 
+function assertGatewayEnvNames(lane: RegistryLane): void {
+  const baseUrlEnv = lane.gateway.baseUrlEnv;
+  const apiKeyEnv = lane.gateway.apiKeyEnv;
+  if (baseUrlEnv !== LEGACY_BASE_URL_ENV && !LANE_BASE_URL_ENV.test(baseUrlEnv)) {
+    throw new LaneResolverError(
+      `Lane ${lane.laneId} gateway env ${baseUrlEnv} is not an allowed lane env name and cannot be resolved.`,
+    );
+  }
+  if (apiKeyEnv !== LEGACY_API_KEY_ENV && !LANE_API_KEY_ENV.test(apiKeyEnv)) {
+    throw new LaneResolverError(
+      `Lane ${lane.laneId} gateway env ${apiKeyEnv} is not an allowed lane env name and cannot be resolved.`,
+    );
+  }
+  const legacyBase = baseUrlEnv === LEGACY_BASE_URL_ENV;
+  const legacyKey = apiKeyEnv === LEGACY_API_KEY_ENV;
+  if ((legacyBase || legacyKey) && (lane.designation !== "LEGACY_R1" || !legacyBase || !legacyKey)) {
+    throw new LaneResolverError(
+      `Lane ${lane.laneId} gateway env ${baseUrlEnv} and ${apiKeyEnv} are not allowed for designation ${lane.designation} and cannot be resolved.`,
+    );
+  }
+}
+
+function assertHttpBaseUrl(laneId: string, envName: string, value: string): void {
+  let parsed: URL;
+  try {
+    parsed = new URL(value);
+  } catch {
+    throw new LaneResolverError(
+      `Lane ${laneId} gateway env ${envName} is not an http(s) URL and cannot be resolved.`,
+    );
+  }
+  if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
+    throw new LaneResolverError(
+      `Lane ${laneId} gateway env ${envName} is not an http(s) URL and cannot be resolved.`,
+    );
+  }
+}
+
 function readNamedEnv(env: Record<string, string | undefined>, name: string): string | undefined {
   const raw = env[name];
   if (typeof raw !== "string") {
@@ -253,13 +306,13 @@ function readTimeoutMs(env: Record<string, string | undefined>, override: number
     }
     return override;
   }
-  const raw = readNamedEnv(env, "ASSET_HTTP_TIMEOUT_MS");
-  if (!raw) {
+  const raw = env[TIMEOUT_ENV];
+  if (typeof raw !== "string" || raw.trim().length === 0) {
     return DEFAULT_TIMEOUT_MS;
   }
-  const value = Number(raw);
+  const value = Number(raw.trim());
   if (!Number.isInteger(value) || value <= 0) {
-    return DEFAULT_TIMEOUT_MS;
+    throw new LaneResolverError(`${TIMEOUT_ENV} must be a positive integer.`);
   }
   return value;
 }
