@@ -298,9 +298,20 @@ function meetsResolutionFloor(lane: ParsedLane, scopes: readonly RoutingScope[])
   return true;
 }
 
-/** Gate, health, resolution, and designation. Ceiling is applied by the caller. */
-function laneReady(lane: ParsedLane, scopes: readonly RoutingScope[]): boolean {
-  if (!lane.enabled || !lane.healthy || isTbdProviderKey(lane.providerKey)) {
+/**
+ * Gate, resolution, and designation. Health is required when selecting or
+ * escalating a lane. The lock start ignores health: a qualified lane still
+ * holds its class when the probe fails. Ceiling is applied by the caller.
+ */
+function laneReady(
+  lane: ParsedLane,
+  scopes: readonly RoutingScope[],
+  requireHealthy = true,
+): boolean {
+  if (!lane.enabled || isTbdProviderKey(lane.providerKey)) {
+    return false;
+  }
+  if (requireHealthy && !lane.healthy) {
     return false;
   }
   if (!scopes.every((scope) => lane.gates[scope] === "QUALIFIED")) {
@@ -316,8 +327,31 @@ function laneReady(lane: ParsedLane, scopes: readonly RoutingScope[]): boolean {
 }
 
 /**
+ * A class pins history only when one of its lanes is QUALIFIED or SUSPENDED
+ * for every current scope. Attempts from before the scopes tightened, in a
+ * class that is only NOT_QUALIFIED now, do not pull the start down.
+ */
+function classPinsHistory(
+  laneClass: LaneClass,
+  scopes: readonly RoutingScope[],
+  registry: ParsedRegistry,
+): boolean {
+  return registry.lanes.some((lane) => {
+    if (lane.laneClass !== laneClass) {
+      return false;
+    }
+    return scopes.every((scope) => {
+      const gate = lane.gates[scope];
+      return gate === "QUALIFIED" || gate === "SUSPENDED";
+    });
+  });
+}
+
+/**
  * NON_IDENTITY locks to draft-cost. HERO and IDENTITY lock to the lowest
- * class that currently has a ready lane. -1 means no class is ready.
+ * class that holds a lane QUALIFIED for every required scope. Health does
+ * not move this index. A suspended gate is not QUALIFIED, so suspension does.
+ * -1 means no class is qualified.
  */
 function lockStartIndex(
   order: readonly LaneClass[],
@@ -326,17 +360,17 @@ function lockStartIndex(
 ): number {
   if (identityBearing(scopes)) {
     return order.findIndex((laneClass) =>
-      registry.lanes.some((lane) => lane.laneClass === laneClass && laneReady(lane, scopes)),
+      registry.lanes.some((lane) => lane.laneClass === laneClass && laneReady(lane, scopes, false)),
     );
   }
   return order.indexOf("draft-cost");
 }
 
 /**
- * Start is the lower of the lock start and the lowest class that holds a
- * non-CAP_DENIED attempt. History is used alone only when no class is ready,
- * and it can pin the start lower, never higher. Health and suspension do not
- * add a second escalation step. An empty class is not skipped.
+ * Start is the lower of the lock start and the lowest pinning class that
+ * holds a non-CAP_DENIED attempt. History is used alone only when no class
+ * is qualified, and it can pin the start lower, never higher. An unhealthy
+ * start class is not replaced by a higher class. An empty class is not skipped.
  */
 function startClassIndex(
   order: readonly LaneClass[],
@@ -347,6 +381,9 @@ function startClassIndex(
   let historical = -1;
   for (const attempt of attempts) {
     if (attempt.outcome === "CAP_DENIED") {
+      continue;
+    }
+    if (!classPinsHistory(attempt.laneClass, scopes, registry)) {
       continue;
     }
     const index = order.indexOf(attempt.laneClass);

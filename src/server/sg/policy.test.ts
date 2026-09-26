@@ -114,9 +114,11 @@ describe("SG.0 policy contract", () => {
     const second = decide(inputCues, snapshot, budget, attempts);
     expect(first).toEqual(second);
     expect(first).not.toBe(second);
-    expect(first.treatment).toBe("DEFER");
-    expect(first.laneId).toBeNull();
-    expect(first.messageKey).toBe(SG_MESSAGE_KEYS.CEILING_REACHED);
+    expect(first).toMatchObject({
+      treatment: "GENERATE",
+      laneId: "lane-a",
+      laneClass: "premium",
+    });
     expect(first.decisionReason).not.toBe(SG_POLICY_CONTRACT_REASON);
     expect(JSON.stringify(first)).not.toContain(SG_POLICY_CONTRACT_REASON);
     expect(routeDecisionSchema.parse(first)).toEqual(first);
@@ -447,6 +449,179 @@ describe("SG.0 policy contract", () => {
     });
     expect(decision.laneId).not.toBe("lane-std");
     expect(decision.laneId).not.toBe("lane-prem");
+  });
+
+  it("PF1 defers a fresh identity slot when draft-quality is qualified but unhealthy", () => {
+    const decision = decide(
+      cues({ requiredScopes: ["IDENTITY"], routingMode: "ENFORCED" }),
+      {
+        lanes: [
+          lane({ laneId: "lane-dq", laneClass: "draft-quality", providerKey: "open:dq", healthy: false }),
+          lane({ laneId: "lane-std", laneClass: "standard", providerKey: "open:std" }),
+          lane({ laneId: "lane-prem", laneClass: "premium", providerKey: "open:prem" }),
+        ],
+      },
+      budget,
+      [],
+    );
+    expect(decision.treatment).toBe("DEFER");
+    expect(decision.laneId).toBeNull();
+    expect(decision.messageKey).toBe(SG_MESSAGE_KEYS.NO_QUALIFIED_LANE);
+  });
+
+  it("PF2 moves the identity start to standard when draft-quality is suspended", () => {
+    const decision = decide(
+      cues({ requiredScopes: ["IDENTITY"], routingMode: "ENFORCED" }),
+      {
+        lanes: [
+          lane({
+            laneId: "lane-dq",
+            laneClass: "draft-quality",
+            providerKey: "open:dq",
+            gates: { HERO: "SUSPENDED", IDENTITY: "SUSPENDED", NON_IDENTITY: "SUSPENDED" },
+          }),
+          lane({ laneId: "lane-std", laneClass: "standard", providerKey: "open:std" }),
+          lane({ laneId: "lane-prem", laneClass: "premium", providerKey: "open:prem" }),
+        ],
+      },
+      budget,
+      [],
+    );
+    expect(decision).toMatchObject({
+      treatment: "GENERATE",
+      laneId: "lane-std",
+      laneClass: "standard",
+    });
+  });
+
+  it("PF3 defers when the qualified identity lane is unhealthy and no standard lane exists", () => {
+    const decision = decide(
+      cues({ requiredScopes: ["IDENTITY"], routingMode: "ENFORCED" }),
+      {
+        lanes: [
+          lane({ laneId: "lane-dq", laneClass: "draft-quality", providerKey: "open:dq", healthy: false }),
+          lane({ laneId: "lane-prem", laneClass: "premium", providerKey: "open:prem" }),
+        ],
+      },
+      budget,
+      [],
+    );
+    expect(decision.treatment).toBe("DEFER");
+    expect(decision.laneId).toBeNull();
+    expect(decision.messageKey).toBe(SG_MESSAGE_KEYS.NO_QUALIFIED_LANE);
+  });
+
+  it("PI1 escalates one class to standard after two failed draft-quality attempts", () => {
+    const decision = decide(
+      cues({ requiredScopes: ["IDENTITY"], routingMode: "ENFORCED" }),
+      {
+        lanes: [
+          lane({ laneId: "lane-dq", laneClass: "draft-quality", providerKey: "open:dq", healthy: false }),
+          lane({ laneId: "lane-std", laneClass: "standard", providerKey: "open:std" }),
+          lane({ laneId: "lane-prem", laneClass: "premium", providerKey: "open:prem" }),
+        ],
+      },
+      budget,
+      [{ laneClass: "draft-quality", outcome: "FAILED", classAttemptNo: 2 }],
+    );
+    expect(decision).toMatchObject({
+      treatment: "GENERATE",
+      laneId: "lane-std",
+      laneClass: "standard",
+    });
+  });
+
+  it("Pa1 keeps NON_IDENTITY from passing an empty draft-cost start", () => {
+    const decision = decide(
+      cues({ requiredScopes: ["NON_IDENTITY"], routingMode: "ENFORCED" }),
+      {
+        lanes: [
+          lane({ laneId: "lane-dq", laneClass: "draft-quality", providerKey: "open:dq", healthy: false }),
+          lane({ laneId: "lane-std", laneClass: "standard", providerKey: "open:std" }),
+          lane({ laneId: "lane-prem", laneClass: "premium", providerKey: "open:prem" }),
+        ],
+      },
+      budget,
+      [
+        { laneClass: "draft-quality", outcome: "FAILED", classAttemptNo: 2 },
+        { laneClass: "standard", outcome: "FAILED", classAttemptNo: 2 },
+      ],
+    );
+    expect(decision.treatment).toBe("DEFER");
+    expect(decision.laneId).toBeNull();
+    expect(decision.messageKey).toBe(SG_MESSAGE_KEYS.NO_QUALIFIED_LANE);
+  });
+
+  it("Pa6 stops at the ceiling when draft-cost is exhausted and draft-quality is unhealthy", () => {
+    const decision = decide(
+      cues({ requiredScopes: ["NON_IDENTITY"], routingMode: "ENFORCED" }),
+      {
+        lanes: [
+          lane({ laneId: "lane-dc", laneClass: "draft-cost" }),
+          lane({ laneId: "lane-dq", laneClass: "draft-quality", providerKey: "open:dq", healthy: false }),
+          lane({ laneId: "lane-prem", laneClass: "premium", providerKey: "open:prem" }),
+        ],
+      },
+      budget,
+      [{ laneClass: "draft-cost", outcome: "FAILED", classAttemptNo: 3 }],
+    );
+    expect(decision.treatment).toBe("DEFER");
+    expect(decision.laneId).toBeNull();
+    expect(decision.messageKey).toBe(SG_MESSAGE_KEYS.CEILING_REACHED);
+  });
+
+  it("Pa8 defers NON_IDENTITY when the draft-cost class has no lane", () => {
+    const decision = decide(
+      cues({ requiredScopes: ["NON_IDENTITY"], routingMode: "ENFORCED" }),
+      {
+        lanes: [lane({ laneId: "lane-dq", laneClass: "draft-quality", providerKey: "open:dq" })],
+      },
+      budget,
+      [],
+    );
+    expect(decision.treatment).toBe("DEFER");
+    expect(decision.laneId).toBeNull();
+    expect(decision.messageKey).toBe(SG_MESSAGE_KEYS.NO_QUALIFIED_LANE);
+  });
+
+  it("PF4 defers NON_IDENTITY when draft-cost is unhealthy", () => {
+    const decision = decide(
+      cues({ requiredScopes: ["NON_IDENTITY"], routingMode: "ENFORCED" }),
+      {
+        lanes: [
+          lane({ laneId: "lane-dc", laneClass: "draft-cost", healthy: false }),
+          lane({ laneId: "lane-dq", laneClass: "draft-quality", providerKey: "open:dq" }),
+        ],
+      },
+      budget,
+      [],
+    );
+    expect(decision.treatment).toBe("DEFER");
+    expect(decision.laneId).toBeNull();
+    expect(decision.messageKey).toBe(SG_MESSAGE_KEYS.NO_QUALIFIED_LANE);
+  });
+
+  it("does not let a not-qualified class pin an identity start", () => {
+    const decision = decide(
+      cues({ requiredScopes: ["IDENTITY"], routingMode: "ENFORCED" }),
+      {
+        lanes: [
+          lane({
+            laneId: "lane-dc",
+            laneClass: "draft-cost",
+            gates: { HERO: "NOT_QUALIFIED", IDENTITY: "NOT_QUALIFIED", NON_IDENTITY: "QUALIFIED" },
+          }),
+          lane({ laneId: "lane-dq", laneClass: "draft-quality", providerKey: "open:dq" }),
+        ],
+      },
+      budget,
+      [{ laneClass: "draft-cost", outcome: "FAILED", classAttemptNo: 1 }],
+    );
+    expect(decision).toMatchObject({
+      treatment: "GENERATE",
+      laneId: "lane-dq",
+      laneClass: "draft-quality",
+    });
   });
 
   it("refuses forLane unless the decision is GENERATE for an eligible lane", () => {

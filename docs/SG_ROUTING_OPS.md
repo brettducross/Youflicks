@@ -12,7 +12,7 @@ Dialogue close-ups are not generated in either mode. Until E12 is decided they a
 
 ## Ceilings
 
-Escalation moves at most one class above the start class. The start class is the lower of the lock start and the lowest class that holds a non-cap attempt. The lock start is draft-cost for NON_IDENTITY, and the lowest ready class for HERO or IDENTITY. History is used alone only when no class is ready, and it can pin the start lower, never higher. An unhealthy or suspended start class does not escalate a second class. An empty class is never skipped: the next class is only the immediate neighbor, even when that neighbor has no qualified healthy lane. That is stricter than a reading that jumps to the next class that currently has a lane.
+Escalation moves at most one class above the start class. The start class is the lower of the lock start and the lowest historical non-cap class that is QUALIFIED or SUSPENDED for the current scopes. The lock start is draft-cost for NON_IDENTITY, and the lowest class that holds a lane QUALIFIED for every required scope for HERO or IDENTITY. Health does not move that start. An unhealthy start-class lane is not selected and does not jump to a pricier class. Suspension does move the start, because a suspended gate is not QUALIFIED. History is used alone only when no class is qualified, and it can pin the start lower, never higher. Picking a lane inside the start class, and escalating one class, still require a QUALIFIED, healthy lane. An empty class is never skipped: the next class is only the immediate neighbor, even when that neighbor has no qualified healthy lane. That is stricter than a reading that jumps to the next class that currently has a lane.
 
 ## Suspension
 
