@@ -11,6 +11,7 @@ import {
   extractShotCues,
   persistableShotCues,
   readAnalysisFields,
+  stricterIdentityState,
   tightenIdentityForRoute,
   requiredScopesFor,
   ShotCueError,
@@ -272,6 +273,13 @@ describe("payload identity proof", () => {
     });
     expect(present.identityState).toBe("PRESENT");
     expect(present.requiredScopes).toEqual(["IDENTITY"]);
+  });
+
+  it("keeps the stricter of the stored identity and the re-derived identity", () => {
+    expect(stricterIdentityState("UNKNOWN", "ABSENT")).toBe("UNKNOWN");
+    expect(stricterIdentityState("ABSENT", "UNKNOWN")).toBe("UNKNOWN");
+    expect(stricterIdentityState("PRESENT", "ABSENT")).toBe("PRESENT");
+    expect(stricterIdentityState("ABSENT", "ABSENT")).toBe("ABSENT");
   });
 
   it("pins v2.0 face evidence as UNKNOWN and a missing version face as PRESENT", () => {

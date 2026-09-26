@@ -315,6 +315,40 @@ function laneReady(lane: ParsedLane, scopes: readonly RoutingScope[]): boolean {
   return true;
 }
 
+/**
+ * With attempt history, the start class is the lowest class that holds a
+ * non-CAP_DENIED attempt. Current health and suspension do not move it.
+ * With no such attempt, identity-bearing scopes start at the lowest ready
+ * class, and every other scope starts at draft-cost.
+ * Escalation is only the immediate next class. An empty class is not skipped.
+ */
+function startClassIndex(
+  order: readonly LaneClass[],
+  scopes: readonly RoutingScope[],
+  registry: ParsedRegistry,
+  attempts: readonly AttemptSoFar[],
+): number {
+  let historical = -1;
+  for (const attempt of attempts) {
+    if (attempt.outcome === "CAP_DENIED") {
+      continue;
+    }
+    const index = order.indexOf(attempt.laneClass);
+    if (index >= 0 && (historical < 0 || index < historical)) {
+      historical = index;
+    }
+  }
+  if (historical >= 0) {
+    return historical;
+  }
+  if (identityBearing(scopes)) {
+    return order.findIndex((laneClass) =>
+      registry.lanes.some((lane) => lane.laneClass === laneClass && laneReady(lane, scopes)),
+    );
+  }
+  return order.indexOf("draft-cost");
+}
+
 function classExhausted(
   laneClass: LaneClass,
   attempts: readonly AttemptSoFar[],
@@ -442,11 +476,7 @@ function enforcedDecision(
 
   const scopes = cues.requiredScopes;
   const order = registry.classOrder;
-  const startIndex = identityBearing(scopes)
-    ? order.findIndex((laneClass) =>
-        registry.lanes.some((lane) => lane.laneClass === laneClass && laneReady(lane, scopes)),
-      )
-    : order.indexOf("draft-cost");
+  const startIndex = startClassIndex(order, scopes, registry, attempts);
   if (startIndex < 0) {
     return stillOrDefer(
       cues,

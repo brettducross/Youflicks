@@ -1,19 +1,18 @@
 import { routingModeSchema, type RoutingMode } from "@/server/sg/constants";
 
 /**
- * E-R1 working default. This is the only mode default.
- *
- * LEGACY is temporary: the live R1 lane (LEGACY_R1, Wan via Replicate) may
- * still serve while internal, and E-R1 is not a launch decision. ENFORCED
- * is required before any invite or hosted flip. Flip this constant, or set
- * SG_ROUTING_MODE, without restructuring callers.
+ * Working default while E-R1 is pending. This is the only mode default.
+ * The default routing mode and any hosted flip await PO decision E-R1 (pending).
+ * Flip this constant, or set SG_ROUTING_MODE, without restructuring callers.
  */
 export const DEFAULT_SG_ROUTING_MODE = "LEGACY" as const satisfies RoutingMode;
 
 /**
- * E12 is open. Null means a dialogue close-up is ORIGINAL when the original
- * media covers the slot, and DEFER otherwise. Never GENERATE. A later PO
- * value may be ORIGINAL, STATIC, or KEN_BURNS; it is never a paid treatment.
+ * E12 is open (lock L507). Null means a dialogue close-up is ORIGINAL when
+ * the original media covers the slot, and DEFER otherwise. This constant does
+ * not generate. A generated dialogue or talking-face treatment remains a
+ * possible later E12 decision, subject to quality and safety gates and a
+ * further lock amendment.
  */
 export const E12_DIALOGUE_TREATMENT: "ORIGINAL" | "STATIC" | "KEN_BURNS" | null = null;
 

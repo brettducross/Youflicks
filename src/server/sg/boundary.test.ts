@@ -302,6 +302,34 @@ describe("SG.0 CreativePlan routing-key boundary", () => {
     const parsed = parseCreativePlanJson(stored as Prisma.JsonValue);
     expect(parsed).toMatchObject({ actualUsd: 1.25, costKind: "ESTIMATED" });
   });
+
+  it("pins the literal cost denylist and does not match values or free text", () => {
+    expect([...SG_COST_PLAN_KEYS]).toEqual([
+      "actualUsd",
+      "spendUsd",
+      "committedUsd",
+      "unreconciledUsd",
+      "actualBilledSeconds",
+      "estimatedBilledSeconds",
+      "reservedSeconds",
+      "committedSeconds",
+      "unreconciledBilledSeconds",
+      "reservedBilledSeconds",
+      "costKind",
+      "usd",
+    ]);
+    const prose =
+      "actualUsd spendUsd committedUsd unreconciledUsd actualBilledSeconds estimatedBilledSeconds reservedSeconds committedSeconds unreconciledBilledSeconds reservedBilledSeconds costKind usd";
+    expect(validateCreativePlan({ ...basePlan(), note: prose }).concept).toBe("Harbor afternoon");
+    expect(validateCreativePlan({ ...basePlan(), USD: 1, Usd: "usd", cost: 4 }).concept).toBe(
+      "Harbor afternoon",
+    );
+    const nested = basePlan();
+    const detail = nested.decisions[0]!.detail as Record<string, unknown>;
+    detail.note = prose;
+    detail.label = "usd";
+    expect(validateCreativePlan(nested).decisions?.[0]?.detail).toMatchObject({ label: "usd" });
+  });
 });
 
 describe("strict creative schemas reject routing keys", () => {

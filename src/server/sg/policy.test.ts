@@ -18,6 +18,7 @@ import { DEFAULT_SG_ROUTING_MODE } from "@/server/sg/routing-mode";
 import {
   SG_POLICY_CONTRACT_REASON,
   SelectiveGenerationPolicy,
+  assertEnforcedLaneCallable,
   decide,
   legacyModelGuard,
   planRoute,
@@ -113,7 +114,9 @@ describe("SG.0 policy contract", () => {
     const second = decide(inputCues, snapshot, budget, attempts);
     expect(first).toEqual(second);
     expect(first).not.toBe(second);
-    expect(first.treatment).toBe("GENERATE");
+    expect(first.treatment).toBe("DEFER");
+    expect(first.laneId).toBeNull();
+    expect(first.messageKey).toBe(SG_MESSAGE_KEYS.CEILING_REACHED);
     expect(first.decisionReason).not.toBe(SG_POLICY_CONTRACT_REASON);
     expect(JSON.stringify(first)).not.toContain(SG_POLICY_CONTRACT_REASON);
     expect(routeDecisionSchema.parse(first)).toEqual(first);
@@ -355,6 +358,90 @@ describe("SG.0 policy contract", () => {
       expect(blocked.laneId).toBeNull();
       expect(blocked.messageKey).toBe(SG_MESSAGE_KEYS.FAILED_HONEST);
     }
+  });
+
+  it("does not escalate a second class when the start class becomes unhealthy or suspended", () => {
+    const attempts: AttemptSoFar[] = [
+      { laneClass: "draft-quality", outcome: "FAILED", classAttemptNo: 2 },
+      { laneClass: "standard", outcome: "FAILED", classAttemptNo: 2 },
+    ];
+    const standard = lane({ laneId: "lane-std", laneClass: "standard", providerKey: "open:std" });
+    const premium = lane({ laneId: "lane-prem", laneClass: "premium", providerKey: "open:prem" });
+    const unhealthy = decide(
+      cues({ requiredScopes: ["NON_IDENTITY"], routingMode: "ENFORCED" }),
+      {
+        lanes: [
+          lane({ laneId: "lane-dq", laneClass: "draft-quality", providerKey: "open:dq", healthy: false }),
+          standard,
+          premium,
+        ],
+      },
+      budget,
+      attempts,
+    );
+    expect(unhealthy.treatment).toBe("DEFER");
+    expect(unhealthy.laneId).toBeNull();
+    expect(unhealthy.messageKey).toBe(SG_MESSAGE_KEYS.CEILING_REACHED);
+
+    const suspended = decide(
+      cues({ requiredScopes: ["NON_IDENTITY"], routingMode: "ENFORCED" }),
+      {
+        lanes: [
+          lane({
+            laneId: "lane-dq",
+            laneClass: "draft-quality",
+            providerKey: "open:dq",
+            gates: { HERO: "SUSPENDED", IDENTITY: "SUSPENDED", NON_IDENTITY: "SUSPENDED" },
+          }),
+          standard,
+          premium,
+        ],
+      },
+      budget,
+      attempts,
+    );
+    expect(suspended.treatment).not.toBe("GENERATE");
+    expect(suspended.laneId).toBeNull();
+    expect(suspended.messageKey).toBe(SG_MESSAGE_KEYS.CEILING_REACHED);
+  });
+
+  it("refuses forLane unless the decision is GENERATE for an eligible lane", () => {
+    const generate = {
+      treatment: "GENERATE" as const,
+      laneClass: "draft-cost" as const,
+      laneId: "lane-a",
+      providerKey: "open:lane-a",
+      decisionReason: "eligible",
+      messageKey: null,
+    };
+    expect(() =>
+      assertEnforcedLaneCallable({
+        laneId: "lane-a",
+        eligibleLaneIds: ["lane-b"],
+        decision: generate,
+      }),
+    ).toThrow(/listEligibleLanes/);
+    expect(() =>
+      assertEnforcedLaneCallable({
+        laneId: "lane-a",
+        eligibleLaneIds: ["lane-a"],
+        decision: {
+          treatment: "DEFER",
+          laneClass: null,
+          laneId: null,
+          providerKey: null,
+          decisionReason: "waiting",
+          messageKey: "SG_WAITING",
+        },
+      }),
+    ).toThrow(/GENERATE/);
+    expect(() =>
+      assertEnforcedLaneCallable({
+        laneId: "lane-a",
+        eligibleLaneIds: ["lane-a"],
+        decision: generate,
+      }),
+    ).not.toThrow();
   });
 
   it("never generates a dialogue close-up in LEGACY or ENFORCED", () => {

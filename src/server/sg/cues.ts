@@ -235,6 +235,23 @@ export function tightenIdentityForRoute(input: {
   };
 }
 
+const IDENTITY_RANK: Record<string, number> = { ABSENT: 0, UNKNOWN: 1, PRESENT: 2 };
+
+/**
+ * Tighten-only. ABSENT is the loosest state. A stored non-ABSENT is never
+ * replaced by a fresher ABSENT.
+ */
+export function stricterIdentityState(stored: string, derived: IdentityState): IdentityState {
+  const rank = Math.max(IDENTITY_RANK[stored] ?? 0, IDENTITY_RANK[derived] ?? 0);
+  if (rank >= 2) {
+    return "PRESENT";
+  }
+  if (rank === 1) {
+    return "UNKNOWN";
+  }
+  return "ABSENT";
+}
+
 export function requiredScopesFor(identityState: IdentityState, hero: boolean): RoutingScope[] {
   const scopes: RoutingScope[] = [];
   if (hero) {

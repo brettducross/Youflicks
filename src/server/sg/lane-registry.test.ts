@@ -640,6 +640,13 @@ describe("lane registry validators", () => {
     listEligibleLanes({
       requiredScopes: ["NON_IDENTITY"],
       registry: parsed,
+      suspendedLaneIds: ["not-a-lane"],
+    });
+    expect(errorSpy).not.toHaveBeenCalled();
+    errorSpy.mockClear();
+    listEligibleLanes({
+      requiredScopes: ["NON_IDENTITY"],
+      registry: parsed,
       suspendedLaneIds: ["hero-lane"],
     });
     expect(errorSpy).not.toHaveBeenCalled();

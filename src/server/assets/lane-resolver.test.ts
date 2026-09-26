@@ -7,6 +7,7 @@ import { LocalStorageAdapter } from "@/server/adapters/storage/local";
 import type { AssetGeneratorInput } from "@/server/assets/input";
 import {
   LaneResolverError,
+  readLaneHealthBaseUrl,
   resolveAssetGeneratorLanes,
   resolvedAssetGeneratorForLanes,
   type EnhancementProcessorHook,
@@ -565,6 +566,40 @@ describe("resolveAssetGeneratorLanes", () => {
       expect(message).not.toContain("should-not-leak");
       expect(message).not.toContain("4491");
     }
+  });
+
+  it("refuses a health URL whose env name or userinfo the resolver would refuse", () => {
+    const secret = document([
+      lane({
+        laneId: "secret-lane",
+        gateway: { baseUrlEnv: "DATABASE_URL", apiKeyEnv: "SG_LANE_SECRET_API_KEY" },
+      }),
+    ]);
+    expect(
+      readLaneHealthBaseUrl(secret.lanes[0]!, {
+        DATABASE_URL: "postgresql://youflicks:youflicks@localhost:5432/youflicks",
+      }),
+    ).toBeNull();
+    const userInfo = document([
+      lane({
+        laneId: "userinfo-lane",
+        gateway: { baseUrlEnv: "SG_LANE_USERINFO_BASE_URL", apiKeyEnv: "SG_LANE_USERINFO_API_KEY" },
+      }),
+    ]);
+    expect(
+      readLaneHealthBaseUrl(userInfo.lanes[0]!, {
+        SG_LANE_USERINFO_BASE_URL: "http://user:pass@127.0.0.1:1",
+      }),
+    ).toBeNull();
+    const ok = document([
+      lane({
+        laneId: "ok-lane",
+        gateway: { baseUrlEnv: "SG_LANE_OK_BASE_URL", apiKeyEnv: "SG_LANE_OK_API_KEY" },
+      }),
+    ]);
+    expect(
+      readLaneHealthBaseUrl(ok.lanes[0]!, { SG_LANE_OK_BASE_URL: "http://127.0.0.1:9" }),
+    ).toBe("http://127.0.0.1:9");
   });
 
   it("maps legacy ASSET_HTTP_* env names to the LEGACY_R1 lane and ignores model overrides", async () => {

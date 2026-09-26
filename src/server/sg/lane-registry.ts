@@ -538,14 +538,21 @@ export function resetLaneRegistryAlertDebounce(): void {
   registryAlertedAt.clear();
 }
 
-function alertRegistryInvalid(source: string, message: string): void {
-  const key = `${source}\n${message}`;
+function claimRegistryAlert(key: string): boolean {
   const now = Date.now();
   const previous = registryAlertedAt.get(key);
   if (previous !== undefined && now - previous < REGISTRY_ALERT_WINDOW_MS) {
-    return;
+    return false;
   }
   registryAlertedAt.set(key, now);
+  return true;
+}
+
+function alertRegistryInvalid(source: string, message: string): void {
+  const key = `${source}\n${message}`;
+  if (!claimRegistryAlert(key)) {
+    return;
+  }
   void reportOpsAlert({
     kind: OpsAlertKind.LANE_REGISTRY_INVALID,
     message: "Lane registry is invalid. No lane is eligible.",
@@ -569,11 +576,20 @@ export function reportUnknownSuspendedLanes(
   if (unknown.length === 0) {
     return;
   }
+  const key = `suspended-unknown\n${[...unknown].sort().join("\n")}`;
+  if (!claimRegistryAlert(key)) {
+    return;
+  }
   void reportOpsAlert({
     kind: OpsAlertKind.SG_LANES_SUSPENDED_UNKNOWN,
     message: "SG_LANES_SUSPENDED names lanes that are not in the registry.",
     context: { unknownLaneIds: unknown },
   });
+}
+
+/** Debounced LANE_REGISTRY_INVALID. LEGACY and ENFORCED both call this when the file cannot be read. */
+export function reportLaneRegistryInvalid(source: string, message: string): void {
+  alertRegistryInvalid(source, message);
 }
 
 export function listEligibleLanes(input: EligibleLaneQuery): RegistryLane[] {

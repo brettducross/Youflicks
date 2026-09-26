@@ -253,6 +253,28 @@ function toProcessorHook(processor: RegistryProcessor): EnhancementProcessorHook
   };
 }
 
+/**
+ * URL the ENFORCED health probe may fetch. Uses the same env-name and URL
+ * checks as forLane. An illegal name or a non-http(s) URL returns null and
+ * is not read as a fetch target.
+ */
+export function readLaneHealthBaseUrl(
+  lane: RegistryLane,
+  env: Record<string, string | undefined>,
+): string | null {
+  try {
+    assertGatewayEnvNames(lane);
+    const value = readNamedEnv(env, lane.gateway.baseUrlEnv);
+    if (!value) {
+      return null;
+    }
+    assertHttpBaseUrl(lane.laneId, lane.gateway.baseUrlEnv, value);
+    return value;
+  } catch {
+    return null;
+  }
+}
+
 function assertGatewayEnvNames(lane: RegistryLane): void {
   const baseUrlEnv = lane.gateway.baseUrlEnv;
   const apiKeyEnv = lane.gateway.apiKeyEnv;

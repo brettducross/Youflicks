@@ -106,7 +106,8 @@ const envSchema = z.object({
     .transform((value) => value === "true" || value === "1"),
   /**
    * SG.4 routing mode. Unset stays unset here; routing-mode.ts defaults to LEGACY.
-   * Any other value fails closed at boot. ENFORCED is required before invites.
+   * Any other value fails closed at boot.
+   * The default routing mode and any hosted flip await PO decision E-R1 (pending).
    */
   SG_ROUTING_MODE: z.enum(["LEGACY", "ENFORCED"]).optional(),
   RENDER_HTTP_PROVIDER_KEY: z.string().default("http.renderer"),
