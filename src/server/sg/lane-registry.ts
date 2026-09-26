@@ -376,6 +376,26 @@ export const laneRegistryFileSchema = z
         });
       }
     }
+    const baseUrlEnvs = new Set<string>();
+    const apiKeyEnvs = new Set<string>();
+    for (const [index, lane] of doc.lanes.entries()) {
+      if (baseUrlEnvs.has(lane.gateway.baseUrlEnv)) {
+        ctx.addIssue({
+          code: "custom",
+          message: `duplicate gateway.baseUrlEnv ${lane.gateway.baseUrlEnv}`,
+          path: ["lanes", index, "gateway", "baseUrlEnv"],
+        });
+      }
+      baseUrlEnvs.add(lane.gateway.baseUrlEnv);
+      if (apiKeyEnvs.has(lane.gateway.apiKeyEnv)) {
+        ctx.addIssue({
+          code: "custom",
+          message: `duplicate gateway.apiKeyEnv ${lane.gateway.apiKeyEnv}`,
+          path: ["lanes", index, "gateway", "apiKeyEnv"],
+        });
+      }
+      apiKeyEnvs.add(lane.gateway.apiKeyEnv);
+    }
     rejectSecretLikeValues(doc, [], ctx);
   });
 
@@ -510,6 +530,68 @@ export type EligibleLaneQuery = {
  * Gate-eligible generative lanes. Invalid registry → [] and an ops alert.
  * Health, ceilings, and budget are PR-8 and are not applied here.
  */
+const registryAlertedAt = new Map<string, number>();
+const REGISTRY_ALERT_WINDOW_MS = 60_000;
+
+/** Tests call this so a prior invalid file cannot suppress a later one. */
+export function resetLaneRegistryAlertDebounce(): void {
+  registryAlertedAt.clear();
+}
+
+function claimRegistryAlert(key: string): boolean {
+  const now = Date.now();
+  const previous = registryAlertedAt.get(key);
+  if (previous !== undefined && now - previous < REGISTRY_ALERT_WINDOW_MS) {
+    return false;
+  }
+  registryAlertedAt.set(key, now);
+  return true;
+}
+
+function alertRegistryInvalid(source: string, message: string): void {
+  const key = `${source}\n${message}`;
+  if (!claimRegistryAlert(key)) {
+    return;
+  }
+  void reportOpsAlert({
+    kind: OpsAlertKind.LANE_REGISTRY_INVALID,
+    message: "Lane registry is invalid. No lane is eligible.",
+    context: { path: source, error: message },
+  });
+}
+
+/**
+ * SG_LANES_SUSPENDED ids that are not lanes or processors. A matching id
+ * is silent. The unknown ids are the alert context.
+ */
+export function reportUnknownSuspendedLanes(
+  registry: Pick<SgLaneRegistry, "lanes" | "processors">,
+  suspendedIds: readonly string[],
+): void {
+  const known = new Set<string>([
+    ...registry.lanes.map((lane) => lane.laneId),
+    ...registry.processors.map((processor) => processor.laneId),
+  ]);
+  const unknown = suspendedIds.filter((id) => !known.has(id));
+  if (unknown.length === 0) {
+    return;
+  }
+  const key = `suspended-unknown\n${[...unknown].sort().join("\n")}`;
+  if (!claimRegistryAlert(key)) {
+    return;
+  }
+  void reportOpsAlert({
+    kind: OpsAlertKind.SG_LANES_SUSPENDED_UNKNOWN,
+    message: "SG_LANES_SUSPENDED names lanes that are not in the registry.",
+    context: { unknownLaneIds: unknown },
+  });
+}
+
+/** Debounced LANE_REGISTRY_INVALID. LEGACY and ENFORCED both call this when the file cannot be read. */
+export function reportLaneRegistryInvalid(source: string, message: string): void {
+  alertRegistryInvalid(source, message);
+}
+
 export function listEligibleLanes(input: EligibleLaneQuery): RegistryLane[] {
   const scopes = z.array(routingScopeSchema).min(1).safeParse([...input.requiredScopes]);
   if (!scopes.success || scopes.data.length === 0) {
@@ -521,15 +603,12 @@ export function listEligibleLanes(input: EligibleLaneQuery): RegistryLane[] {
     registry = input.registry ?? loadSgLaneRegistry(source);
   } catch (error) {
     const message = error instanceof Error ? error.message : "Lane registry is invalid.";
-    void reportOpsAlert({
-      kind: OpsAlertKind.LANE_REGISTRY_INVALID,
-      message: "Lane registry is invalid. No lane is eligible.",
-      context: { path: source, error: message },
-    });
+    alertRegistryInvalid(source, message);
     return [];
   }
   const suspended =
     input.suspendedLaneIds ?? suspendedLaneIdsFromEnv(process.env.SG_LANES_SUSPENDED);
+  reportUnknownSuspendedLanes(registry, suspended);
   return applyLaneSuspension(registry.lanes, suspended).filter((lane) =>
     laneIsEligible(lane, scopes.data),
   );

@@ -88,12 +88,12 @@ export const motionNeedSchema = z.enum(MOTION_NEEDS);
 
 /**
  * ShotFulfillment.routingMode (D12).
- * LEGACY until PR-8; E-R1 pending PO. PR-2 records the value and does not route.
+ * The shipped default lives in `routing-mode.ts` (`DEFAULT_SG_ROUTING_MODE`).
+ * E-R1 is still open. Do not add a second default.
  */
 export const ROUTING_MODES = ["LEGACY", "ENFORCED"] as const;
 export type RoutingMode = (typeof ROUTING_MODES)[number];
 export const routingModeSchema = z.enum(ROUTING_MODES);
-export const DEFAULT_RECORDED_ROUTING_MODE = "LEGACY" as const satisfies RoutingMode;
 
 /**
  * CreativePlan JSON keys rejected on the write path only (§5.1).
@@ -118,3 +118,47 @@ export const SG_ROUTING_PLAN_KEYS = [
 ] as const;
 
 export type SgRoutingPlanKey = (typeof SG_ROUTING_PLAN_KEYS)[number];
+
+/**
+ * CreativePlan write-path denylist (lock r3 A1, §5.1).
+ * Exact key names only. `cost` stays off this list.
+ * Must be enforced before SG_ROUTING_MODE=ENFORCED is enabled.
+ */
+export const SG_COST_PLAN_KEYS = [
+  "actualUsd",
+  "spendUsd",
+  "committedUsd",
+  "unreconciledUsd",
+  "actualBilledSeconds",
+  "estimatedBilledSeconds",
+  "reservedSeconds",
+  "committedSeconds",
+  "unreconciledBilledSeconds",
+  "reservedBilledSeconds",
+  "costKind",
+  "usd",
+] as const;
+
+export type SgCostPlanKey = (typeof SG_COST_PLAN_KEYS)[number];
+
+/** SG.6 keys recorded on a non-GENERATE decision. PR-10 owns the user-facing copy. */
+export const SG_MESSAGE_KEYS = {
+  FALLBACK_ORIGINAL: "SG_FALLBACK_ORIGINAL",
+  FALLBACK_KEN_BURNS: "SG_FALLBACK_KEN_BURNS",
+  FALLBACK_STATIC: "SG_FALLBACK_STATIC",
+  NO_QUALIFIED_LANE: "SG_NO_QUALIFIED_LANE",
+  CEILING_REACHED: "SG_CEILING_REACHED",
+  WAITING: "SG_WAITING",
+  CAP_REACHED: "SG_CAP_REACHED",
+  FAILED_HONEST: "SG_FAILED_HONEST",
+} as const;
+
+export type SgMessageKey = (typeof SG_MESSAGE_KEYS)[keyof typeof SG_MESSAGE_KEYS];
+
+/** D6. Draft-cost is 3. Every other class is 2. Config may override per registry snapshot. */
+export const LOCKED_REGEN_CEILINGS = {
+  "draft-cost": 3,
+  "draft-quality": 2,
+  standard: 2,
+  premium: 2,
+} as const;

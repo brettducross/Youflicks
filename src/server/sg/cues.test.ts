@@ -11,6 +11,8 @@ import {
   extractShotCues,
   persistableShotCues,
   readAnalysisFields,
+  stricterIdentityState,
+  tightenIdentityForRoute,
   requiredScopesFor,
   ShotCueError,
   type ShotCueAnalysis,
@@ -218,6 +220,84 @@ describe("payload identity proof", () => {
     const cues = stateFor({ analysisSchemaVersion: "1.0", people: { count: 0 } });
     expect(cues.identityState).toBe("ABSENT");
     expect(cues.scope).toBe("NON_IDENTITY");
+  });
+
+  it("does not prove ABSENT when people owns a __proto__ key", () => {
+    const payload = JSON.parse(
+      '{"analysisSchemaVersion":"1.0","people":{"count":0,"people":[],"recurringPersonIds":[],"__proto__":{"admin":true}}}',
+    ) as unknown;
+    const cues = stateFor(payload);
+    expect(cues.identityState).toBe("UNKNOWN");
+    expect(cues.scope).not.toBe("NON_IDENTITY");
+  });
+
+  it("tightens ABSENT only when the start frame and root keys prove it", () => {
+    const absent = stateFor(provenEmpty);
+    expect(absent.identityState).toBe("ABSENT");
+    const proven = tightenIdentityForRoute({
+      identityState: absent.identityState,
+      hero: false,
+      analyzedAssetId: "asset-1",
+      sentAssetId: "asset-1",
+      analysisRootKeys: ["analysisSchemaVersion", "people"],
+    });
+    expect(proven.identityState).toBe("ABSENT");
+    expect(proven.requiredScopes).toEqual(["NON_IDENTITY"]);
+
+    const mismatch = tightenIdentityForRoute({
+      identityState: "ABSENT",
+      hero: false,
+      analyzedAssetId: "asset-1",
+      sentAssetId: "asset-2",
+      analysisRootKeys: ["analysisSchemaVersion", "people"],
+    });
+    expect(mismatch.identityState).toBe("UNKNOWN");
+    expect(mismatch.requiredScopes).toEqual(["IDENTITY"]);
+
+    const extraRoot = tightenIdentityForRoute({
+      identityState: "ABSENT",
+      hero: true,
+      analyzedAssetId: "asset-1",
+      sentAssetId: "asset-1",
+      analysisRootKeys: ["analysisSchemaVersion", "people", "notes"],
+    });
+    expect(extraRoot.identityState).toBe("UNKNOWN");
+    expect(extraRoot.requiredScopes).toEqual(["HERO", "IDENTITY"]);
+
+    const present = tightenIdentityForRoute({
+      identityState: "PRESENT",
+      hero: false,
+      analyzedAssetId: "asset-1",
+      sentAssetId: "asset-2",
+      analysisRootKeys: ["notes"],
+    });
+    expect(present.identityState).toBe("PRESENT");
+    expect(present.requiredScopes).toEqual(["IDENTITY"]);
+  });
+
+  it("keeps the stricter of the stored identity and the re-derived identity", () => {
+    expect(stricterIdentityState("UNKNOWN", "ABSENT")).toBe("UNKNOWN");
+    expect(stricterIdentityState("ABSENT", "UNKNOWN")).toBe("UNKNOWN");
+    expect(stricterIdentityState("PRESENT", "ABSENT")).toBe("PRESENT");
+    expect(stricterIdentityState("ABSENT", "ABSENT")).toBe("ABSENT");
+    expect(stricterIdentityState("garbage", "ABSENT")).toBe("UNKNOWN");
+    expect(stricterIdentityState("absent", "ABSENT")).toBe("UNKNOWN");
+  });
+
+  it("pins v2.0 face evidence as UNKNOWN and a missing version face as PRESENT", () => {
+    const versioned = stateFor({
+      analysisSchemaVersion: "2.0",
+      people: { count: 1, people: [{ anonymousPersonId: "p1", faceDetected: true }] },
+    });
+    expect(versioned.identityState).toBe("UNKNOWN");
+    expect(versioned.scope).toBe("IDENTITY");
+    expect(versioned.identityEvidence.analysisCompleted).toBe(false);
+
+    const missing = stateFor({
+      people: { count: 1, people: [{ anonymousPersonId: "p1", faceDetected: true }] },
+    });
+    expect(missing.identityState).toBe("PRESENT");
+    expect(missing.scope).toBe("IDENTITY");
   });
 
   it("marks UNKNOWN when analysisSchemaVersion is absent and ABSENT only when it is 1.0", () => {
@@ -853,7 +933,8 @@ describe("cue extraction spy", () => {
     const versions: Array<{ schemaVersion?: unknown; logged: string }> = [
       { schemaVersion: "2.0", logged: "2.0" },
       { logged: "missing" },
-      { schemaVersion: 1, logged: "1" },
+      { schemaVersion: 1, logged: "number" },
+      { schemaVersion: "this is far too long to log", logged: "invalid" },
     ];
     const warnings: string[] = [];
     const originalWarn = console.warn;

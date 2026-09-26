@@ -38,7 +38,7 @@ export async function collectShotCueInput(
   args: CollectShotCueArgs,
 ): Promise<ShotCueInput> {
   const scene = findCueScene(args.story, args.storySceneId);
-  const analysis = await readStartFrame(db, args.projectId, args.sourceMediaAssetId);
+  const start = await readStartFrame(db, args.projectId, args.sourceMediaAssetId);
   const sceneEmphasis =
     args.sceneEmphasis ?? (await loadSceneEmphasis(db, args.projectId, args.story));
   return {
@@ -48,8 +48,10 @@ export async function collectShotCueInput(
       storySceneId: args.storySceneId ?? undefined,
     },
     slotDurationMs: slotDurationMsForRole(args.timeline.clips, args.role, args.storySceneId),
-    analysis,
+    analysis: start.analysis,
     sceneEmphasis,
+    analyzedAssetId: start.analyzedAssetId,
+    analysisRootKeys: start.analysisRootKeys,
   };
 }
 
@@ -76,20 +78,37 @@ export function findCueScene(story: StoryDocument | null, sceneId?: string | nul
   return null;
 }
 
+type StartFrameRead = {
+  analysis: ReturnType<typeof readAnalysisFields> | null;
+  analyzedAssetId: string | null;
+  analysisRootKeys: string[] | null;
+};
+
+function emptyStartFrame(): StartFrameRead {
+  return { analysis: null, analyzedAssetId: null, analysisRootKeys: null };
+}
+
+function rootKeysOf(payload: unknown): string[] | null {
+  if (!payload || typeof payload !== "object" || Array.isArray(payload)) {
+    return null;
+  }
+  return Object.keys(payload as Record<string, unknown>);
+}
+
 async function readStartFrame(
   db: CueReadDb,
   projectId: string,
   sourceMediaAssetId?: string | null,
-) {
+): Promise<StartFrameRead> {
   if (!sourceMediaAssetId) {
-    return null;
+    return emptyStartFrame();
   }
   const asset = await db.mediaAsset.findFirst({
     where: { id: sourceMediaAssetId, projectId },
     select: { id: true, analysisStatus: true },
   });
   if (!asset) {
-    return null;
+    return emptyStartFrame();
   }
   const rows = await db.mediaAnalysis.findMany({
     where: { assetId: asset.id },
@@ -99,13 +118,25 @@ async function readStartFrame(
   });
   const latest = rows[0];
   if (!latest) {
-    return readAnalysisFields(asset.analysisStatus, null, asset.analysisStatus);
+    return {
+      analysis: readAnalysisFields(asset.analysisStatus, null, asset.analysisStatus),
+      analyzedAssetId: asset.id,
+      analysisRootKeys: null,
+    };
   }
   const previous = rows[1];
   if (previous && latest.createdAt.getTime() === previous.createdAt.getTime()) {
-    return readAnalysisFields(null, null, asset.analysisStatus);
+    return {
+      analysis: readAnalysisFields(null, null, asset.analysisStatus),
+      analyzedAssetId: asset.id,
+      analysisRootKeys: null,
+    };
   }
-  return readAnalysisFields(latest.status, latest.payload, asset.analysisStatus);
+  return {
+    analysis: readAnalysisFields(latest.status, latest.payload, asset.analysisStatus),
+    analyzedAssetId: asset.id,
+    analysisRootKeys: rootKeysOf(latest.payload),
+  };
 }
 
 /**
@@ -140,7 +171,7 @@ function emphasisFromPlan(plan: unknown, planId: string): SceneEmphasisCue[] {
   if (version !== CREATIVE_PLAN_SCHEMA_VERSION) {
     logger.warn("cue.plan_version_dropped", {
       planId,
-      schemaVersion: version === undefined || version === null ? "missing" : String(version),
+      schemaVersion: loggedPlanSchemaVersion(version),
     });
     return [];
   }
@@ -161,6 +192,20 @@ function emphasisFromPlan(plan: unknown, planId: string): SceneEmphasisCue[] {
     });
   }
   return emphasis;
+}
+
+/** Clamp a plan schemaVersion before it is logged. Free text is not echoed. */
+export function loggedPlanSchemaVersion(version: unknown): string {
+  if (version === undefined || version === null) {
+    return "missing";
+  }
+  if (typeof version !== "string") {
+    return typeof version;
+  }
+  if (!/^[0-9A-Za-z.\- ]{1,16}$/.test(version)) {
+    return "invalid";
+  }
+  return version;
 }
 
 /** Keep only the id fields a scene_emphasis decision may use to name a scene. */

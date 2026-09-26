@@ -1,10 +1,8 @@
 import { readFileSync } from "node:fs";
 import type { Prisma, PrismaClient } from "@/generated/prisma/client";
 import { prisma } from "@/server/db";
-import {
-  DEFAULT_RECORDED_ROUTING_MODE,
-  type AttemptOutcome,
-} from "@/server/sg/constants";
+import { type AttemptOutcome } from "@/server/sg/constants";
+import { DEFAULT_SG_ROUTING_MODE } from "@/server/sg/routing-mode";
 import { assertPersistableCues, type PersistableShotCues } from "@/server/sg/cues";
 import { assertIdentityEvidence, IdentityEvidenceError } from "@/server/sg/identity-evidence";
 import { PrismaAiVideoBudget } from "@/server/sg/ai-video-budget";
@@ -12,8 +10,8 @@ import { loadSgLaneRegistry, stampRegistryBytes, type RegistryStamp } from "@/se
 import { DEFAULT_SG_LANE_REGISTRY_PATH, roundMeasure } from "@/server/sg/lane-rate";
 
 /**
- * LEGACY until PR-8; E-R1 pending PO. Recording LEGACY is not routing
- * and does not read SG_ROUTING_MODE.
+ * Slot rows are created before PR-8 chooses a treatment. The mode default
+ * is DEFAULT_SG_ROUTING_MODE. processJob overwrites the route fields.
  */
 export const LEGACY_DECISION_REASON =
   "LEGACY records the existing single-lane path. Routing and regen ceilings are not applied.";
@@ -182,7 +180,7 @@ export class PrismaShotFulfillment {
             slotDurationMs: cues.slotDurationMs,
             treatment: "GENERATE",
             status: newer ? "SUPERSEDED" : "PLANNED",
-            routingMode: DEFAULT_RECORDED_ROUTING_MODE,
+            routingMode: DEFAULT_SG_ROUTING_MODE,
             decisionReason: LEGACY_DECISION_REASON,
             registryVersion: stamp.registryVersion,
             registrySha256: stamp.registrySha256,
@@ -202,6 +200,44 @@ export class PrismaShotFulfillment {
       }
       return existing;
     }
+  }
+
+  async listAttempts(shotFulfillmentId: string) {
+    return this.db.shotFulfillmentAttempt.findMany({
+      where: { shotFulfillmentId },
+      orderBy: { attemptNo: "asc" },
+      select: { laneClass: true, outcome: true, classAttemptNo: true, jobId: true },
+    });
+  }
+
+  /**
+   * Persist the PR-8 route. SUPERSEDED and FULFILLED keep their status and
+   * treatment. GENERATE does not change status.
+   */
+  async recordRouteDecision(input: {
+    shotFulfillmentId: string;
+    routingMode: string;
+    shadowDecision: Prisma.InputJsonValue;
+    decisionReason?: string;
+    userMessageKey?: string | null;
+    treatment?: string;
+    status?: string;
+  }) {
+    const slot = await this.db.shotFulfillment.findUniqueOrThrow({
+      where: { id: input.shotFulfillmentId },
+    });
+    const locked = slot.status === "SUPERSEDED" || slot.status === "FULFILLED";
+    return this.db.shotFulfillment.update({
+      where: { id: slot.id },
+      data: {
+        routingMode: input.routingMode,
+        shadowDecision: input.shadowDecision,
+        ...(input.decisionReason !== undefined && !locked ? { decisionReason: input.decisionReason } : {}),
+        ...(input.userMessageKey !== undefined && !locked ? { userMessageKey: input.userMessageKey } : {}),
+        ...(input.treatment !== undefined && !locked ? { treatment: input.treatment } : {}),
+        ...(input.status !== undefined && !locked ? { status: input.status } : {}),
+      },
+    });
   }
 
   /** Capability miss and other non-attempts. Does not invent an attempt row. */

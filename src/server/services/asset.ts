@@ -4,6 +4,7 @@ import { createHash } from "node:crypto";
 import type { Prisma } from "@/generated/prisma/client";
 import { AppError, isAppError } from "@/lib/errors";
 import { logger } from "@/lib/logger";
+import { OpsAlertKind, reportOpsAlert } from "@/lib/ops-alerts";
 import type { AssetExecutionAttribution } from "@/server/adapters/assets/attribution";
 import { fingerprintAssetBatchRequest, fingerprintAssetGeneratorInput } from "@/server/assets/fingerprint";
 import {
@@ -13,6 +14,7 @@ import {
   type GeneratedAssetKind,
 } from "@/server/assets/kinds";
 import type { GeneratedAssetDocument } from "@/server/assets/schema";
+import type { AssetLaneResolver } from "@/server/assets/lane-resolver";
 import type { AssetAvailability } from "@/server/assets/provider-config";
 import { prisma } from "@/server/db";
 import {
@@ -43,6 +45,8 @@ import { PrismaAiVideoBudget, AiVideoBudgetCapError, type AiVideoBudgetPort, typ
 import {
   AiVideoBudgetSource,
   hasAnyBudgetCap,
+  projectBudgetLedgerId,
+  userWindowBudgetLedgerId,
 } from "@/server/sg/budget-source";
 import { gatewayTraceFor } from "@/server/assets/gateway-trace";
 import { attemptOutcomeFromSettlement } from "@/server/sg/attempt-outcome";
@@ -58,7 +62,41 @@ import {
   type CollectShotCueArgs,
   type CueReadDb,
 } from "@/server/sg/cue-context";
-import { extractShotCues, persistableShotCues, type ShotCueInput } from "@/server/sg/cues";
+import {
+  extractShotCues,
+  persistableShotCues,
+  requiredScopesFor,
+  stricterIdentityState,
+  tightenIdentityForRoute,
+  type ShotCueInput,
+} from "@/server/sg/cues";
+import { probeEligibleLaneHealth, probeLaneHealth } from "@/server/sg/lane-health";
+import { GENERATIVE_LANE_CAPABILITIES, readLaneHealthBaseUrl } from "@/server/assets/lane-resolver";
+import {
+  applyLaneSuspension,
+  DEFAULT_SG_LANE_REGISTRY_PATH,
+  listEligibleLanes,
+  loadSgLaneRegistry,
+  reportLaneRegistryInvalid,
+  reportUnknownSuspendedLanes,
+  suspendedLaneIdsFromEnv,
+  type RegistryLane,
+  type SgLaneRegistry,
+} from "@/server/sg/lane-registry";
+import {
+  assertEnforcedLaneCallable,
+  blocksAutomaticPaidRetry,
+  fulfillmentStatusForTreatment,
+  legacyModelGuard,
+  planRoute,
+  type AttemptSoFar,
+  type BudgetSnapshot,
+  type RegistrySnapshot,
+  type RouteDecision,
+  type ShotCues,
+} from "@/server/sg/policy";
+import { readSgRoutingMode } from "@/server/sg/routing-mode";
+import { attemptOutcomeSchema, laneClassSchema, type RoutingMode } from "@/server/sg/constants";
 import {
   PrismaShotFulfillment,
   UNCLASSIFIED_LANE_CLASS,
@@ -143,6 +181,9 @@ export class AssetService {
     private readonly budgets: AiVideoBudgetPort = new PrismaAiVideoBudget(prisma),
     private readonly fulfillments: PrismaShotFulfillment = new PrismaShotFulfillment(prisma),
     private readonly collectCues: ShotCueCollector = collectShotCueInput,
+    private readonly resolveLanes: () => AssetLaneResolver | null = () => null,
+    private readonly probeHealth: (baseUrl: string) => Promise<boolean> = (baseUrl) =>
+      probeLaneHealth(baseUrl),
   ) {}
 
   getAvailability(): AssetAvailability {
@@ -300,12 +341,12 @@ export class AssetService {
     }
 
     const resolved = this.resolveGenerator();
-    if (!resolved) {
-      throw AppError.providerNotConfigured("AssetGeneratorPort");
-    }
+    const routingMode = readSgRoutingMode();
+    const registryLoad = this.loadRoutingRegistry();
 
     const userId = payload.requestedBy;
     const projectId = payload.projectId;
+    const healthCache = new Map<string, Promise<boolean>>();
     await this.projects.getForUser(userId, projectId);
     const timeline = await this.requireReadyTimeline(projectId);
     if (timeline.id !== payload.timelineId || timeline.version !== payload.timelineVersion) {
@@ -362,8 +403,45 @@ export class AssetService {
         continue;
       }
 
+      const route = await this.applyRoute({
+        slotId: slot.id,
+        extracted: cues,
+        cueInput,
+        routingMode,
+        registryLoad,
+        sentAssetId: kind === "ENHANCEMENT" ? (role.sourceMediaAssetId ?? null) : null,
+        jobId: job.id,
+        userId,
+        projectId,
+        job,
+        role: role.role,
+        storySceneId: role.storySceneId,
+        storedShotRole: slot.shotRole,
+        storedIdentityState: slot.identityState,
+        storedRequiredScopes: slot.requiredScopes,
+        kind,
+        healthCache,
+      });
+      if (route.kind === "skip") {
+        if (route.stopJob) {
+          break;
+        }
+        continue;
+      }
+      const runtime = route.kind === "enforced" ? route.runtime : resolved;
+      const releaseRouteHold = async () => {
+        if (route.kind === "enforced") {
+          await this.releaseHold(route.hold);
+        }
+      };
+      if (!runtime) {
+        await releaseRouteHold();
+        throw AppError.providerNotConfigured("AssetGeneratorPort");
+      }
+
       const capability = capabilityForKind(kind);
-      if (!resolved.supportedCapabilities.includes(capability)) {
+      if (!runtime.supportedCapabilities.includes(capability)) {
+        await releaseRouteHold();
         const failed = await this.persistFailed({
           projectId,
           jobId: job.id,
@@ -377,30 +455,50 @@ export class AssetService {
         throw AppError.assetCapabilityUnavailable(capability);
       }
 
-      const input = await this.contract.assembleInput(userId, projectId, timeline, role, story);
+      let input;
+      try {
+        input = await this.contract.assembleInput(userId, projectId, timeline, role, story);
+      } catch (error) {
+        await releaseRouteHold();
+        await this.markSlotFailure(slot.id, projectId, job.id);
+        throw error;
+      }
       const inputFingerprint = fingerprintAssetGeneratorInput(input);
       const startedAt = Date.now();
       logger.info("asset.started", { projectId, jobId: job.id, role: role.role, kind });
 
-      const attribution = resolved.attributionFor(capability);
+      const attribution = runtime.attributionFor(capability);
       let quote;
       try {
-        quote = this.legacyAttemptQuote(attribution.providerKey, attribution.modelId);
+        quote =
+          route.kind === "enforced"
+            ? route.quote
+            : this.legacyAttemptQuote(attribution.providerKey, attribution.modelId);
       } catch (error) {
+        await releaseRouteHold();
         await this.markSlotFailure(slot.id, projectId, job.id);
         throw AppError.assetProviderUnavailable(
           error instanceof Error ? error.message : "AI video lane registry failed closed.",
         );
       }
-      let budgetHold: AiVideoBudgetReservationRecord | null = null;
+      let budgetHold: AiVideoBudgetReservationRecord | null =
+        route.kind === "enforced" ? route.hold : null;
+      if (route.kind === "enforced" && !budgetHold) {
+        await this.markSlotFailure(slot.id, projectId, job.id);
+        throw AppError.assetProviderUnavailable(
+          "ENFORCED generation requires an app hold from the routed lane.",
+        );
+      }
       try {
-        budgetHold = await this.reserveProductionBudget({
-          userId,
-          projectId,
-          job,
-          role: role.role,
-          storySceneId: role.storySceneId,
-        });
+        if (route.kind !== "enforced") {
+          budgetHold = await this.reserveProductionBudget({
+            userId,
+            projectId,
+            job,
+            role: role.role,
+            storySceneId: role.storySceneId,
+          });
+        }
       } catch (error) {
         if (isAppError(error) && error.code === "SPEND_CAP_REACHED") {
           try {
@@ -424,7 +522,7 @@ export class AssetService {
         laneId: quote.laneId,
         providerKey: quote.providerKey,
         modelId: quote.modelId,
-        requiredScopes: slot.requiredScopes,
+        requiredScopes: route.requiredScopes,
         jobId: job.id,
         budgetReservationId: budgetHold?.id ?? null,
         estimatedBilledSeconds: quote.estimatedBilledSeconds,
@@ -435,7 +533,7 @@ export class AssetService {
       let rawDocument;
       let reconciled: AiVideoBudgetReservationRecord | null = null;
       try {
-        rawDocument = await resolved.adapter.generate(input);
+        rawDocument = await runtime.adapter.generate(input);
         if (budgetHold) {
           reconciled = await this.reconcileBudget(budgetHold, rawDocument.durationMs);
         }
@@ -932,6 +1030,472 @@ export class AssetService {
     });
   }
 
+  private loadRoutingRegistry(): RoutingRegistryLoad {
+    const file = registryPathFromEnv();
+    try {
+      const registry = loadSgLaneRegistry(file);
+      const suspendedIds = suspendedLaneIdsFromEnv(process.env.SG_LANES_SUSPENDED);
+      reportUnknownSuspendedLanes(registry, suspendedIds);
+      return { ok: true, registry, suspendedIds, path: file };
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Lane registry is invalid.";
+      reportLaneRegistryInvalid(file ?? DEFAULT_SG_LANE_REGISTRY_PATH, message);
+      return { ok: false, path: file };
+    }
+  }
+
+  /**
+   * PR-8 decision for one role. Shadow is always the ENFORCED decision.
+   * LEGACY generation stays on the injected adapter. forLane runs only for
+   * an ENFORCED GENERATE lane that listEligibleLanes already returned.
+   * An unreadable registry does not replace today's LEGACY quote failure.
+   */
+  private async applyRoute(input: {
+    slotId: string;
+    extracted: ReturnType<typeof persistableShotCues>;
+    cueInput: ShotCueInput;
+    routingMode: RoutingMode;
+    registryLoad: RoutingRegistryLoad;
+    sentAssetId: string | null;
+    jobId: string;
+    userId: string;
+    projectId: string;
+    job: JobRecord;
+    role: string;
+    storySceneId?: string;
+    storedShotRole: string | null;
+    storedIdentityState: string;
+    storedRequiredScopes: readonly string[];
+    kind: GeneratedAssetKind;
+    healthCache: Map<string, Promise<boolean>>;
+  }): Promise<RoleRoute> {
+    const hero =
+      input.extracted.requiredScopes.includes("HERO") ||
+      input.storedRequiredScopes.includes("HERO");
+    const tightened = tightenIdentityForRoute({
+      identityState: input.extracted.identityState,
+      hero,
+      analyzedAssetId: input.cueInput.analyzedAssetId ?? null,
+      sentAssetId: input.sentAssetId,
+      analysisRootKeys: input.cueInput.analysisRootKeys ?? null,
+    });
+    const routeIdentity = stricterIdentityState(input.storedIdentityState, tightened.identityState);
+    const dialogueOutline = input.cueInput.scene?.dialogueOutline?.trim() ?? "";
+    const dialogueCloseup =
+      input.storedShotRole === "dialogue-closeup" ||
+      (dialogueOutline.length > 0 && routeIdentity !== "ABSENT");
+    const cues: ShotCues = {
+      requiredScopes: requiredScopesFor(routeIdentity, hero),
+      shotRole: dialogueCloseup ? "dialogue-closeup" : input.extracted.shotRole,
+      identityState: routeIdentity,
+      originalCoversSlot: false,
+      sourceStillExists: false,
+      motionNeed: input.extracted.motionNeed,
+      routingMode: input.routingMode,
+    };
+    const rows = await this.fulfillments.listAttempts(input.slotId);
+    const split = splitAttempts(rows);
+    const blockingRows =
+      input.routingMode === "LEGACY" ? rows.filter((row) => row.jobId === input.jobId) : rows;
+    const rawBlocks = blockingRows.some((row) => {
+      const outcome = attemptOutcomeSchema.safeParse(row.outcome);
+      return outcome.success && blocksAutomaticPaidRetry(outcome.data, input.routingMode);
+    });
+    const snapshot = await this.routingSnapshot(
+      input.registryLoad,
+      input.routingMode,
+      cues.requiredScopes,
+      split.unclassified,
+      input.healthCache,
+    );
+    const budget = await this.routingBudgetSnapshot(input.userId, input.projectId);
+    let plan;
+    try {
+      plan = planRoute(
+        cues,
+        snapshot.snapshot,
+        budget,
+        split.attempts,
+      );
+    } catch {
+      await this.recordSkip(input.slotId, input.routingMode, null, {
+        treatment: "FAIL_HONEST",
+        laneClass: null,
+        laneId: null,
+        providerKey: null,
+        decisionReason: "Routing cues are outside the SG.0 contract.",
+        messageKey: "SG_FAILED_HONEST",
+      });
+      return { kind: "skip", stopJob: false, requiredScopes: cues.requiredScopes };
+    }
+
+    const forceLegacy =
+      input.routingMode === "LEGACY" &&
+      cues.shotRole !== "dialogue-closeup" &&
+      !cues.originalCoversSlot &&
+      !rawBlocks;
+
+    let applied = plan.applied;
+    if (forceLegacy) {
+      applied = {
+        treatment: "GENERATE",
+        laneClass: "standard",
+        laneId: "legacy",
+        providerKey: "legacy",
+        decisionReason: "LEGACY routes this role on the injected adapter.",
+        messageKey: null,
+      };
+    } else if (applied.treatment === "GENERATE" && rawBlocks) {
+      applied = {
+        treatment: "DEFER",
+        laneClass: null,
+        laneId: null,
+        providerKey: null,
+        decisionReason:
+          rows.some((row) => row.outcome === "CAP_DENIED")
+            ? "A spend cap was reached. No automatic retry."
+            : "No automatic retry after an unsettled or cancelled attempt.",
+        messageKey: rows.some((row) => row.outcome === "CAP_DENIED") ? "SG_CAP_REACHED" : "SG_FAILED_HONEST",
+      };
+    }
+
+    if (applied.treatment !== "GENERATE") {
+      const stopJob =
+        applied.messageKey === "SG_CAP_REACHED" &&
+        (plan.stopJob || rows.some((row) => row.outcome === "CAP_DENIED"));
+      await this.recordSkip(input.slotId, input.routingMode, plan.shadow, applied);
+      return { kind: "skip", stopJob, requiredScopes: cues.requiredScopes };
+    }
+
+    if (input.routingMode === "LEGACY") {
+      const guard = legacyModelGuard({
+        assetHttpModel: process.env.ASSET_HTTP_MODEL,
+        registryModelId: snapshot.available ? plan.legacyModelId : null,
+      });
+      await this.recordShadow(
+        input.slotId,
+        input.routingMode,
+        plan.shadow,
+        "LEGACY routes this role on the injected adapter.",
+      );
+      if (!guard.ok) {
+        void reportOpsAlert({
+          kind: OpsAlertKind.SG_MODEL_LANE_MISMATCH,
+          message: guard.reason,
+        });
+        await this.recordSkip(input.slotId, input.routingMode, plan.shadow, {
+          treatment: "FAIL_HONEST",
+          laneClass: null,
+          laneId: null,
+          providerKey: null,
+          decisionReason: guard.reason,
+          messageKey: "SG_FAILED_HONEST",
+        });
+        return { kind: "skip", stopJob: false, requiredScopes: cues.requiredScopes };
+      }
+      return { kind: "legacy", requiredScopes: cues.requiredScopes };
+    }
+
+    const enforced = await this.prepareEnforcedGenerate({
+      slotId: input.slotId,
+      routingMode: input.routingMode,
+      shadow: plan.shadow,
+      applied,
+      registryLoad: input.registryLoad,
+      requiredScopes: cues.requiredScopes,
+      userId: input.userId,
+      projectId: input.projectId,
+      job: input.job,
+      role: input.role,
+      storySceneId: input.storySceneId,
+      kind: input.kind,
+    });
+    return enforced;
+  }
+
+  private async routingBudgetSnapshot(userId: string, projectId: string): Promise<BudgetSnapshot> {
+    const resolved = AiVideoBudgetSource.resolve(userId, projectId);
+    const [project, user] = await Promise.all([
+      this.budgets.snapshot(projectBudgetLedgerId(projectId)),
+      this.budgets.snapshot(userWindowBudgetLedgerId(userId, resolved.windowKey)),
+    ]);
+    return {
+      projectBlocked: ledgerCapBlocked(
+        project,
+        resolved.caps.projectMaxSeconds,
+        resolved.caps.projectMaxUsd,
+      ),
+      userBlocked: ledgerCapBlocked(
+        user,
+        resolved.caps.userWindowMaxSeconds,
+        resolved.caps.userWindowMaxUsd,
+      ),
+      // Gateway spend ledgers yf-asset and lane:<laneId> enforce global and per-lane
+      // caps at gateway reserve. A read-side pre-check is a PR-11 carry.
+      globalBlocked: false,
+      laneBlocked: false,
+    };
+  }
+
+  private async routingSnapshot(
+    load: RoutingRegistryLoad,
+    mode: RoutingMode,
+    requiredScopes: ShotCues["requiredScopes"],
+    unclassifiedAttemptCount: number,
+    healthCache: Map<string, Promise<boolean>>,
+  ): Promise<{ available: boolean; snapshot: RegistrySnapshot }> {
+    if (!load.ok) {
+      return {
+        available: false,
+        snapshot: { lanes: [], registryUnavailable: true, unclassifiedAttemptCount },
+      };
+    }
+    const lanes = applyLaneSuspension(load.registry.lanes, load.suspendedIds);
+    const health = new Map<string, boolean>();
+    if (mode === "ENFORCED") {
+      const eligible = listEligibleLanes({
+        requiredScopes,
+        path: load.path,
+        registry: load.registry,
+        suspendedLaneIds: load.suspendedIds,
+      });
+      const probed = await probeEligibleLaneHealth(
+        eligible.map((lane) => ({
+          laneId: lane.laneId,
+          baseUrl: readLaneHealthBaseUrl(lane, process.env),
+        })),
+        (baseUrl) => this.probeHealth(baseUrl),
+        healthCache,
+      );
+      for (const [laneId, ok] of probed) {
+        health.set(laneId, ok);
+      }
+    }
+    return {
+      available: true,
+      snapshot: {
+        ...snapshotFromLanes(lanes, load.registry, health),
+        unclassifiedAttemptCount,
+      },
+    };
+  }
+
+  private async prepareEnforcedGenerate(input: {
+    slotId: string;
+    routingMode: RoutingMode;
+    shadow: RouteDecision;
+    applied: RouteDecision;
+    registryLoad: RoutingRegistryLoad;
+    requiredScopes: string[];
+    userId: string;
+    projectId: string;
+    job: JobRecord;
+    role: string;
+    storySceneId?: string;
+    kind: GeneratedAssetKind;
+  }): Promise<RoleRoute> {
+    if (input.applied.treatment !== "GENERATE" || !input.registryLoad.ok) {
+      await this.recordSkip(input.slotId, input.routingMode, input.shadow, honest("No eligible lane for the required scopes."));
+      return { kind: "skip", stopJob: false, requiredScopes: input.requiredScopes };
+    }
+    const roleCapability = capabilityForKind(input.kind);
+    if (!GENERATIVE_LANE_CAPABILITIES.some((item) => item === roleCapability)) {
+      await this.recordSkip(
+        input.slotId,
+        input.routingMode,
+        input.shadow,
+        honest(`No ready adapter can perform ${roleCapability}.`),
+      );
+      return { kind: "skip", stopJob: false, requiredScopes: input.requiredScopes };
+    }
+    const eligible = listEligibleLanes({
+      requiredScopes: input.requiredScopes,
+      path: input.registryLoad.path,
+      registry: input.registryLoad.registry,
+      suspendedLaneIds: input.registryLoad.suspendedIds,
+    });
+    try {
+      assertEnforcedLaneCallable({
+        laneId: input.applied.laneId,
+        eligibleLaneIds: eligible.map((lane) => lane.laneId),
+        decision: input.applied,
+      });
+    } catch {
+      await this.recordSkip(input.slotId, input.routingMode, input.shadow, honest("No eligible lane for the required scopes."));
+      return { kind: "skip", stopJob: false, requiredScopes: input.requiredScopes };
+    }
+    const lane = input.registryLoad.registry.lanes.find((item) => item.laneId === input.applied.laneId);
+    let quote: AttemptQuote;
+    try {
+      if (!lane) {
+        throw new Error("missing lane");
+      }
+      const charge = estimateLaneCharge(lane);
+      quote = {
+        laneId: lane.laneId,
+        laneClass: lane.laneClass,
+        providerKey: lane.providerKey,
+        modelId: lane.modelId,
+        estimatedBilledSeconds: charge.estimatedBilledSeconds,
+        usdPerSecond: lane.usdPerSecond,
+        estimatedUsd: charge.reservedUsd,
+      };
+    } catch {
+      await this.recordSkip(input.slotId, input.routingMode, input.shadow, honest("The eligible lane has no price."));
+      return { kind: "skip", stopJob: false, requiredScopes: input.requiredScopes };
+    }
+    let hold: AiVideoBudgetReservationRecord | null = null;
+    try {
+      hold = await this.reserveRoutedLane({
+        userId: input.userId,
+        projectId: input.projectId,
+        job: input.job,
+        role: input.role,
+        storySceneId: input.storySceneId,
+        quote,
+      });
+    } catch (error) {
+      if (isAppError(error) && error.code === "SPEND_CAP_REACHED") {
+        try {
+          await this.recordClosedAttempt(input.slotId, quote, input.job.id, error, null);
+        } catch (markError) {
+          this.logSlotMarkFailed(input.projectId, input.job.id, input.slotId, markError);
+        }
+      } else {
+        await this.markSlotFailure(input.slotId, input.projectId, input.job.id);
+      }
+      throw error;
+    }
+    if (!hold) {
+      await this.recordSkip(
+        input.slotId,
+        input.routingMode,
+        input.shadow,
+        honest("ENFORCED generation requires an app hold from the routed lane."),
+      );
+      return { kind: "skip", stopJob: false, requiredScopes: input.requiredScopes };
+    }
+    const resolver = this.resolveLanes();
+    if (!resolver) {
+      await this.releaseHold(hold);
+      await this.recordSkip(input.slotId, input.routingMode, input.shadow, honest("No lane resolver is configured."));
+      return { kind: "skip", stopJob: false, requiredScopes: input.requiredScopes };
+    }
+    let resolvedLane;
+    try {
+      resolvedLane = resolver.forLane(input.applied.laneId);
+    } catch {
+      await this.releaseHold(hold);
+      await this.recordSkip(input.slotId, input.routingMode, input.shadow, honest("The eligible lane could not be resolved."));
+      return { kind: "skip", stopJob: false, requiredScopes: input.requiredScopes };
+    }
+    const capability = resolvedLane.supportedCapabilities[0];
+    const attribution = capability ? resolvedLane.attribution(capability) : null;
+    if (!lane || !capability || !attribution || attribution.modelId !== lane.modelId) {
+      await this.releaseHold(hold);
+      void reportOpsAlert({
+        kind: OpsAlertKind.SG_MODEL_LANE_MISMATCH,
+        message: "Resolved modelId does not match the registry lane modelId.",
+      });
+      await this.recordSkip(input.slotId, input.routingMode, input.shadow, honest("The lane model does not match the registry."));
+      return { kind: "skip", stopJob: false, requiredScopes: input.requiredScopes };
+    }
+    quote = { ...quote, modelId: attribution.modelId };
+    await this.recordShadow(input.slotId, input.routingMode, input.shadow);
+    return {
+      kind: "enforced",
+      requiredScopes: input.requiredScopes,
+      quote,
+      hold,
+      runtime: {
+        adapter: resolvedLane.adapter,
+        attributionFor: (cap) => resolvedLane.attribution(cap),
+        supportedCapabilities: [...resolvedLane.supportedCapabilities],
+      },
+    };
+  }
+
+  /**
+   * ENFORCED hold. Priced and labelled from the routed quote.
+   * Does not read YF_GATEWAY_LANE_ID. A missing quote never reaches here.
+   */
+  private async reserveRoutedLane(input: {
+    userId: string;
+    projectId: string;
+    job: JobRecord;
+    role: string;
+    storySceneId?: string;
+    quote: AttemptQuote;
+  }): Promise<AiVideoBudgetReservationRecord | null> {
+    const resolved = AiVideoBudgetSource.resolve(input.userId, input.projectId);
+    try {
+      return await this.budgets.reserve({
+        idempotencyKey: `asset:${input.job.id}:${input.role}:${input.storySceneId ?? "-"}:${input.job.attempts}`,
+        projectId: input.projectId,
+        userId: input.userId,
+        windowKey: resolved.windowKey,
+        laneId: input.quote.laneId,
+        providerKey: input.quote.providerKey,
+        estimatedBilledSeconds: input.quote.estimatedBilledSeconds,
+        usdPerSecond: input.quote.usdPerSecond,
+        estimatedUsd: input.quote.estimatedUsd,
+        caps: resolved.caps,
+      });
+    } catch (error) {
+      if (error instanceof AiVideoBudgetCapError) {
+        logger.info("asset.cap_denied", {
+          settleReason: "CAP_DENIED",
+          userId: input.userId,
+          projectId: input.projectId,
+          jobId: input.job.id,
+          laneId: input.quote.laneId,
+          message: error.message,
+        });
+        throw AppError.spendCapReached(error.message);
+      }
+      throw error;
+    }
+  }
+
+  private async releaseHold(hold: AiVideoBudgetReservationRecord | null) {
+    if (!hold) {
+      return;
+    }
+    await this.budgets.release(hold.id, "GATEWAY_NONE");
+  }
+
+  private async recordShadow(
+    slotId: string,
+    routingMode: RoutingMode,
+    shadow: RouteDecision,
+    decisionReason?: string,
+  ) {
+    await this.fulfillments.recordRouteDecision({
+      shotFulfillmentId: slotId,
+      routingMode,
+      shadowDecision: shadow as Prisma.InputJsonValue,
+      ...(decisionReason !== undefined ? { decisionReason } : {}),
+    });
+  }
+
+  private async recordSkip(
+    slotId: string,
+    routingMode: RoutingMode,
+    shadow: RouteDecision | null,
+    applied: RouteDecision,
+  ) {
+    const status = fulfillmentStatusForTreatment(applied.treatment) ?? "FAILED";
+    await this.fulfillments.recordRouteDecision({
+      shotFulfillmentId: slotId,
+      routingMode,
+      shadowDecision: (shadow ?? applied) as Prisma.InputJsonValue,
+      decisionReason: applied.decisionReason,
+      userMessageKey: applied.messageKey,
+      treatment: applied.treatment,
+      status,
+    });
+  }
+
   /**
    * Price label for the existing single-lane path. Local and unconfigured
    * runs record zeros and laneClass "unclassified", a recording label only.
@@ -1178,6 +1742,109 @@ function appSettlementFor(
     return settlement;
   }
   return "MISSING";
+}
+
+type RoutingRegistryLoad =
+  | { ok: false; path: string | undefined }
+  | { ok: true; registry: SgLaneRegistry; suspendedIds: string[]; path: string | undefined };
+
+type AttemptQuote = {
+  laneId: string;
+  laneClass: string;
+  providerKey: string;
+  modelId: string | null;
+  estimatedBilledSeconds: number;
+  usdPerSecond: number;
+  estimatedUsd: number;
+};
+
+type RoleRoute =
+  | { kind: "skip"; stopJob: boolean; requiredScopes: string[] }
+  | { kind: "legacy"; requiredScopes: string[] }
+  | {
+      kind: "enforced";
+      requiredScopes: string[];
+      quote: AttemptQuote;
+      hold: AiVideoBudgetReservationRecord | null;
+      runtime: ResolvedAssetRuntime;
+    };
+
+function ledgerCapBlocked(
+  row: { reservedSeconds: number; committedSeconds: number; reservedUsd: number; committedUsd: number } | null,
+  maxSeconds: number | undefined,
+  maxUsd: number | undefined,
+): boolean {
+  if (!row) {
+    return false;
+  }
+  const seconds = row.reservedSeconds + row.committedSeconds;
+  const usd = row.reservedUsd + row.committedUsd;
+  if (maxSeconds !== undefined && seconds >= maxSeconds) {
+    return true;
+  }
+  if (maxUsd !== undefined && usd >= maxUsd) {
+    return true;
+  }
+  return false;
+}
+
+function honest(decisionReason: string): RouteDecision {
+  return {
+    treatment: "FAIL_HONEST",
+    laneClass: null,
+    laneId: null,
+    providerKey: null,
+    decisionReason,
+    messageKey: "SG_FAILED_HONEST",
+  };
+}
+
+function splitAttempts(rows: readonly { laneClass: string; outcome: string; classAttemptNo: number }[]): {
+  attempts: AttemptSoFar[];
+  unclassified: number;
+} {
+  const attempts: AttemptSoFar[] = [];
+  let unclassified = 0;
+  for (const row of rows) {
+    const laneClass = laneClassSchema.safeParse(row.laneClass);
+    const outcome = attemptOutcomeSchema.safeParse(row.outcome);
+    if (!laneClass.success || !outcome.success || !Number.isInteger(row.classAttemptNo) || row.classAttemptNo < 1) {
+      unclassified += 1;
+      continue;
+    }
+    attempts.push({
+      laneClass: laneClass.data,
+      outcome: outcome.data,
+      classAttemptNo: row.classAttemptNo,
+    });
+  }
+  return { attempts, unclassified };
+}
+
+function snapshotFromLanes(
+  lanes: readonly RegistryLane[],
+  registry: SgLaneRegistry,
+  health: ReadonlyMap<string, boolean>,
+): RegistrySnapshot {
+  return {
+    lanes: lanes.map((lane) => ({
+      laneId: lane.laneId,
+      laneClass: lane.laneClass,
+      providerKey: lane.providerKey,
+      enabled: lane.enabled,
+      healthy: health.get(lane.laneId) ?? false,
+      designation: lane.designation === "LEGACY_R1" ? "LEGACY_R1" : "NONE",
+      resolutionTier: lane.resolutionTier,
+      modelId: lane.modelId,
+      gates: {
+        HERO: lane.gates.HERO.status,
+        IDENTITY: lane.gates.IDENTITY.status,
+        NON_IDENTITY: lane.gates.NON_IDENTITY.status,
+      },
+    })),
+    regenCeilings: registry.regenCeilings,
+    classOrder: [...registry.classOrder],
+  };
 }
 
 function registryPathFromEnv(): string | undefined {

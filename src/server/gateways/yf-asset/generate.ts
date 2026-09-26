@@ -32,6 +32,7 @@ import {
   requireLiveLane,
   roundMeasure,
   type LaneRate,
+  type RegistryLane,
 } from "@/server/sg/lane-rate";
 
 export type GenerateHandlerResult =
@@ -155,7 +156,7 @@ export class YfAssetGenerateService {
     request: { kind: string; role: string },
     input: Record<string, unknown>,
   ): Promise<GenerateHandlerResult> {
-    let lane: LaneRate;
+    let lane: RegistryLane;
     try {
       lane = requireLiveLane(this.config.laneId ?? "", this.config.registryPath);
     } catch (error) {
@@ -163,6 +164,14 @@ export class YfAssetGenerateService {
         503,
         "GATEWAY_NOT_CONFIGURED",
         error instanceof Error ? error.message : "Live gateway lane is not configured.",
+      );
+    }
+
+    if (model !== lane.modelId) {
+      return noReservationError(
+        409,
+        "MODEL_LANE_MISMATCH",
+        "The request model does not match the configured lane.",
       );
     }
 

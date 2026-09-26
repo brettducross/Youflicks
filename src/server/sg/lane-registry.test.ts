@@ -11,6 +11,7 @@ import {
   PROCESSOR_LANE_CLASS,
   applyLaneSuspension,
   listEligibleLanes,
+  resetLaneRegistryAlertDebounce,
   loadSgLaneRegistry,
   parseLaneRegistry,
   resolutionMeets720pFloor,
@@ -81,6 +82,7 @@ describe("lane registry validators", () => {
 
   afterEach(() => {
     errorSpy.mockClear();
+    resetLaneRegistryAlertDebounce();
     delete process.env.SG_LANES_SUSPENDED;
     delete process.env.SG_LANES_QUALIFIED;
   });
@@ -431,6 +433,7 @@ describe("lane registry validators", () => {
           laneId: "legacy",
           providerKey: "open:legacy",
           designation: "LEGACY_R1",
+          gateway: { baseUrlEnv: "ASSET_HTTP_BASE_URL", apiKeyEnv: "ASSET_HTTP_API_KEY" },
         }),
       ]),
     );
@@ -560,6 +563,7 @@ describe("lane registry validators", () => {
       laneId: "plain-lane",
       providerKey: "open:plain",
       enabled: false,
+      gateway: { baseUrlEnv: "SG_LANE_PLAIN_BASE_URL", apiKeyEnv: "SG_LANE_PLAIN_API_KEY" },
       gates: gates(notQualified()),
     });
     const parsed = parseLaneRegistry(document([heroLane, plain]));
@@ -598,6 +602,81 @@ describe("lane registry validators", () => {
     });
     expect(eligibleAfter).toEqual([]);
     expect(errorSpy).not.toHaveBeenCalled();
+  });
+
+  it("alerts once per path and error, and names unknown suspended lane ids", async () => {
+    const broken = lane();
+    delete (broken as { laneClass?: string }).laneClass;
+    const dir = await mkdtemp(path.join(tmpdir(), "youflicks-lane-debounce-"));
+    const first = path.join(dir, "a.json");
+    const second = path.join(dir, "b.json");
+    await writeFile(first, JSON.stringify(document([broken])), "utf8");
+    await writeFile(second, "{", "utf8");
+    try {
+      expect(listEligibleLanes({ requiredScopes: ["HERO"], path: first, suspendedLaneIds: [] })).toEqual([]);
+      expect(listEligibleLanes({ requiredScopes: ["HERO"], path: first, suspendedLaneIds: [] })).toEqual([]);
+      expect(errorSpy).toHaveBeenCalledTimes(1);
+      expect(listEligibleLanes({ requiredScopes: ["HERO"], path: second, suspendedLaneIds: [] })).toEqual([]);
+      expect(errorSpy).toHaveBeenCalledTimes(2);
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+
+    errorSpy.mockClear();
+    const parsed = parseLaneRegistry(document([lane({ laneId: "hero-lane", providerKey: "open:hero" })]));
+    listEligibleLanes({
+      requiredScopes: ["NON_IDENTITY"],
+      registry: parsed,
+      suspendedLaneIds: ["not-a-lane"],
+    });
+    expect(errorSpy).toHaveBeenCalledWith(
+      "ops.alert",
+      expect.objectContaining({
+        alertKind: "SG_LANES_SUSPENDED_UNKNOWN",
+        unknownLaneIds: ["not-a-lane"],
+      }),
+    );
+    errorSpy.mockClear();
+    listEligibleLanes({
+      requiredScopes: ["NON_IDENTITY"],
+      registry: parsed,
+      suspendedLaneIds: ["not-a-lane"],
+    });
+    expect(errorSpy).not.toHaveBeenCalled();
+    errorSpy.mockClear();
+    listEligibleLanes({
+      requiredScopes: ["NON_IDENTITY"],
+      registry: parsed,
+      suspendedLaneIds: ["hero-lane"],
+    });
+    expect(errorSpy).not.toHaveBeenCalled();
+  });
+
+  it("rejects a duplicated gateway env name across lanes", () => {
+    expect(() =>
+      parseLaneRegistry(
+        document([
+          lane(),
+          lane({
+            laneId: "lane-b",
+            providerKey: "open:other",
+            gateway: { baseUrlEnv: "SG_LANE_A_BASE_URL", apiKeyEnv: "SG_LANE_B_API_KEY" },
+          }),
+        ]),
+      ),
+    ).toThrow(/duplicate gateway.baseUrlEnv SG_LANE_A_BASE_URL/);
+    expect(() =>
+      parseLaneRegistry(
+        document([
+          lane(),
+          lane({
+            laneId: "lane-b",
+            providerKey: "open:other",
+            gateway: { baseUrlEnv: "SG_LANE_B_BASE_URL", apiKeyEnv: "SG_LANE_A_API_KEY" },
+          }),
+        ]),
+      ),
+    ).toThrow(/duplicate gateway.apiKeyEnv SG_LANE_A_API_KEY/);
   });
 
   it("ignores an env var that would qualify a lane", () => {

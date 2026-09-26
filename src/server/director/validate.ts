@@ -5,7 +5,7 @@ import {
   type CreativePlan,
 } from "@/server/director/schema";
 import type { DirectorInput } from "@/server/director/input";
-import { SG_ROUTING_PLAN_KEYS } from "@/server/sg/constants";
+import { SG_COST_PLAN_KEYS, SG_ROUTING_PLAN_KEYS } from "@/server/sg/constants";
 
 const COMMERCIAL_PLAN_KEYS = new Set([
   "planKind",
@@ -33,6 +33,7 @@ const COMMERCIAL_PLAN_KEYS = new Set([
 ]);
 
 const ROUTING_PLAN_KEYS = new Set<string>(SG_ROUTING_PLAN_KEYS);
+const COST_PLAN_KEYS = new Set<string>(SG_COST_PLAN_KEYS);
 
 export function validateCreativePlan(raw: unknown): CreativePlan {
   const parsed = creativePlanSchema.safeParse(raw);
@@ -43,13 +44,14 @@ export function validateCreativePlan(raw: unknown): CreativePlan {
   }
   assertNoCommercialPlanFields(parsed.data);
   assertNoRoutingPlanFields(parsed.data);
+  assertNoCostPlanFields(parsed.data);
   return parsed.data;
 }
 
 /** Entitlements are platform gates — never CreativePlan meaning. */
 export function assertNoCommercialPlanFields(plan: CreativePlan) {
   const hits: string[] = [];
-  walkDeniedPlanKeys(plan, "plan", hits, []);
+  walkDeniedPlanKeys(plan, "plan", hits, [], []);
   if (hits.length > 0) {
     throw AppError.directorPlanInvalid(
       "Creative plans must not include commercial entitlement or engine-cost fields.",
@@ -64,7 +66,22 @@ export function assertNoCommercialPlanFields(plan: CreativePlan) {
  */
 export function assertNoRoutingPlanFields(plan: CreativePlan) {
   const hits: string[] = [];
-  walkDeniedPlanKeys(plan, "plan", [], hits);
+  walkDeniedPlanKeys(plan, "plan", [], hits, []);
+  if (hits.length > 0) {
+    throw AppError.directorPlanInvalid(
+      "Creative plans must not include routing or fulfillment-economics fields.",
+      { paths: hits },
+    );
+  }
+}
+
+/**
+ * Fulfillment-cost keys stay on the fulfillment side (lock r3 A1).
+ * Same recursive exact-key walk as routing keys. Write path only.
+ */
+export function assertNoCostPlanFields(plan: CreativePlan) {
+  const hits: string[] = [];
+  walkDeniedPlanKeys(plan, "plan", [], [], hits);
   if (hits.length > 0) {
     throw AppError.directorPlanInvalid(
       "Creative plans must not include routing or fulfillment-economics fields.",
@@ -78,13 +95,14 @@ function walkDeniedPlanKeys(
   path: string,
   commercialHits: string[],
   routingHits: string[],
+  costHits: string[],
 ) {
   if (!value || typeof value !== "object") {
     return;
   }
   if (Array.isArray(value)) {
     value.forEach((item, index) =>
-      walkDeniedPlanKeys(item, `${path}[${index}]`, commercialHits, routingHits),
+      walkDeniedPlanKeys(item, `${path}[${index}]`, commercialHits, routingHits, costHits),
     );
     return;
   }
@@ -96,7 +114,10 @@ function walkDeniedPlanKeys(
     if (ROUTING_PLAN_KEYS.has(key)) {
       routingHits.push(childPath);
     }
-    walkDeniedPlanKeys(child, childPath, commercialHits, routingHits);
+    if (COST_PLAN_KEYS.has(key)) {
+      costHits.push(childPath);
+    }
+    walkDeniedPlanKeys(child, childPath, commercialHits, routingHits, costHits);
   }
 }
 

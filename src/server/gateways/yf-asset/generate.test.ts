@@ -222,6 +222,45 @@ describe("YfAssetGenerateService replicate transport", () => {
     expect(JSON.stringify(stored)).not.toContain("catbox");
   });
 
+  it("refuses a request model that does not match the lane before reserve", async () => {
+    const config = parseYfAssetGatewayConfig({
+      YF_GATEWAY_API_KEY: "gw-key",
+      YF_GATEWAY_BACKEND: "replicate",
+      REPLICATE_API_TOKEN: "r8_recorded_token",
+      YF_GATEWAY_PROVIDER_KEY: "replicate:wan-video/wan-2.7-i2v",
+      YF_GATEWAY_POLL_MS: "1",
+      YF_GATEWAY_MAX_JOBS: "2",
+      YF_GATEWAY_MAX_SPEND_USD: "5",
+      YF_GATEWAY_LANE_ID: "r1-wan27-replicate",
+    });
+    const fetchImpl = vi.fn<typeof fetch>(async () => new Response("no"));
+    const reservations = new MemoryGatewayReservation();
+    const reserve = vi.spyOn(reservations, "reserve");
+    const generate = new YfAssetGenerateService(
+      config,
+      new ReplicateVideoBackend(config, fetchImpl),
+      new GatewayJobStore(),
+      new SpendGuard(config.maxJobs, config.maxSpendUsd, config.estimatedUsdPerJob),
+      fetchImpl,
+      async () => {},
+      reservations,
+    );
+    const wrong = "research.ltx";
+    const result = await generate.generate({
+      ...videoBody,
+      model: wrong,
+    });
+    expect(result.ok).toBe(false);
+    if (result.ok) {
+      throw new Error("expected model mismatch");
+    }
+    expect(result.body.code).toBe("MODEL_LANE_MISMATCH");
+    expect(result.body.error).not.toContain(wrong);
+    expect(result.body.error).not.toContain("wan-video/wan-2.7-i2v");
+    expect(reserve).not.toHaveBeenCalled();
+    expect(fetchImpl).not.toHaveBeenCalled();
+  });
+
   it("honors spend caps on the replicate transport without writing cost into bytes", async () => {
     const config = parseYfAssetGatewayConfig({
       YF_GATEWAY_API_KEY: "gw-key",

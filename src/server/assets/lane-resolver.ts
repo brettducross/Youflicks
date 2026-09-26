@@ -40,12 +40,13 @@ import {
  *
  * processors() is the MEDIA_ENHANCEMENT hook only. The Ken Burns processor
  * is PR-9 and is not implemented here.
- * Routing, regen, and the LEGACY/ENFORCED flag are PR-8. Suspension does
- * not block resolution.
+ * forLane does not apply eligibility, health, ceilings, or budget. AssetService
+ * calls it only after those checks, and only for an ENFORCED GENERATE lane.
+ * Suspension does not block resolution.
  */
 
 /** Generative lanes advertise video only. Enhancement is the processor hook. */
-const GENERATIVE_LANE_CAPABILITIES: readonly AssetCapabilityValue[] = [
+export const GENERATIVE_LANE_CAPABILITIES: readonly AssetCapabilityValue[] = [
   AssetCapability.VIDEO_GENERATION,
 ];
 
@@ -252,6 +253,28 @@ function toProcessorHook(processor: RegistryProcessor): EnhancementProcessorHook
   };
 }
 
+/**
+ * URL the ENFORCED health probe may fetch. Uses the same env-name and URL
+ * checks as forLane. An illegal name or a non-http(s) URL returns null and
+ * is not read as a fetch target.
+ */
+export function readLaneHealthBaseUrl(
+  lane: RegistryLane,
+  env: Record<string, string | undefined>,
+): string | null {
+  try {
+    assertGatewayEnvNames(lane);
+    const value = readNamedEnv(env, lane.gateway.baseUrlEnv);
+    if (!value) {
+      return null;
+    }
+    assertHttpBaseUrl(lane.laneId, lane.gateway.baseUrlEnv, value);
+    return value;
+  } catch {
+    return null;
+  }
+}
+
 function assertGatewayEnvNames(lane: RegistryLane): void {
   const baseUrlEnv = lane.gateway.baseUrlEnv;
   const apiKeyEnv = lane.gateway.apiKeyEnv;
@@ -286,6 +309,11 @@ function assertHttpBaseUrl(laneId: string, envName: string, value: string): void
   if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
     throw new LaneResolverError(
       `Lane ${laneId} gateway env ${envName} is not an http(s) URL and cannot be resolved.`,
+    );
+  }
+  if (parsed.username !== "" || parsed.password !== "") {
+    throw new LaneResolverError(
+      `Lane ${laneId} gateway env ${envName} must not include a username or password and cannot be resolved.`,
     );
   }
 }

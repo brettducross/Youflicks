@@ -310,6 +310,24 @@ function createServices(): ServiceContainer {
   );
   const timelineWorker = new TimelineWorker(jobs, timelineService);
   const assets = new AssetContractService(projects, taste, intent);
+  let assetLaneResolver: AssetLaneResolver | undefined;
+  let assetLaneResolverFailed = false;
+  const assetLanesCached = (): AssetLaneResolver => {
+    if (assetLaneResolverFailed) {
+      assetLaneResolver = resolveAssetGeneratorLanes(storage, loadSgLaneRegistry());
+      assetLaneResolverFailed = false;
+      return assetLaneResolver;
+    }
+    if (!assetLaneResolver) {
+      try {
+        assetLaneResolver = resolveAssetGeneratorLanes(storage, loadSgLaneRegistry());
+      } catch (error) {
+        assetLaneResolverFailed = true;
+        throw error;
+      }
+    }
+    return assetLaneResolver;
+  };
   const assetService = new AssetService(
     jobs,
     storage,
@@ -328,9 +346,18 @@ function createServices(): ServiceContainer {
     () => describeAssetAvailability(resolveAssetGeneratorAdapter(storage)),
     usageMeter,
     entitlements,
+    undefined,
+    undefined,
+    undefined,
+    () => {
+      try {
+        return assetLanesCached();
+      } catch {
+        return null;
+      }
+    },
   );
   const assetWorker = new AssetWorker(jobs, assetService);
-  let assetLaneResolver: AssetLaneResolver | undefined;
   const render = new RenderContractService(projects, storage);
   const renderService = new RenderService(
     jobs,
@@ -455,10 +482,7 @@ function createServices(): ServiceContainer {
       return resolved.adapter;
     },
     assetLanes() {
-      if (!assetLaneResolver) {
-        assetLaneResolver = resolveAssetGeneratorLanes(storage, loadSgLaneRegistry());
-      }
-      return assetLaneResolver;
+      return assetLanesCached();
     },
     renderer() {
       const resolved = resolveRendererAdapter(storage);

@@ -7,6 +7,7 @@ import { LocalStorageAdapter } from "@/server/adapters/storage/local";
 import type { AssetGeneratorInput } from "@/server/assets/input";
 import {
   LaneResolverError,
+  readLaneHealthBaseUrl,
   resolveAssetGeneratorLanes,
   resolvedAssetGeneratorForLanes,
   type EnhancementProcessorHook,
@@ -19,7 +20,7 @@ import { YF_ASSET_GATEWAY_BACKENDS } from "@/server/gateways/yf-asset/config";
 import { AssetCapability, ALL_ASSET_CAPABILITIES } from "@/server/ports/capabilities";
 import type { AssetGeneratorPort } from "@/server/ports/asset-generator";
 import { actualBilledSecondsFromDurationMs, estimateLaneCharge } from "@/server/sg/lane-rate";
-import { decide, SG_POLICY_CONTRACT_REASON } from "@/server/sg/policy";
+import { decide } from "@/server/sg/policy";
 import { PrismaShotFulfillment } from "@/server/sg/shot-fulfillment";
 import { ProjectService } from "@/server/services/projects";
 import {
@@ -492,6 +493,30 @@ describe("resolveAssetGeneratorLanes", () => {
       expect(message).not.toContain("file-key");
     }
 
+    const userInfoUrl = "http://user:pass@127.0.0.1:1";
+    const userInfoLane = document([
+      lane({
+        laneId: "userinfo-lane",
+        gateway: { baseUrlEnv: "SG_LANE_USERINFO_BASE_URL", apiKeyEnv: "SG_LANE_USERINFO_API_KEY" },
+      }),
+    ]);
+    try {
+      resolveAssetGeneratorLanes(store, userInfoLane, {
+        env: {
+          SG_LANE_USERINFO_BASE_URL: userInfoUrl,
+          SG_LANE_USERINFO_API_KEY: "userinfo-key",
+        },
+      }).forLane("userinfo-lane");
+      expect.unreachable();
+    } catch (error) {
+      expect(error).toBeInstanceOf(LaneResolverError);
+      const message = (error as Error).message;
+      expect(message).toMatch(/userinfo-lane/);
+      expect(message).toMatch(/username or password/);
+      expect(message).not.toContain(userInfoUrl);
+      expect(message).not.toContain("user:pass");
+    }
+
     const garbage = "not a url";
     const garbageLane = document([
       lane({
@@ -541,6 +566,40 @@ describe("resolveAssetGeneratorLanes", () => {
       expect(message).not.toContain("should-not-leak");
       expect(message).not.toContain("4491");
     }
+  });
+
+  it("refuses a health URL whose env name or userinfo the resolver would refuse", () => {
+    const secret = document([
+      lane({
+        laneId: "secret-lane",
+        gateway: { baseUrlEnv: "DATABASE_URL", apiKeyEnv: "SG_LANE_SECRET_API_KEY" },
+      }),
+    ]);
+    expect(
+      readLaneHealthBaseUrl(secret.lanes[0]!, {
+        DATABASE_URL: "postgresql://youflicks:youflicks@localhost:5432/youflicks",
+      }),
+    ).toBeNull();
+    const userInfo = document([
+      lane({
+        laneId: "userinfo-lane",
+        gateway: { baseUrlEnv: "SG_LANE_USERINFO_BASE_URL", apiKeyEnv: "SG_LANE_USERINFO_API_KEY" },
+      }),
+    ]);
+    expect(
+      readLaneHealthBaseUrl(userInfo.lanes[0]!, {
+        SG_LANE_USERINFO_BASE_URL: "http://user:pass@127.0.0.1:1",
+      }),
+    ).toBeNull();
+    const ok = document([
+      lane({
+        laneId: "ok-lane",
+        gateway: { baseUrlEnv: "SG_LANE_OK_BASE_URL", apiKeyEnv: "SG_LANE_OK_API_KEY" },
+      }),
+    ]);
+    expect(
+      readLaneHealthBaseUrl(ok.lanes[0]!, { SG_LANE_OK_BASE_URL: "http://127.0.0.1:9" }),
+    ).toBe("http://127.0.0.1:9");
   });
 
   it("maps legacy ASSET_HTTP_* env names to the LEGACY_R1 lane and ignores model overrides", async () => {
@@ -725,7 +784,7 @@ describe("resolveAssetGeneratorLanes", () => {
 
   it("runs the same policy decision on fal, replicate, http, and mock and changes only providerKey", async () => {
     const store = await useStorage();
-    const cues = { requiredScopes: ["IDENTITY" as const] };
+    const cues = { requiredScopes: ["IDENTITY" as const], routingMode: "ENFORCED" as const };
     const registrySnapshot = {
       lanes: [
         {
@@ -733,6 +792,7 @@ describe("resolveAssetGeneratorLanes", () => {
           laneClass: "standard" as const,
           providerKey: "open:model",
           enabled: true,
+          healthy: false,
           gates: {
             HERO: "NOT_QUALIFIED" as const,
             IDENTITY: "NOT_QUALIFIED" as const,
@@ -741,15 +801,16 @@ describe("resolveAssetGeneratorLanes", () => {
         },
       ],
     };
-    const budgetSnapshot = { projectRemainingUsd: null };
+    const budgetSnapshot = {};
     const attemptsSoFar: [] = [];
     const decision = decide(cues, registrySnapshot, budgetSnapshot, attemptsSoFar);
     expect(decision).toEqual({
-      treatment: null,
+      treatment: "DEFER",
       laneClass: null,
       laneId: null,
       providerKey: null,
-      decisionReason: SG_POLICY_CONTRACT_REASON,
+      decisionReason: "No eligible lane for the required scopes.",
+      messageKey: "SG_NO_QUALIFIED_LANE",
     });
 
     const records: Array<Awaited<ReturnType<typeof sgRecord>>> = [];
