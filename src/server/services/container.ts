@@ -30,7 +30,12 @@ import type { StoragePort } from "@/server/ports/storage";
 import type { StoryComposerPort } from "@/server/ports/story-composer";
 import type { TimelineComposerPort } from "@/server/ports/timeline-composer";
 import type { AssetGeneratorPort } from "@/server/ports/asset-generator";
+import {
+  resolveAssetGeneratorLanes,
+  type AssetLaneResolver,
+} from "@/server/assets/lane-resolver";
 import { resolveAssetGeneratorAdapter, describeAssetAvailability } from "@/server/assets/provider-config";
+import { loadSgLaneRegistry } from "@/server/sg/lane-registry";
 import { resolveRendererAdapter, describeRenderAvailability } from "@/server/render/provider-config";
 import { resolveStoryComposerAdapter } from "@/server/story/provider-config";
 import { resolveTimelineComposerAdapter } from "@/server/timeline/provider-config";
@@ -128,6 +133,8 @@ export type ServiceContainer = {
   storyComposer(): StoryComposerPort;
   timelineComposer(): TimelineComposerPort;
   assetGenerator(): AssetGeneratorPort;
+  /** SG.7 lane adapters. Does not replace the single-lane assetGenerator() path. */
+  assetLanes(): AssetLaneResolver;
   renderer(): RendererPort;
   playback(): PlaybackPort;
   publication(): PublicationPort;
@@ -323,6 +330,7 @@ function createServices(): ServiceContainer {
     entitlements,
   );
   const assetWorker = new AssetWorker(jobs, assetService);
+  let assetLaneResolver: AssetLaneResolver | undefined;
   const render = new RenderContractService(projects, storage);
   const renderService = new RenderService(
     jobs,
@@ -445,6 +453,12 @@ function createServices(): ServiceContainer {
         throw AppError.providerNotConfigured("AssetGeneratorPort");
       }
       return resolved.adapter;
+    },
+    assetLanes() {
+      if (!assetLaneResolver) {
+        assetLaneResolver = resolveAssetGeneratorLanes(storage, loadSgLaneRegistry());
+      }
+      return assetLaneResolver;
     },
     renderer() {
       const resolved = resolveRendererAdapter(storage);
