@@ -86,7 +86,7 @@ type InputHasNoLaneOrModel = Expect<
 const SHARED_MODEL_ID = "shared-swap-model";
 const PROVIDER_KEY_BY_BACKEND = {
   fal: "fal:fal-ai/ltx-video",
-  replicate: "replicate:wan-video/wan-2.7-i2v",
+  replicate: "replicate:shared-swap-model",
   http: "http.asset",
   mock: "mock.asset",
 } as const satisfies Record<(typeof YF_ASSET_GATEWAY_BACKENDS)[number], string>;
@@ -234,8 +234,8 @@ describe("resolveAssetGeneratorLanes", () => {
     const registry = document([
       lane({
         laneId: "lane-a",
-        providerKey: "replicate:wan-video/wan-2.7-i2v",
-        modelId: "wan-video/wan-2.7-i2v",
+        providerKey: "replicate:open-video",
+        modelId: "open-video",
         gateway: { baseUrlEnv: "SG_LANE_A_BASE_URL", apiKeyEnv: "SG_LANE_A_API_KEY" },
       }),
       lane({
@@ -281,9 +281,9 @@ describe("resolveAssetGeneratorLanes", () => {
     expect(resolver.forLane("lane-a").adapter).toBe(laneA.adapter);
 
     expect(laneA.attribution(AssetCapability.VIDEO_GENERATION)).toEqual({
-      providerKey: "replicate:wan-video/wan-2.7-i2v",
+      providerKey: "replicate:open-video",
       capability: AssetCapability.VIDEO_GENERATION,
-      modelId: "wan-video/wan-2.7-i2v",
+      modelId: "open-video",
       modelVersion: null,
     });
     expect(laneB.attribution(AssetCapability.VIDEO_GENERATION).providerKey).toBe("fal:fal-ai/ltx-video");
@@ -299,7 +299,7 @@ describe("resolveAssetGeneratorLanes", () => {
       "http://127.0.0.1:4402/v1/generate",
     ]);
     expect(seen.map((call) => call.authorization)).toEqual(["Bearer key-a", "Bearer key-b"]);
-    expect(seen.map((call) => call.model)).toEqual(["wan-video/wan-2.7-i2v", "fal-ai/ltx-video"]);
+    expect(seen.map((call) => call.model)).toEqual(["open-video", "fal-ai/ltx-video"]);
     expect(seen.every((call) => call.laneId === undefined)).toBe(true);
     expect(seen.every((call) => call.model !== "request-override-model")).toBe(true);
   });
