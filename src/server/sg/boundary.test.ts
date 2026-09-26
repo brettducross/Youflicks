@@ -7,7 +7,7 @@ import { validateGeneratedAssetDocument } from "@/server/assets/validate";
 import { GENERATED_ASSET_DOCUMENT_SCHEMA_VERSION } from "@/server/assets/schema";
 import { CREATIVE_PLAN_SCHEMA_VERSION } from "@/server/director/schema";
 import { validateCreativePlan } from "@/server/director/validate";
-import { SG_ROUTING_PLAN_KEYS } from "@/server/sg/constants";
+import { SG_COST_PLAN_KEYS, SG_ROUTING_PLAN_KEYS } from "@/server/sg/constants";
 import { fingerprintCreativePlan } from "@/server/story/fingerprint";
 import { STORY_DOCUMENT_SCHEMA_VERSION } from "@/server/story/schema";
 import { validateStoryDocument } from "@/server/story/validate";
@@ -278,6 +278,29 @@ describe("SG.0 CreativePlan routing-key boundary", () => {
       "utf8",
     );
     expect(writePath).toMatch(/assertNoRoutingPlanFields/);
+    expect(writePath).toMatch(/assertNoCostPlanFields/);
+  });
+
+  it("rejects every cost denylist key on the write path and leaves the read path unchanged", () => {
+    for (const key of SG_COST_PLAN_KEYS) {
+      expect(() => validateCreativePlan({ ...basePlan(), [key]: 1 }), key).toThrow(
+        /routing or fulfillment-economics/i,
+      );
+      try {
+        validateCreativePlan({ ...basePlan(), [key]: 1 });
+        expect.unreachable();
+      } catch (error) {
+        expect(error).toBeInstanceOf(AppError);
+        expect((error as AppError).code).toBe("DIRECTOR_PLAN_INVALID");
+      }
+      const nested = basePlan();
+      (nested.decisions[0]!.detail as Record<string, unknown>)[key] = 1;
+      expect(() => validateCreativePlan(nested), key).toThrow(/routing or fulfillment-economics/i);
+    }
+    const stored = { ...basePlan(), actualUsd: 1.25, costKind: "ESTIMATED" };
+    expect(() => validateCreativePlan(stored)).toThrow(AppError);
+    const parsed = parseCreativePlanJson(stored as Prisma.JsonValue);
+    expect(parsed).toMatchObject({ actualUsd: 1.25, costKind: "ESTIMATED" });
   });
 });
 

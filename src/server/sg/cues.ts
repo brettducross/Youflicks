@@ -19,7 +19,13 @@ import { assertIdentityEvidence } from "@/server/sg/identity-evidence";
  * E11 is open: stored evidence is the existing count/boolean allowlist only.
  * E12 is open: a dialogue close-up is recorded as shotRole "dialogue-closeup"
  * together with the locked interim set. This function does not pick one of
- * ORIGINAL, STATIC, or KEN_BURNS. Routing stays in PR-8.
+ * ORIGINAL, STATIC, or KEN_BURNS. PR-8 routes that role to ORIGINAL or DEFER.
+ *
+ * Known limitation: identity UNKNOWN plus a non-empty dialogueOutline marks
+ * the role dialogue-closeup. Non-enhancement jobs do not pass the source
+ * asset into cue collection, so identity stays UNKNOWN. Every automatic role
+ * in a dialogue scene is therefore a close-up today. That is a classification
+ * limit, not a rule that a wide or establishing shot is a close-up.
  */
 
 export const HERO_DRAMATIC_FUNCTIONS = ["climax", "turning", "inciting"] as const;
@@ -102,6 +108,18 @@ export type SceneEmphasisCue = {
   detail?: Record<string, unknown>;
 };
 
+/** Root keys of mediaAnalysisDocumentSchema. A routing re-derive treats any other key as unproven. */
+export const ANALYSIS_DOCUMENT_ROOT_KEYS = [
+  "analysisSchemaVersion",
+  "technical",
+  "visual",
+  "people",
+  "audio",
+  "moments",
+  "quality",
+  "duplicates",
+] as const;
+
 export type ShotCueInput = {
   scene: CueScene | null;
   unmetRole: CueUnmetRole;
@@ -109,6 +127,10 @@ export type ShotCueInput = {
   slotDurationMs: number | null;
   analysis: ShotCueAnalysis | null;
   sceneEmphasis: readonly SceneEmphasisCue[];
+  /** Asset whose analysis was read. Routing refuses ABSENT when this is not the sent id. */
+  analyzedAssetId?: string | null;
+  /** Own keys of the analysis payload. Null when no payload was read. */
+  analysisRootKeys?: readonly string[] | null;
 };
 
 export type ShotCueEvidence = {
@@ -178,6 +200,39 @@ export function slotDurationMsForRole(
     return null;
   }
   return duration;
+}
+
+/**
+ * Routing-only identity. Never turns a stored non-ABSENT into ABSENT.
+ * ABSENT stands only when the analyzed asset is the sent asset and every
+ * payload root key is in the analysis document allowlist.
+ */
+export function tightenIdentityForRoute(input: {
+  identityState: IdentityState;
+  hero: boolean;
+  analyzedAssetId?: string | null;
+  sentAssetId?: string | null;
+  analysisRootKeys?: readonly string[] | null;
+}): { identityState: IdentityState; requiredScopes: RoutingScope[]; scope: RoutingScope } {
+  let identityState = input.identityState;
+  if (identityState === "ABSENT") {
+    const sent = input.sentAssetId ?? null;
+    const analyzed = input.analyzedAssetId ?? null;
+    const frameMismatch = sent !== analyzed;
+    const keys = input.analysisRootKeys;
+    const unknownRoot =
+      keys == null ||
+      keys.some((key) => !(ANALYSIS_DOCUMENT_ROOT_KEYS as readonly string[]).includes(key));
+    if (frameMismatch || unknownRoot) {
+      identityState = "UNKNOWN";
+    }
+  }
+  const requiredScopes = requiredScopesFor(identityState, input.hero);
+  return {
+    identityState,
+    requiredScopes,
+    scope: primaryScopeFor(requiredScopes),
+  };
 }
 
 export function requiredScopesFor(identityState: IdentityState, hero: boolean): RoutingScope[] {
@@ -543,6 +598,10 @@ function parsePeopleSection(root: Record<string, unknown> | null): ParsedPeople 
   }
   const people = asRecord(root.people);
   if (!people) {
+    return { ok: false };
+  }
+  // zod .strict() does not reject an own "__proto__" key. That section cannot prove ABSENT.
+  if (Object.keys(people).includes("__proto__")) {
     return { ok: false };
   }
   if (Object.hasOwn(people, "faceDetected") && typeof people.faceDetected !== "boolean") {

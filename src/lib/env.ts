@@ -104,6 +104,11 @@ const envSchema = z.object({
     .enum(["true", "false", "1", "0", ""])
     .optional()
     .transform((value) => value === "true" || value === "1"),
+  /**
+   * SG.4 routing mode. Unset stays unset here; routing-mode.ts defaults to LEGACY.
+   * Any other value fails closed at boot. ENFORCED is required before invites.
+   */
+  SG_ROUTING_MODE: z.enum(["LEGACY", "ENFORCED"]).optional(),
   RENDER_HTTP_PROVIDER_KEY: z.string().default("http.renderer"),
   RENDER_HTTP_BASE_URL: z.string().optional(),
   RENDER_HTTP_API_KEY: z.string().optional(),
@@ -192,6 +197,7 @@ function readEnv(): AppEnv {
     ASSET_HTTP_TIMEOUT_MS: process.env.ASSET_HTTP_TIMEOUT_MS ?? 90_000,
     ASSET_HTTP_CAPABILITIES: process.env.ASSET_HTTP_CAPABILITIES || undefined,
     ASSET_ALLOW_LOCAL: process.env.ASSET_ALLOW_LOCAL ?? "",
+    SG_ROUTING_MODE: process.env.SG_ROUTING_MODE?.trim() || undefined,
     RENDER_HTTP_PROVIDER_KEY: process.env.RENDER_HTTP_PROVIDER_KEY ?? "http.renderer",
     RENDER_HTTP_BASE_URL: process.env.RENDER_HTTP_BASE_URL || undefined,
     RENDER_HTTP_API_KEY: process.env.RENDER_HTTP_API_KEY || undefined,

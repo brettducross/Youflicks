@@ -7,6 +7,7 @@ import type { DirectorInput, DirectorMediaItem } from "@/server/director/input";
 import { assertDirectorInputPrivacy, isIgnoreGeneralTaste } from "@/server/director/privacy";
 import {
   assertNoCommercialPlanFields,
+  assertNoCostPlanFields,
   assertNoInventedConfidence,
   assertNoRoutingPlanFields,
   assertPlanRespectsConstraints,
@@ -85,6 +86,7 @@ export class DirectorContractService {
     assertNoInventedConfidence(plan);
     assertNoCommercialPlanFields(plan);
     assertNoRoutingPlanFields(plan);
+    assertNoCostPlanFields(plan);
     assertPlanRespectsConstraints(input, plan);
     return plan;
   }

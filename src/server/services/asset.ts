@@ -4,6 +4,7 @@ import { createHash } from "node:crypto";
 import type { Prisma } from "@/generated/prisma/client";
 import { AppError, isAppError } from "@/lib/errors";
 import { logger } from "@/lib/logger";
+import { OpsAlertKind, reportOpsAlert } from "@/lib/ops-alerts";
 import type { AssetExecutionAttribution } from "@/server/adapters/assets/attribution";
 import { fingerprintAssetBatchRequest, fingerprintAssetGeneratorInput } from "@/server/assets/fingerprint";
 import {
@@ -13,6 +14,7 @@ import {
   type GeneratedAssetKind,
 } from "@/server/assets/kinds";
 import type { GeneratedAssetDocument } from "@/server/assets/schema";
+import type { AssetLaneResolver } from "@/server/assets/lane-resolver";
 import type { AssetAvailability } from "@/server/assets/provider-config";
 import { prisma } from "@/server/db";
 import {
@@ -58,7 +60,35 @@ import {
   type CollectShotCueArgs,
   type CueReadDb,
 } from "@/server/sg/cue-context";
-import { extractShotCues, persistableShotCues, type ShotCueInput } from "@/server/sg/cues";
+import {
+  extractShotCues,
+  persistableShotCues,
+  tightenIdentityForRoute,
+  type ShotCueInput,
+} from "@/server/sg/cues";
+import { probeLaneHealth } from "@/server/sg/lane-health";
+import {
+  applyLaneSuspension,
+  listEligibleLanes,
+  loadSgLaneRegistry,
+  reportUnknownSuspendedLanes,
+  suspendedLaneIdsFromEnv,
+  type RegistryLane,
+  type SgLaneRegistry,
+} from "@/server/sg/lane-registry";
+import {
+  assertEnforcedLaneCallable,
+  blocksAutomaticPaidRetry,
+  fulfillmentStatusForTreatment,
+  legacyModelGuard,
+  planRoute,
+  type AttemptSoFar,
+  type RegistrySnapshot,
+  type RouteDecision,
+  type ShotCues,
+} from "@/server/sg/policy";
+import { readSgRoutingMode } from "@/server/sg/routing-mode";
+import { attemptOutcomeSchema, laneClassSchema, type RoutingMode } from "@/server/sg/constants";
 import {
   PrismaShotFulfillment,
   UNCLASSIFIED_LANE_CLASS,
@@ -143,6 +173,9 @@ export class AssetService {
     private readonly budgets: AiVideoBudgetPort = new PrismaAiVideoBudget(prisma),
     private readonly fulfillments: PrismaShotFulfillment = new PrismaShotFulfillment(prisma),
     private readonly collectCues: ShotCueCollector = collectShotCueInput,
+    private readonly resolveLanes: () => AssetLaneResolver | null = () => null,
+    private readonly probeHealth: (baseUrl: string) => Promise<boolean> = (baseUrl) =>
+      probeLaneHealth(baseUrl),
   ) {}
 
   getAvailability(): AssetAvailability {
@@ -300,9 +333,8 @@ export class AssetService {
     }
 
     const resolved = this.resolveGenerator();
-    if (!resolved) {
-      throw AppError.providerNotConfigured("AssetGeneratorPort");
-    }
+    const routingMode = readSgRoutingMode();
+    const registryLoad = this.loadRoutingRegistry();
 
     const userId = payload.requestedBy;
     const projectId = payload.projectId;
@@ -362,8 +394,28 @@ export class AssetService {
         continue;
       }
 
+      const route = await this.applyRoute({
+        slotId: slot.id,
+        extracted: cues,
+        cueInput,
+        routingMode,
+        registryLoad,
+        sentAssetId: kind === "ENHANCEMENT" ? (role.sourceMediaAssetId ?? null) : null,
+        jobId: job.id,
+      });
+      if (route.kind === "skip") {
+        if (route.stopJob) {
+          break;
+        }
+        continue;
+      }
+      const runtime = route.kind === "enforced" ? route.runtime : resolved;
+      if (!runtime) {
+        throw AppError.providerNotConfigured("AssetGeneratorPort");
+      }
+
       const capability = capabilityForKind(kind);
-      if (!resolved.supportedCapabilities.includes(capability)) {
+      if (!runtime.supportedCapabilities.includes(capability)) {
         const failed = await this.persistFailed({
           projectId,
           jobId: job.id,
@@ -382,10 +434,13 @@ export class AssetService {
       const startedAt = Date.now();
       logger.info("asset.started", { projectId, jobId: job.id, role: role.role, kind });
 
-      const attribution = resolved.attributionFor(capability);
+      const attribution = runtime.attributionFor(capability);
       let quote;
       try {
-        quote = this.legacyAttemptQuote(attribution.providerKey, attribution.modelId);
+        quote =
+          route.kind === "enforced"
+            ? route.quote
+            : this.legacyAttemptQuote(attribution.providerKey, attribution.modelId);
       } catch (error) {
         await this.markSlotFailure(slot.id, projectId, job.id);
         throw AppError.assetProviderUnavailable(
@@ -424,7 +479,7 @@ export class AssetService {
         laneId: quote.laneId,
         providerKey: quote.providerKey,
         modelId: quote.modelId,
-        requiredScopes: slot.requiredScopes,
+        requiredScopes: route.requiredScopes,
         jobId: job.id,
         budgetReservationId: budgetHold?.id ?? null,
         estimatedBilledSeconds: quote.estimatedBilledSeconds,
@@ -435,7 +490,7 @@ export class AssetService {
       let rawDocument;
       let reconciled: AiVideoBudgetReservationRecord | null = null;
       try {
-        rawDocument = await resolved.adapter.generate(input);
+        rawDocument = await runtime.adapter.generate(input);
         if (budgetHold) {
           reconciled = await this.reconcileBudget(budgetHold, rawDocument.durationMs);
         }
@@ -932,6 +987,297 @@ export class AssetService {
     });
   }
 
+  private loadRoutingRegistry(): RoutingRegistryLoad {
+    const file = registryPathFromEnv();
+    try {
+      const registry = loadSgLaneRegistry(file);
+      const suspendedIds = suspendedLaneIdsFromEnv(process.env.SG_LANES_SUSPENDED);
+      reportUnknownSuspendedLanes(registry, suspendedIds);
+      return { ok: true, registry, suspendedIds, path: file };
+    } catch {
+      return { ok: false, path: file };
+    }
+  }
+
+  /**
+   * PR-8 decision for one role. Shadow is always the ENFORCED decision.
+   * LEGACY generation stays on the injected adapter. forLane runs only for
+   * an ENFORCED GENERATE lane that listEligibleLanes already returned.
+   * An unreadable registry does not replace today's LEGACY quote failure.
+   */
+  private async applyRoute(input: {
+    slotId: string;
+    extracted: ReturnType<typeof persistableShotCues>;
+    cueInput: ShotCueInput;
+    routingMode: RoutingMode;
+    registryLoad: RoutingRegistryLoad;
+    sentAssetId: string | null;
+    jobId: string;
+  }): Promise<RoleRoute> {
+    const tightened = tightenIdentityForRoute({
+      identityState: input.extracted.identityState,
+      hero: input.extracted.requiredScopes.includes("HERO"),
+      analyzedAssetId: input.cueInput.analyzedAssetId ?? null,
+      sentAssetId: input.sentAssetId,
+      analysisRootKeys: input.cueInput.analysisRootKeys ?? null,
+    });
+    const cues: ShotCues = {
+      requiredScopes: tightened.requiredScopes,
+      shotRole: input.extracted.shotRole,
+      identityState: tightened.identityState,
+      originalCoversSlot: false,
+      sourceStillExists: false,
+      motionNeed: input.extracted.motionNeed,
+      routingMode: input.routingMode,
+    };
+    const rows = await this.fulfillments.listAttempts(input.slotId);
+    const split = splitAttempts(rows);
+    const blockingRows =
+      input.routingMode === "LEGACY" ? rows.filter((row) => row.jobId === input.jobId) : rows;
+    const rawBlocks = blockingRows.some((row) => {
+      const outcome = attemptOutcomeSchema.safeParse(row.outcome);
+      return outcome.success && blocksAutomaticPaidRetry(outcome.data, input.routingMode);
+    });
+    const snapshot = await this.routingSnapshot(
+      input.registryLoad,
+      input.routingMode,
+      cues.requiredScopes,
+      split.unclassified,
+    );
+    let plan;
+    try {
+      plan = planRoute(
+        cues,
+        snapshot.snapshot,
+        {},
+        split.attempts,
+      );
+    } catch {
+      await this.recordSkip(input.slotId, input.routingMode, null, {
+        treatment: "FAIL_HONEST",
+        laneClass: null,
+        laneId: null,
+        providerKey: null,
+        decisionReason: "Routing cues are outside the SG.0 contract.",
+        messageKey: "SG_FAILED_HONEST",
+      });
+      return { kind: "skip", stopJob: false, requiredScopes: tightened.requiredScopes };
+    }
+
+    const forceLegacy =
+      input.routingMode === "LEGACY" &&
+      cues.shotRole !== "dialogue-closeup" &&
+      !cues.originalCoversSlot &&
+      !rawBlocks;
+
+    let applied = plan.applied;
+    if (forceLegacy) {
+      applied = {
+        treatment: "GENERATE",
+        laneClass: "standard",
+        laneId: "legacy",
+        providerKey: "legacy",
+        decisionReason: "LEGACY continues when the registry cannot be read.",
+        messageKey: null,
+      };
+    } else if (applied.treatment === "GENERATE" && rawBlocks) {
+      applied = {
+        treatment: "DEFER",
+        laneClass: null,
+        laneId: null,
+        providerKey: null,
+        decisionReason:
+          rows.some((row) => row.outcome === "CAP_DENIED")
+            ? "A spend cap was reached. No automatic retry."
+            : "No automatic retry after an unsettled or cancelled attempt.",
+        messageKey: rows.some((row) => row.outcome === "CAP_DENIED") ? "SG_CAP_REACHED" : "SG_FAILED_HONEST",
+      };
+    }
+
+    if (applied.treatment !== "GENERATE") {
+      const stopJob =
+        applied.messageKey === "SG_CAP_REACHED" &&
+        (plan.stopJob || rows.some((row) => row.outcome === "CAP_DENIED"));
+      await this.recordSkip(input.slotId, input.routingMode, plan.shadow, applied);
+      return { kind: "skip", stopJob, requiredScopes: tightened.requiredScopes };
+    }
+
+    if (input.routingMode === "LEGACY") {
+      const guard = legacyModelGuard({
+        assetHttpModel: process.env.ASSET_HTTP_MODEL,
+        registryModelId: snapshot.available ? plan.legacyModelId : null,
+      });
+      await this.recordShadow(input.slotId, input.routingMode, plan.shadow);
+      if (!guard.ok) {
+        void reportOpsAlert({
+          kind: OpsAlertKind.SG_MODEL_LANE_MISMATCH,
+          message: guard.reason,
+        });
+        await this.recordSkip(input.slotId, input.routingMode, plan.shadow, {
+          treatment: "FAIL_HONEST",
+          laneClass: null,
+          laneId: null,
+          providerKey: null,
+          decisionReason: guard.reason,
+          messageKey: "SG_FAILED_HONEST",
+        });
+        return { kind: "skip", stopJob: false, requiredScopes: tightened.requiredScopes };
+      }
+      return { kind: "legacy", requiredScopes: tightened.requiredScopes };
+    }
+
+    const enforced = await this.prepareEnforcedGenerate({
+      slotId: input.slotId,
+      routingMode: input.routingMode,
+      shadow: plan.shadow,
+      applied,
+      registryLoad: input.registryLoad,
+      requiredScopes: tightened.requiredScopes,
+    });
+    return enforced;
+  }
+
+  private async routingSnapshot(
+    load: RoutingRegistryLoad,
+    mode: RoutingMode,
+    requiredScopes: ShotCues["requiredScopes"],
+    unclassifiedAttemptCount: number,
+  ): Promise<{ available: boolean; snapshot: RegistrySnapshot }> {
+    if (!load.ok) {
+      return {
+        available: false,
+        snapshot: { lanes: [], registryUnavailable: true, unclassifiedAttemptCount },
+      };
+    }
+    const lanes = applyLaneSuspension(load.registry.lanes, load.suspendedIds);
+    const health = new Map<string, boolean>();
+    if (mode === "ENFORCED") {
+      const eligible = listEligibleLanes({
+        requiredScopes,
+        path: load.path,
+        registry: load.registry,
+        suspendedLaneIds: load.suspendedIds,
+      });
+      for (const lane of eligible) {
+        const baseUrl = process.env[lane.gateway.baseUrlEnv]?.trim() ?? "";
+        health.set(lane.laneId, baseUrl.length > 0 ? await this.probeHealth(baseUrl) : false);
+      }
+    }
+    return {
+      available: true,
+      snapshot: {
+        ...snapshotFromLanes(lanes, load.registry, health),
+        unclassifiedAttemptCount,
+      },
+    };
+  }
+
+  private async prepareEnforcedGenerate(input: {
+    slotId: string;
+    routingMode: RoutingMode;
+    shadow: RouteDecision;
+    applied: RouteDecision;
+    registryLoad: RoutingRegistryLoad;
+    requiredScopes: string[];
+  }): Promise<RoleRoute> {
+    if (input.applied.treatment !== "GENERATE" || !input.registryLoad.ok) {
+      await this.recordSkip(input.slotId, input.routingMode, input.shadow, honest("No eligible lane for the required scopes."));
+      return { kind: "skip", stopJob: false, requiredScopes: input.requiredScopes };
+    }
+    const eligible = listEligibleLanes({
+      requiredScopes: input.requiredScopes,
+      path: input.registryLoad.path,
+      registry: input.registryLoad.registry,
+      suspendedLaneIds: input.registryLoad.suspendedIds,
+    });
+    try {
+      assertEnforcedLaneCallable({
+        laneId: input.applied.laneId,
+        eligibleLaneIds: eligible.map((lane) => lane.laneId),
+        decision: input.applied,
+      });
+    } catch {
+      await this.recordSkip(input.slotId, input.routingMode, input.shadow, honest("No eligible lane for the required scopes."));
+      return { kind: "skip", stopJob: false, requiredScopes: input.requiredScopes };
+    }
+    const resolver = this.resolveLanes();
+    if (!resolver) {
+      await this.recordSkip(input.slotId, input.routingMode, input.shadow, honest("No lane resolver is configured."));
+      return { kind: "skip", stopJob: false, requiredScopes: input.requiredScopes };
+    }
+    let resolvedLane;
+    try {
+      resolvedLane = resolver.forLane(input.applied.laneId);
+    } catch {
+      await this.recordSkip(input.slotId, input.routingMode, input.shadow, honest("The eligible lane could not be resolved."));
+      return { kind: "skip", stopJob: false, requiredScopes: input.requiredScopes };
+    }
+    const lane = input.registryLoad.registry.lanes.find((item) => item.laneId === input.applied.laneId);
+    const capability = resolvedLane.supportedCapabilities[0];
+    const attribution = capability ? resolvedLane.attribution(capability) : null;
+    if (!lane || !capability || !attribution || attribution.modelId !== lane.modelId) {
+      void reportOpsAlert({
+        kind: OpsAlertKind.SG_MODEL_LANE_MISMATCH,
+        message: "Resolved modelId does not match the registry lane modelId.",
+      });
+      await this.recordSkip(input.slotId, input.routingMode, input.shadow, honest("The lane model does not match the registry."));
+      return { kind: "skip", stopJob: false, requiredScopes: input.requiredScopes };
+    }
+    let quote;
+    try {
+      const charge = estimateLaneCharge(lane);
+      quote = {
+        laneId: lane.laneId,
+        laneClass: lane.laneClass,
+        providerKey: lane.providerKey,
+        modelId: attribution.modelId,
+        estimatedBilledSeconds: charge.estimatedBilledSeconds,
+        usdPerSecond: lane.usdPerSecond,
+        estimatedUsd: charge.reservedUsd,
+      };
+    } catch {
+      await this.recordSkip(input.slotId, input.routingMode, input.shadow, honest("The eligible lane has no price."));
+      return { kind: "skip", stopJob: false, requiredScopes: input.requiredScopes };
+    }
+    await this.recordShadow(input.slotId, input.routingMode, input.shadow);
+    return {
+      kind: "enforced",
+      requiredScopes: input.requiredScopes,
+      quote,
+      runtime: {
+        adapter: resolvedLane.adapter,
+        attributionFor: (cap) => resolvedLane.attribution(cap),
+        supportedCapabilities: [...resolvedLane.supportedCapabilities],
+      },
+    };
+  }
+
+  private async recordShadow(slotId: string, routingMode: RoutingMode, shadow: RouteDecision) {
+    await this.fulfillments.recordRouteDecision({
+      shotFulfillmentId: slotId,
+      routingMode,
+      shadowDecision: shadow as Prisma.InputJsonValue,
+    });
+  }
+
+  private async recordSkip(
+    slotId: string,
+    routingMode: RoutingMode,
+    shadow: RouteDecision | null,
+    applied: RouteDecision,
+  ) {
+    const status = fulfillmentStatusForTreatment(applied.treatment) ?? "FAILED";
+    await this.fulfillments.recordRouteDecision({
+      shotFulfillmentId: slotId,
+      routingMode,
+      shadowDecision: (shadow ?? applied) as Prisma.InputJsonValue,
+      decisionReason: applied.decisionReason,
+      userMessageKey: applied.messageKey,
+      treatment: applied.treatment,
+      status,
+    });
+  }
+
   /**
    * Price label for the existing single-lane path. Local and unconfigured
    * runs record zeros and laneClass "unclassified", a recording label only.
@@ -1178,6 +1524,84 @@ function appSettlementFor(
     return settlement;
   }
   return "MISSING";
+}
+
+type RoutingRegistryLoad =
+  | { ok: false; path: string | undefined }
+  | { ok: true; registry: SgLaneRegistry; suspendedIds: string[]; path: string | undefined };
+
+type AttemptQuote = {
+  laneId: string;
+  laneClass: string;
+  providerKey: string;
+  modelId: string | null;
+  estimatedBilledSeconds: number;
+  usdPerSecond: number;
+  estimatedUsd: number;
+};
+
+type RoleRoute =
+  | { kind: "skip"; stopJob: boolean; requiredScopes: string[] }
+  | { kind: "legacy"; requiredScopes: string[] }
+  | { kind: "enforced"; requiredScopes: string[]; quote: AttemptQuote; runtime: ResolvedAssetRuntime };
+
+function honest(decisionReason: string): RouteDecision {
+  return {
+    treatment: "FAIL_HONEST",
+    laneClass: null,
+    laneId: null,
+    providerKey: null,
+    decisionReason,
+    messageKey: "SG_FAILED_HONEST",
+  };
+}
+
+function splitAttempts(rows: readonly { laneClass: string; outcome: string; classAttemptNo: number }[]): {
+  attempts: AttemptSoFar[];
+  unclassified: number;
+} {
+  const attempts: AttemptSoFar[] = [];
+  let unclassified = 0;
+  for (const row of rows) {
+    const laneClass = laneClassSchema.safeParse(row.laneClass);
+    const outcome = attemptOutcomeSchema.safeParse(row.outcome);
+    if (!laneClass.success || !outcome.success || !Number.isInteger(row.classAttemptNo) || row.classAttemptNo < 1) {
+      unclassified += 1;
+      continue;
+    }
+    attempts.push({
+      laneClass: laneClass.data,
+      outcome: outcome.data,
+      classAttemptNo: row.classAttemptNo,
+    });
+  }
+  return { attempts, unclassified };
+}
+
+function snapshotFromLanes(
+  lanes: readonly RegistryLane[],
+  registry: SgLaneRegistry,
+  health: ReadonlyMap<string, boolean>,
+): RegistrySnapshot {
+  return {
+    lanes: lanes.map((lane) => ({
+      laneId: lane.laneId,
+      laneClass: lane.laneClass,
+      providerKey: lane.providerKey,
+      enabled: lane.enabled,
+      healthy: health.get(lane.laneId) ?? false,
+      designation: lane.designation === "LEGACY_R1" ? "LEGACY_R1" : "NONE",
+      resolutionTier: lane.resolutionTier,
+      modelId: lane.modelId,
+      gates: {
+        HERO: lane.gates.HERO.status,
+        IDENTITY: lane.gates.IDENTITY.status,
+        NON_IDENTITY: lane.gates.NON_IDENTITY.status,
+      },
+    })),
+    regenCeilings: registry.regenCeilings,
+    classOrder: [...registry.classOrder],
+  };
 }
 
 function registryPathFromEnv(): string | undefined {

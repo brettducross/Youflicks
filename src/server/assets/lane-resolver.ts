@@ -40,8 +40,9 @@ import {
  *
  * processors() is the MEDIA_ENHANCEMENT hook only. The Ken Burns processor
  * is PR-9 and is not implemented here.
- * Routing, regen, and the LEGACY/ENFORCED flag are PR-8. Suspension does
- * not block resolution.
+ * forLane does not apply eligibility, health, ceilings, or budget. AssetService
+ * calls it only after those checks, and only for an ENFORCED GENERATE lane.
+ * Suspension does not block resolution.
  */
 
 /** Generative lanes advertise video only. Enhancement is the processor hook. */
@@ -286,6 +287,11 @@ function assertHttpBaseUrl(laneId: string, envName: string, value: string): void
   if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
     throw new LaneResolverError(
       `Lane ${laneId} gateway env ${envName} is not an http(s) URL and cannot be resolved.`,
+    );
+  }
+  if (parsed.username !== "" || parsed.password !== "") {
+    throw new LaneResolverError(
+      `Lane ${laneId} gateway env ${envName} must not include a username or password and cannot be resolved.`,
     );
   }
 }

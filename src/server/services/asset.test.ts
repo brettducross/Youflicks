@@ -238,6 +238,8 @@ describe("AssetService M3", () => {
     budgets?: AiVideoBudgetPort;
     fulfillments?: PrismaShotFulfillment;
     collectCues?: ShotCueCollector;
+    resolveLanes?: () => import("@/server/assets/lane-resolver").AssetLaneResolver | null;
+    probeHealth?: (baseUrl: string) => Promise<boolean>;
   }) {
     const productionAvailable = options.productionAvailable ?? Boolean(options.adapter);
     const localDevAvailable = options.localDevAvailable ?? false;
@@ -281,6 +283,8 @@ describe("AssetService M3", () => {
       options.budgets,
       options.fulfillments,
       options.collectCues,
+      options.resolveLanes,
+      options.probeHealth,
     );
     return { assets, worker: new AssetWorker(jobs, assets) };
   }
@@ -385,7 +389,11 @@ describe("AssetService M3", () => {
     expect(slots).toHaveLength(jobAssets.length);
     for (const slot of slots) {
       expect(slot.routingMode).toBe("LEGACY");
-      expect(slot.shadowDecision).toBeNull();
+      expect(slot.shadowDecision).toMatchObject({
+        treatment: "DEFER",
+        laneId: null,
+        messageKey: "SG_NO_QUALIFIED_LANE",
+      });
       expect(slot.scope).toBe("IDENTITY");
       expect(slot.identityState).toBe("UNKNOWN");
       expect(slot.requiredScopes).toEqual(["IDENTITY"]);
@@ -1058,7 +1066,7 @@ describe("AssetService M3", () => {
       YF_GATEWAY_API_KEY: "gw-key",
       YF_GATEWAY_BACKEND_API_KEY: "backend-key",
       YF_GATEWAY_BACKEND: "http",
-      YF_GATEWAY_MODEL: "open.model",
+      YF_GATEWAY_MODEL: "wan-video/wan-2.7-i2v",
       YF_GATEWAY_LANE_ID: "r1-wan27-replicate",
       YF_GATEWAY_CAPABILITIES: "IMAGE_GENERATION",
       YF_GATEWAY_MAX_JOBS: "10",
@@ -1083,7 +1091,7 @@ describe("AssetService M3", () => {
         providerKey: "http.asset",
         baseUrl: "http://gateway.test",
         apiKey: "gw-key",
-        model: "open.model",
+        model: "wan-video/wan-2.7-i2v",
         capabilities: [AssetCapability.IMAGE_GENERATION],
         timeoutMs: 5_000,
       },
@@ -1193,7 +1201,11 @@ describe("AssetService M3", () => {
       where: { id: attempt?.shotFulfillmentId },
     });
     expect(slot.routingMode).toBe("LEGACY");
-    expect(slot.shadowDecision).toBeNull();
+    expect(slot.shadowDecision).toMatchObject({
+      treatment: "DEFER",
+      laneId: null,
+      providerKey: null,
+    });
     expect(slot.generatedAssetId).toBe(attempt?.generatedAssetId);
   });
 
@@ -2064,6 +2076,119 @@ describe("AssetService M3", () => {
     }
     const finished = await jobs.get(queued.jobId);
     expect(finished?.status).toBe(JobStatus.SUCCEEDED);
+  });
+
+  it("does not generate a dialogue close-up in LEGACY or ENFORCED", async () => {
+    const story = await prisma.storyStructure.findFirstOrThrow({
+      where: { projectId, status: StoryStructureStatus.READY },
+    });
+    const original = story.payload;
+    const document = structuredClone(original) as StoryDocument;
+    document.acts[0]!.scenes[0]!.dialogueOutline = "They say hello.";
+    const previousMode = process.env.SG_ROUTING_MODE;
+    await prisma.storyStructure.update({
+      where: { id: story.id },
+      data: { payload: document as Prisma.InputJsonValue },
+    });
+    try {
+      for (const mode of ["LEGACY", "ENFORCED"] as const) {
+        if (mode === "LEGACY") delete process.env.SG_ROUTING_MODE;
+        else process.env.SG_ROUTING_MODE = mode;
+        const calls: string[] = [];
+        let laneCalls = 0;
+        const { assets, worker } = harness({
+          adapter: scriptedGenerator(async () => {
+            calls.push("generate");
+            throw new Error("dialogue must not generate");
+          }),
+          productionAvailable: false,
+          localDevAvailable: true,
+          resolveLanes: () => ({
+            forLane() {
+              laneCalls += 1;
+              throw new Error("dialogue must not resolve a lane");
+            },
+            processors() {
+              return [];
+            },
+          }),
+        });
+        const queued = await assets.requestGenerate(ownerId, projectId, {
+          roles: [{ role: "dialogue_hold", storySceneId: "scene-arrive", kind: "IMAGE" }],
+        });
+        await worker.processNext();
+        expect(calls, mode).toEqual([]);
+        expect(laneCalls, mode).toBe(0);
+        const slot = await prisma.shotFulfillment.findFirst({
+          where: { projectId, role: "dialogue_hold", storySceneId: "scene-arrive" },
+          orderBy: { createdAt: "desc" },
+        });
+        expect(slot?.treatment, mode).toBe("DEFER");
+        expect(slot?.status, mode).toBe("DEFERRED");
+        expect(slot?.userMessageKey, mode).toBe("SG_WAITING");
+        expect(slot?.routingMode, mode).toBe(mode);
+        expect(
+          await prisma.shotFulfillmentAttempt.count({ where: { shotFulfillmentId: slot?.id } }),
+        ).toBe(0);
+        expect(
+          await prisma.aiVideoBudgetReservation.count({
+            where: { idempotencyKey: { startsWith: `asset:${queued.jobId}:` } },
+          }),
+        ).toBe(0);
+        expect((await jobs.get(queued.jobId))?.status).toBe(JobStatus.SUCCEEDED);
+      }
+    } finally {
+      await prisma.storyStructure.update({
+        where: { id: story.id },
+        data: { payload: original as Prisma.InputJsonValue },
+      });
+      if (previousMode === undefined) delete process.env.SG_ROUTING_MODE;
+      else process.env.SG_ROUTING_MODE = previousMode;
+    }
+  });
+
+  it("makes zero generation calls in ENFORCED when nothing is QUALIFIED", async () => {
+    const previousMode = process.env.SG_ROUTING_MODE;
+    process.env.SG_ROUTING_MODE = "ENFORCED";
+    const calls: string[] = [];
+    let laneCalls = 0;
+    try {
+      const { assets, worker } = harness({
+        adapter: scriptedGenerator(async () => {
+          calls.push("generate");
+          throw new Error("enforced must not generate");
+        }),
+        productionAvailable: false,
+        localDevAvailable: true,
+        resolveLanes: () => ({
+          forLane() {
+            laneCalls += 1;
+            throw new Error("enforced must not resolve a lane");
+          },
+          processors() {
+            return [];
+          },
+        }),
+      });
+      const queued = await assets.requestGenerate(ownerId, projectId, {
+        roles: [{ role: "broll_motion", storySceneId: "scene-arrive", kind: "VIDEO_CLIP" }],
+      });
+      await worker.processNext();
+      expect((await jobs.get(queued.jobId))?.status).toBe(JobStatus.SUCCEEDED);
+      expect(calls).toEqual([]);
+      expect(laneCalls).toBe(0);
+      const slot = await prisma.shotFulfillment.findFirstOrThrow({
+        where: { projectId, role: "broll_motion" },
+      });
+      expect(slot.treatment).toBe("DEFER");
+      expect(slot.status).toBe("DEFERRED");
+      expect(slot.userMessageKey).toBe("SG_NO_QUALIFIED_LANE");
+      expect(slot.routingMode).toBe("ENFORCED");
+      expect(await prisma.shotFulfillmentAttempt.count({ where: { shotFulfillmentId: slot.id } })).toBe(0);
+    } finally {
+      if (previousMode === undefined) delete process.env.SG_ROUTING_MODE;
+      else process.env.SG_ROUTING_MODE = previousMode;
+    }
   });
 
   async function seedReadyStory(document: StoryDocument) {
