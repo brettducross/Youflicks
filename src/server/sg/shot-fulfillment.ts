@@ -5,6 +5,7 @@ import {
   DEFAULT_RECORDED_ROUTING_MODE,
   type AttemptOutcome,
 } from "@/server/sg/constants";
+import { assertPersistableCues, type PersistableShotCues } from "@/server/sg/cues";
 import { assertIdentityEvidence, IdentityEvidenceError } from "@/server/sg/identity-evidence";
 import { PrismaAiVideoBudget } from "@/server/sg/ai-video-budget";
 import { loadSgLaneRegistry, stampRegistryBytes, type RegistryStamp } from "@/server/sg/lane-registry";
@@ -78,6 +79,16 @@ export class ShotFulfillmentError extends Error {
   }
 }
 
+export type EnsureSlotCueInput = {
+  scope: string;
+  requiredScopes: readonly string[];
+  identityState: string;
+  shotRole: string;
+  motionNeed: string | null;
+  slotDurationMs: number | null;
+  identityEvidence: unknown;
+};
+
 export type EnsureSlotInput = {
   projectId: string;
   timelineId: string;
@@ -86,6 +97,8 @@ export type EnsureSlotInput = {
   storySceneId?: string | null;
   sourceMediaAssetId?: string | null;
   identityEvidence?: unknown;
+  /** PR-6 cues. Written only when the slot is created. */
+  cues?: EnsureSlotCueInput;
 };
 
 export type BeginAttemptInput = {
@@ -124,10 +137,7 @@ export class PrismaShotFulfillment {
    * marks older slots SUPERSEDED. Does not choose a lane.
    */
   async ensureSlot(input: EnsureSlotInput) {
-    const evidence =
-      input.identityEvidence === undefined
-        ? undefined
-        : assertIdentityEvidence(input.identityEvidence);
+    const cues = resolveSlotCues(input);
     const slotKey = fulfillmentSlotKey(input);
     const stamp = readRegistryStamp();
     const storySceneId = input.storySceneId && input.storySceneId.length > 0 ? input.storySceneId : null;
@@ -163,10 +173,13 @@ export class PrismaShotFulfillment {
             role: input.role,
             storySceneId,
             slotKey,
-            scope: "IDENTITY",
-            requiredScopes: ["IDENTITY"],
-            identityState: "UNKNOWN",
-            identityEvidence: evidence as Prisma.InputJsonValue | undefined,
+            scope: cues.scope,
+            requiredScopes: cues.requiredScopes,
+            identityState: cues.identityState,
+            identityEvidence: cues.identityEvidence,
+            shotRole: cues.shotRole,
+            motionNeed: cues.motionNeed,
+            slotDurationMs: cues.slotDurationMs,
             treatment: "GENERATE",
             status: newer ? "SUPERSEDED" : "PLANNED",
             routingMode: DEFAULT_RECORDED_ROUTING_MODE,
@@ -481,6 +494,42 @@ async function assertSameProjectAsset(
       "generatedAssetId must reference a GeneratedAsset in the same project.",
     );
   }
+}
+
+function resolveSlotCues(input: EnsureSlotInput): {
+  scope: string;
+  requiredScopes: string[];
+  identityState: string;
+  identityEvidence: Prisma.InputJsonValue | undefined;
+  shotRole: string | null;
+  motionNeed: string | null;
+  slotDurationMs: number | null;
+} {
+  if (!input.cues) {
+    const evidence =
+      input.identityEvidence === undefined
+        ? undefined
+        : (assertIdentityEvidence(input.identityEvidence) as Prisma.InputJsonValue);
+    return {
+      scope: "IDENTITY",
+      requiredScopes: ["IDENTITY"],
+      identityState: "UNKNOWN",
+      identityEvidence: evidence,
+      shotRole: null,
+      motionNeed: null,
+      slotDurationMs: null,
+    };
+  }
+  const parsed: PersistableShotCues = assertPersistableCues(input.cues);
+  return {
+    scope: parsed.scope,
+    requiredScopes: [...parsed.requiredScopes],
+    identityState: parsed.identityState,
+    identityEvidence: parsed.identityEvidence as Prisma.InputJsonValue,
+    shotRole: parsed.shotRole,
+    motionNeed: parsed.motionNeed,
+    slotDurationMs: parsed.slotDurationMs,
+  };
 }
 
 function registryPathFromEnv(): string {

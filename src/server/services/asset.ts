@@ -53,6 +53,13 @@ import {
   requireLiveLane,
 } from "@/server/sg/lane-rate";
 import {
+  collectShotCueInput,
+  loadSceneEmphasis,
+  type CollectShotCueArgs,
+  type CueReadDb,
+} from "@/server/sg/cue-context";
+import { extractShotCues, persistableShotCues, type ShotCueInput } from "@/server/sg/cues";
+import {
   PrismaShotFulfillment,
   UNCLASSIFIED_LANE_CLASS,
 } from "@/server/sg/shot-fulfillment";
@@ -105,6 +112,8 @@ export type ResolvedAssetRuntime = {
   supportedCapabilities: AssetCapabilityValue[];
 };
 
+export type ShotCueCollector = (db: CueReadDb, args: CollectShotCueArgs) => Promise<ShotCueInput>;
+
 type AssetJobPayload = {
   projectId: string;
   requestedBy: string;
@@ -133,6 +142,7 @@ export class AssetService {
     private readonly entitlements: EntitlementService = new EntitlementService(),
     private readonly budgets: AiVideoBudgetPort = new PrismaAiVideoBudget(prisma),
     private readonly fulfillments: PrismaShotFulfillment = new PrismaShotFulfillment(prisma),
+    private readonly collectCues: ShotCueCollector = collectShotCueInput,
   ) {}
 
   getAvailability(): AssetAvailability {
@@ -304,6 +314,7 @@ export class AssetService {
       );
     }
     const story = await this.loadStory(timeline.storyStructureId);
+    const sceneEmphasis = await loadSceneEmphasis(prisma, projectId, story);
     const assetIds: string[] = [];
 
     for (const role of payload.roles) {
@@ -311,6 +322,17 @@ export class AssetService {
         return { cancelled: true, assetIds };
       }
 
+      const kind = role.kind ?? inferKindFromRole(role.role);
+      const cueInput = await this.collectCues(prisma, {
+        projectId,
+        story,
+        timeline: timeline.document,
+        role: role.role,
+        storySceneId: role.storySceneId,
+        sourceMediaAssetId: kind === "ENHANCEMENT" ? (role.sourceMediaAssetId ?? null) : null,
+        sceneEmphasis,
+      });
+      const cues = persistableShotCues(extractShotCues(cueInput));
       const slot = await this.fulfillments.ensureSlot({
         projectId,
         timelineId: timeline.id,
@@ -318,6 +340,7 @@ export class AssetService {
         role: role.role,
         storySceneId: role.storySceneId,
         sourceMediaAssetId: role.sourceMediaAssetId,
+        cues,
       });
 
       const alreadyReady = await prisma.generatedAsset.findFirst({
@@ -339,7 +362,6 @@ export class AssetService {
         continue;
       }
 
-      const kind = role.kind ?? inferKindFromRole(role.role);
       const capability = capabilityForKind(kind);
       if (!resolved.supportedCapabilities.includes(capability)) {
         const failed = await this.persistFailed({
