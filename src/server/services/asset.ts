@@ -1185,7 +1185,6 @@ export class AssetService {
     const forceLegacy =
       input.routingMode === "LEGACY" &&
       cues.shotRole !== "dialogue-closeup" &&
-      !cues.originalCoversSlot &&
       !rawBlocks;
 
     let applied = plan.applied;
@@ -1222,6 +1221,15 @@ export class AssetService {
     }
 
     if (applied.treatment === "KEN_BURNS" || applied.treatment === "STATIC") {
+      if (input.kind === "IMAGE") {
+        await this.recordSkip(
+          input.slotId,
+          input.routingMode,
+          plan.shadow,
+          honest("IMAGE has no enhancement lane."),
+        );
+        return { kind: "skip", stopJob: false, requiredScopes: cues.requiredScopes };
+      }
       if (cues.shotRole === "dialogue-closeup") {
         await this.recordSkip(input.slotId, input.routingMode, plan.shadow, {
           treatment: "DEFER",

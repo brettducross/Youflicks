@@ -8,6 +8,7 @@ import { KenBurnsProcessor } from "@/server/assets/kenburns";
 import { LocalStorageAdapter } from "@/server/adapters/storage/local";
 import type { AssetGeneratorInput } from "@/server/assets/input";
 import {
+  applyProcessorAvailability,
   LaneResolverError,
   readLaneHealthBaseUrl,
   resolveAssetGeneratorLanes,
@@ -690,6 +691,51 @@ describe("resolveAssetGeneratorLanes", () => {
     await expect(
       resolved.adapter.generate(baseInput({ kind: "ENHANCEMENT", role: "still_move" })),
     ).rejects.toMatchObject({ code: "ASSET_CAPABILITY_UNAVAILABLE" });
+  });
+
+  it("does not let the local placeholder claim MEDIA_ENHANCEMENT unless Ken Burns is configured", async () => {
+    const store = await useStorage();
+    const local = new LocalDeterministicAssetGenerator(store);
+    const base = describeAssetAvailability({
+      adapter: local,
+      attributionFor: (capability) => local.executionAttribution(capability),
+      productionAvailable: false,
+      localDevAvailable: true,
+      supportedCapabilities: [...local.supportedCapabilities],
+    });
+    expect(base.capabilities.MEDIA_ENHANCEMENT).toEqual({
+      productionAvailable: false,
+      localDevAvailable: true,
+      canGenerate: true,
+    });
+    const unavailable = applyProcessorAvailability(base, []);
+    expect(unavailable.capabilities.MEDIA_ENHANCEMENT).toEqual({
+      productionAvailable: false,
+      localDevAvailable: false,
+      canGenerate: false,
+    });
+    expect(unavailable.capabilities.VIDEO_GENERATION).toEqual(base.capabilities.VIDEO_GENERATION);
+    expect(unavailable.capabilities.IMAGE_GENERATION).toEqual(base.capabilities.IMAGE_GENERATION);
+    const disabled: EnhancementProcessorHook = {
+      laneId: "yf.kenburns.v1",
+      providerKey: "yf.kenburns.v1",
+      modelId: "yf.kenburns.v1",
+      capability: AssetCapability.MEDIA_ENHANCEMENT,
+      adapter: null,
+    };
+    expect(applyProcessorAvailability(base, [disabled]).capabilities.MEDIA_ENHANCEMENT.canGenerate).toBe(
+      false,
+    );
+    const configured = applyProcessorAvailability(base, [
+      { ...disabled, adapter: new KenBurnsProcessor(store) },
+    ]);
+    expect(configured.capabilities.MEDIA_ENHANCEMENT).toEqual({
+      productionAvailable: true,
+      localDevAvailable: false,
+      canGenerate: true,
+    });
+    expect(configured.capabilities.VIDEO_GENERATION).toEqual(base.capabilities.VIDEO_GENERATION);
+    expect(configured.localDevAvailable).toBe(base.localDevAvailable);
   });
 
   it("keeps describeAssetAvailability honest when several lanes share one process", async () => {

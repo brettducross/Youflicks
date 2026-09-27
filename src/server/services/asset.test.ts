@@ -54,6 +54,7 @@ import { TimelineService } from "@/server/services/timeline";
 import { TimelineWorker } from "@/server/services/timeline-worker";
 import { TasteService } from "@/server/services/taste";
 import { CREATIVE_PLAN_SCHEMA_VERSION } from "@/server/director/schema";
+import { KenBurnsProcessor, type KenBurnsRenderSpec } from "@/server/assets/kenburns";
 import { resolveAssetGeneratorLanes } from "@/server/assets/lane-resolver";
 import { emptyAssetAvailability, describeAssetAvailability } from "@/server/assets/provider-config";
 import type { VideoBackend } from "@/server/gateways/yf-asset/backends/types";
@@ -3534,6 +3535,11 @@ describe("AssetService M3", () => {
           expect(slot.identityState).toBe("UNKNOWN");
           expect(slot.treatment).toBe("FAIL_HONEST");
           expect(slot.userMessageKey).toBe("SG_FAILED_HONEST");
+          expect(slot.shadowDecision).toMatchObject({
+            treatment: "KEN_BURNS",
+            laneId: null,
+            messageKey: "SG_NO_QUALIFIED_LANE",
+          });
           expect(slot.requiredScopes).toContain("IDENTITY");
         } finally {
           await finishQuietly(queued.jobId);
@@ -4571,6 +4577,68 @@ describe("AssetService M3", () => {
     }
   });
 
+  it("routes a covered non-dialogue slot to the LEGACY adapter, not ORIGINAL", async () => {
+    const registry = await writeQualifiedRegistry();
+    const role = "covered_legacy";
+    const video = await prisma.mediaAsset.create({
+      data: {
+        projectId,
+        kind: "VIDEO",
+        filename: "covered-legacy.mp4",
+        mimeType: "video/mp4",
+        byteSize: 8,
+        storageKey: `pr9/${projectId}/covered-legacy`,
+        status: "READY",
+        durationMs: 4000,
+      },
+    });
+    try {
+      await withEnv(
+        {
+          SG_ROUTING_MODE: undefined,
+          SG_LANE_REGISTRY_PATH: registry.file,
+          SG_LANE_VEO_LITE_BASE_URL: "http://127.0.0.1:9",
+          SG_LANE_VEO_LITE_API_KEY: "test-key",
+          YF_GATEWAY_LANE_ID: undefined,
+          ASSET_HTTP_MODEL: undefined,
+        },
+        async () => {
+          await withRoleClip(role, video.id, 2000, async () => {
+            const events: string[] = [];
+            const local = new LocalDeterministicAssetGenerator(storage);
+            const { assets } = harness({
+              adapter: {
+                async generate(input) {
+                  events.push("generate");
+                  return local.generate(input);
+                },
+              },
+              productionAvailable: false,
+              localDevAvailable: true,
+              supportedCapabilities: [AssetCapability.VIDEO_GENERATION],
+            });
+            const queued = await assets.requestGenerate(ownerId, projectId, {
+              roles: [{ role, storySceneId: "scene-arrive", kind: "VIDEO_CLIP" }],
+            });
+            await assets.processJob((await jobs.get(queued.jobId))!);
+            await jobs.complete(queued.jobId, {});
+            expect(events).toEqual(["generate"]);
+            const slot = await prisma.shotFulfillment.findFirstOrThrow({ where: { projectId, role } });
+            expect(slot.treatment).not.toBe("ORIGINAL");
+            expect(slot.decisionReason).toBe("LEGACY routes this role on the injected adapter.");
+            expect(slot.shadowDecision).toMatchObject({
+              treatment: "ORIGINAL",
+              laneId: null,
+              messageKey: "SG_FALLBACK_ORIGINAL",
+            });
+          });
+        },
+      );
+    } finally {
+      await rm(registry.dir, { recursive: true, force: true });
+    }
+  });
+
   it("does not treat a VIDEO_CLIP sourceMediaAssetId as a still", async () => {
     const registry = await writeLaneRegistry(
       [
@@ -4634,6 +4702,88 @@ describe("AssetService M3", () => {
       await rm(registry.dir, { recursive: true, force: true });
     }
   });
+
+  it("returns FAIL_HONEST for an ENFORCED IMAGE role when a still exists and no lane is eligible", async () => {
+    const registry = await writeLaneRegistry(
+      [
+        fixtureLane({
+          laneId: "unqualified-image",
+          laneClass: "draft-quality",
+          providerKey: "open:unqualified-image",
+          modelId: "open-unqualified-image",
+          usdPerSecond: 0.05,
+          gateway: { baseUrlEnv: "SG_LANE_IMAGE_BASE_URL", apiKeyEnv: "SG_LANE_IMAGE_API_KEY" },
+          gates: { HERO: UNQUALIFIED_GATE, IDENTITY: UNQUALIFIED_GATE, NON_IDENTITY: UNQUALIFIED_GATE },
+        }),
+      ],
+      [kenBurnsProcessorRow(true)],
+    );
+    const role = "image_still_honest";
+    try {
+      await withEnv(
+        {
+          SG_ROUTING_MODE: "ENFORCED",
+          SG_LANE_REGISTRY_PATH: registry.file,
+          SG_LANE_IMAGE_BASE_URL: "http://127.0.0.1:9",
+          SG_LANE_IMAGE_API_KEY: "test-key",
+          YF_GATEWAY_LANE_ID: undefined,
+        },
+        async () => {
+          await withRoleClip(role, mediaAssetId, 2000, async () => {
+            const calls: string[] = [];
+            const loaded = loadSgLaneRegistry(registry.file);
+            const { assets } = harness({
+              adapter: scriptedGenerator(async () => {
+                calls.push("generate");
+                throw new Error("IMAGE must not generate");
+              }),
+              productionAvailable: true,
+              probeHealth: async () => true,
+              resolveLanes: () => {
+                const inner = resolveAssetGeneratorLanes(storage, loaded);
+                return {
+                  forLane(laneId: string) {
+                    calls.push("forLane");
+                    return inner.forLane(laneId);
+                  },
+                  processors(capability: AssetCapabilityValue) {
+                    return inner.processors(capability).map((hook) => {
+                      if (!hook.adapter) {
+                        return hook;
+                      }
+                      const processor = new (class extends KenBurnsProcessor {
+                        async process(spec: KenBurnsRenderSpec) {
+                          calls.push("process");
+                          return super.process(spec);
+                        }
+                      })(storage);
+                      return { ...hook, adapter: processor };
+                    });
+                  },
+                };
+              },
+            });
+            const queued = await assets.requestGenerate(ownerId, projectId, {
+              roles: [{ role, storySceneId: "scene-arrive", kind: "IMAGE" }],
+            });
+            await assets.processJob((await jobs.get(queued.jobId))!);
+            await jobs.complete(queued.jobId, {});
+            expect(calls).toEqual([]);
+            const slot = await prisma.shotFulfillment.findFirstOrThrow({ where: { projectId, role } });
+            expect(slot.treatment).toBe("FAIL_HONEST");
+            expect(slot.userMessageKey).toBe("SG_FAILED_HONEST");
+            expect(
+              await prisma.generatedAsset.count({
+                where: { projectId, role, providerKey: "yf.kenburns.v1" },
+              }),
+            ).toBe(0);
+          });
+        },
+      );
+    } finally {
+      await rm(registry.dir, { recursive: true, force: true });
+    }
+  }, 180_000);
 
   it("Y3 generates on draft-quality when a NON_IDENTITY-only draft-cost lane is suspended", async () => {
     const registry = await writeLaneRegistry([
