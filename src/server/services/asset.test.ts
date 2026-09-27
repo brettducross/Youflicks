@@ -40,6 +40,7 @@ import { PrismaAiVideoBudget, type AiVideoBudgetPort } from "@/server/sg/ai-vide
 import { loadSgLaneRegistry, resetLaneRegistryAlertDebounce } from "@/server/sg/lane-registry";
 import { projectBudgetLedgerId } from "@/server/sg/budget-source";
 import { SG_COPY } from "@/server/sg/messages";
+import { copyLintViolations } from "@/server/sg/messages.test";
 import { presentSlotMessages, type AppliedSlotState } from "@/server/sg/presenter";
 import { LEGACY_DECISION_REASON, PrismaShotFulfillment } from "@/server/sg/shot-fulfillment";
 import { AttributionService } from "@/server/services/attribution";
@@ -5930,6 +5931,309 @@ describe("AssetService M3", () => {
     }
   });
 
+  async function rebuildCut() {
+    const { timeline, worker } = timelineHarness();
+    const queued = await timeline.requestRebuild(ownerId, projectId);
+    expect(queued.status).toBe(JobStatus.PENDING);
+    await worker.processNext();
+    const rebuilt = await timeline.getLatestReady(ownerId, projectId);
+    expect(rebuilt).not.toBeNull();
+    return rebuilt!;
+  }
+
+  /** Gives Ken Burns a real span. The span is a MEDIA_ASSET clip, never a planted generated clip. */
+  async function attachStillSpan(role: string, assetId: string, spanMs: number) {
+    const row = await prisma.timeline.findFirstOrThrow({
+      where: { projectId, status: TimelineStatus.READY },
+      orderBy: { version: "desc" },
+    });
+    const document = structuredClone(row.payload) as TimelineDocument;
+    const start = document.clips.reduce((max, item) => Math.max(max, item.timelineEndMs), 0);
+    document.clips.push({
+      id: `clip-${role}`.slice(0, 64),
+      trackKey: "video.primary",
+      order: document.clips.length,
+      sourceKind: "MEDIA_ASSET",
+      assetId,
+      storySceneId: "scene-arrive",
+      mediaRole: role,
+      timelineStartMs: start,
+      timelineEndMs: start + spanMs,
+    });
+    document.totalDurationMs = Math.max(document.totalDurationMs, start + spanMs);
+    await prisma.timeline.update({
+      where: { id: row.id },
+      data: { payload: document as Prisma.InputJsonValue },
+    });
+  }
+
+  /** Drops the setup span so Rebuild can place the generated asset itself. */
+  async function dropRoleClips(role: string) {
+    const row = await prisma.timeline.findFirstOrThrow({
+      where: { projectId, status: TimelineStatus.READY },
+      orderBy: { version: "desc" },
+    });
+    const document = structuredClone(row.payload) as TimelineDocument;
+    document.clips = document.clips.filter((clip) => clip.mediaRole !== role);
+    await prisma.timeline.update({
+      where: { id: row.id },
+      data: { payload: document as Prisma.InputJsonValue },
+    });
+  }
+
+  async function withListedRole(role: string, run: () => Promise<void>) {
+    const story = await prisma.storyStructure.findFirstOrThrow({
+      where: { projectId, status: StoryStructureStatus.READY },
+    });
+    const timeline = await prisma.timeline.findFirstOrThrow({
+      where: { projectId, status: TimelineStatus.READY },
+      orderBy: { version: "desc" },
+    });
+    const existingIds = new Set(
+      (await prisma.timeline.findMany({ where: { projectId }, select: { id: true } })).map((row) => row.id),
+    );
+    const originalStory = story.payload;
+    const originalTimeline = timeline.payload;
+    const storyDoc = structuredClone(originalStory) as StoryDocument;
+    storyDoc.acts[0]!.scenes[0]!.mediaRoles.push({ role, purpose: "Hold this moment." });
+    const timelineDoc = structuredClone(originalTimeline) as TimelineDocument;
+    timelineDoc.unmetMediaRoles = [
+      ...(timelineDoc.unmetMediaRoles ?? []).filter((item) => item.role !== role),
+      {
+        role,
+        storySceneId: "scene-arrive",
+        reason: "No unused MediaAsset available for this story role.",
+      },
+    ];
+    await prisma.storyStructure.update({
+      where: { id: story.id },
+      data: { payload: storyDoc as Prisma.InputJsonValue },
+    });
+    await prisma.timeline.update({
+      where: { id: timeline.id },
+      data: { payload: timelineDoc as Prisma.InputJsonValue },
+    });
+    try {
+      await run();
+    } finally {
+      const created = await prisma.timeline.findMany({ where: { projectId }, select: { id: true } });
+      for (const row of created) {
+        if (!existingIds.has(row.id)) {
+          await prisma.timelineClip.deleteMany({ where: { timelineId: row.id } });
+          await prisma.timeline.delete({ where: { id: row.id } });
+        }
+      }
+      await prisma.storyStructure.update({
+        where: { id: story.id },
+        data: { payload: originalStory as Prisma.InputJsonValue },
+      });
+      await prisma.timeline.update({
+        where: { id: timeline.id },
+        data: {
+          status: TimelineStatus.READY,
+          payload: originalTimeline as Prisma.InputJsonValue,
+        },
+      });
+    }
+  }
+
+  function assertCapJobError(error: string | null | undefined) {
+    expect(error).toBe(SG_COPY.SG_CAP_REACHED);
+    expect(error ?? "").not.toMatch(/\d/);
+    expect(error ?? "").not.toContain("$");
+    expect(error ?? "").not.toMatch(/AI-video/);
+    expect(error ?? "").not.toMatch(/\bclip\b/i);
+    const registry = JSON.parse(readFileSync(path.join(process.cwd(), "config/sg-lane-registry.json"), "utf8")) as {
+      lanes?: Array<{ providerKey?: string; modelId?: string; laneId?: string }>;
+      processors?: Array<{ providerKey?: string; modelId?: string; laneId?: string }>;
+    };
+    expect(copyLintViolations({ jobError: error ?? "" }, registry)).toEqual([]);
+  }
+
+  it("PR-10 keeps a LEGACY dialogue waiting line after Rebuild", async () => {
+    await withDialogueOutline(async () => {
+      await withEnv(
+        { SG_ROUTING_MODE: "LEGACY", YF_GATEWAY_LANE_ID: undefined, ASSET_HTTP_MODEL: undefined },
+        async () => {
+          await rebuildCut();
+          const calls: string[] = [];
+          const { assets } = harness({
+            adapter: scriptedGenerator(async () => {
+              calls.push("generate");
+              throw new Error("dialogue must not generate");
+            }),
+            productionAvailable: false,
+            localDevAvailable: true,
+          });
+          const queued = await assets.requestGenerate(ownerId, projectId, {
+            roles: [{ role: "intimate_portrait", storySceneId: "scene-arrive", kind: "IMAGE" }],
+          });
+          await assets.processJob((await jobs.get(queued.jobId))!);
+          await jobs.complete(queued.jobId, {});
+          expect(calls).toEqual([]);
+          expect((await messagesFor(assets, "intimate_portrait")).map((row) => row.message)).toEqual([
+            SG_COPY.SG_WAITING,
+          ]);
+          await rebuildCut();
+          expect((await messagesFor(assets, "intimate_portrait")).map((row) => row.message)).toEqual([
+            SG_COPY.SG_WAITING,
+          ]);
+        },
+      );
+    });
+  });
+
+  it("PR-10 keeps a LEGACY honest failure after Rebuild", async () => {
+    await withEnv(
+      { SG_ROUTING_MODE: "LEGACY", YF_GATEWAY_LANE_ID: undefined, ASSET_HTTP_MODEL: undefined },
+      async () => {
+        await rebuildCut();
+        const { assets } = harness({
+          adapter: scriptedGenerator(async () => {
+            throw new Error("legacy generate failed");
+          }),
+          productionAvailable: false,
+          localDevAvailable: true,
+        });
+        const queued = await assets.requestGenerate(ownerId, projectId, {
+          roles: [{ role: "intimate_portrait", storySceneId: "scene-arrive", kind: "IMAGE" }],
+        });
+        await expect(assets.processJob((await jobs.get(queued.jobId))!)).rejects.toThrow(/legacy generate failed/);
+        expect((await messagesFor(assets, "intimate_portrait")).map((row) => row.message)).toEqual([
+          SG_COPY.SG_FAILED_HONEST,
+        ]);
+        await rebuildCut();
+        expect((await messagesFor(assets, "intimate_portrait")).map((row) => row.message)).toEqual([
+          SG_COPY.SG_FAILED_HONEST,
+        ]);
+      },
+    );
+  });
+
+  it("PR-10 uses the latest attempt and a stored cap key", async () => {
+    await withEnv(
+      { SG_ROUTING_MODE: "LEGACY", YF_GATEWAY_LANE_ID: undefined, ASSET_HTTP_MODEL: undefined },
+      async () => {
+        await rebuildCut();
+        const { assets } = harness({
+          adapter: scriptedGenerator(async () => {
+            throw new Error("attempt order seed");
+          }),
+          productionAvailable: false,
+          localDevAvailable: true,
+        });
+        const queued = await assets.requestGenerate(ownerId, projectId, {
+          roles: [{ role: "intimate_portrait", storySceneId: "scene-arrive", kind: "IMAGE" }],
+        });
+        await expect(assets.processJob((await jobs.get(queued.jobId))!)).rejects.toThrow(/attempt order seed/);
+        const slot = await prisma.shotFulfillment.findFirstOrThrow({
+          where: { projectId, role: "intimate_portrait", status: { not: "SUPERSEDED" } },
+          orderBy: { timelineVersion: "desc" },
+        });
+        const first = await prisma.shotFulfillmentAttempt.findFirstOrThrow({
+          where: { shotFulfillmentId: slot.id },
+          orderBy: { attemptNo: "asc" },
+        });
+        await prisma.shotFulfillmentAttempt.update({
+          where: { id: first.id },
+          data: { outcome: "FAILED" },
+        });
+        const second = await prisma.shotFulfillmentAttempt.create({
+          data: {
+            shotFulfillmentId: slot.id,
+            attemptNo: first.attemptNo + 1,
+            classAttemptNo: first.classAttemptNo,
+            laneClass: first.laneClass,
+            laneId: first.laneId,
+            providerKey: first.providerKey,
+            modelId: first.modelId,
+            requiredScopes: first.requiredScopes,
+            estimatedBilledSeconds: first.estimatedBilledSeconds,
+            usdPerSecond: first.usdPerSecond,
+            estimatedUsd: first.estimatedUsd,
+            outcome: "CAP_DENIED",
+          },
+        });
+        await prisma.shotFulfillment.update({
+          where: { id: slot.id },
+          data: { status: "FAILED", userMessageKey: null },
+        });
+        expect((await messagesFor(assets, "intimate_portrait")).map((row) => row.message)).toEqual([
+          SG_COPY.SG_CAP_REACHED,
+        ]);
+        await prisma.shotFulfillmentAttempt.update({
+          where: { id: first.id },
+          data: { outcome: "CAP_DENIED" },
+        });
+        await prisma.shotFulfillmentAttempt.update({
+          where: { id: second.id },
+          data: { outcome: "FAILED" },
+        });
+        expect((await messagesFor(assets, "intimate_portrait")).map((row) => row.message)).toEqual([
+          SG_COPY.SG_FAILED_HONEST,
+        ]);
+        await prisma.shotFulfillment.update({
+          where: { id: slot.id },
+          data: { userMessageKey: "SG_CAP_REACHED" },
+        });
+        expect((await messagesFor(assets, "intimate_portrait")).map((row) => row.message)).toEqual([
+          SG_COPY.SG_CAP_REACHED,
+        ]);
+      },
+    );
+  });
+
+  it("PR-10 keeps spend-cap job errors free of amounts and internal wording", async () => {
+    async function runCap(env: Record<string, string | undefined>, role: string) {
+      await withEnv(
+        {
+          SG_ROUTING_MODE: "LEGACY",
+          ASSET_HTTP_MODEL: undefined,
+          SG_BUDGET_PROJECT_MAX_SECONDS: undefined,
+          SG_BUDGET_PROJECT_MAX_USD: undefined,
+          SG_BUDGET_USER_WINDOW_MAX_SECONDS: undefined,
+          SG_BUDGET_USER_WINDOW_MAX_USD: undefined,
+          YF_GATEWAY_LANE_ID: undefined,
+          ...env,
+        },
+        async () => {
+          const calls: string[] = [];
+          const { assets, worker } = harness({
+            adapter: scriptedGenerator(async () => {
+              calls.push("generate");
+              throw new Error("cap must not generate");
+            }),
+            productionAvailable: true,
+            supportedCapabilities: [AssetCapability.IMAGE_GENERATION],
+          });
+          const queued = await assets.requestGenerate(ownerId, projectId, {
+            roles: [{ role, storySceneId: "scene-arrive", kind: "IMAGE" }],
+          });
+          for (let attempt = 0; attempt < 5; attempt += 1) {
+            const current = await jobs.get(queued.jobId);
+            if (current?.status !== JobStatus.PENDING) break;
+            const ran = await worker.processNext();
+            if (!ran) break;
+          }
+          const job = await jobs.get(queued.jobId);
+          expect(calls).toEqual([]);
+          expect(job?.status).toBe(JobStatus.FAILED);
+          assertCapJobError(job?.error);
+          await clearBudgetLedgers();
+        },
+      );
+    }
+    await runCap(
+      { YF_GATEWAY_LANE_ID: "r1-wan27-replicate", SG_BUDGET_PROJECT_MAX_USD: "0.01" },
+      "pr10_cap_usd",
+    );
+    await runCap(
+      { YF_GATEWAY_LANE_ID: "r1-wan27-replicate", SG_BUDGET_PROJECT_MAX_SECONDS: "1" },
+      "pr10_cap_seconds",
+    );
+    await runCap({ SG_BUDGET_PROJECT_MAX_USD: "0.01" }, "pr10_cap_no_lane");
+  });
+
   it("PR-10 shows the enhancement fallback once and drops the rebuild hint after the clip is placed", async () => {
     const registry = await writeLaneRegistry(
       [
@@ -5956,7 +6260,8 @@ describe("AssetService M3", () => {
           YF_GATEWAY_LANE_ID: undefined,
         },
         async () => {
-          await withRoleClip(role, mediaAssetId, 2000, async () => {
+          await withListedRole(role, async () => {
+            await attachStillSpan(role, mediaAssetId, 2000);
             const loaded = loadSgLaneRegistry(registry.file);
             const { assets } = harness({
               adapter: scriptedGenerator(async () => {
@@ -5981,27 +6286,15 @@ describe("AssetService M3", () => {
             const before = await messagesFor(assets, role);
             expect(before.map((row) => row.message)).toEqual([SG_COPY.SG_FALLBACK_KEN_BURNS]);
             expect(before.map((row) => row.rebuildHint)).toEqual([SG_COPY.SG_REBUILD_HINT]);
-            const slot = await prisma.shotFulfillment.findFirstOrThrow({ where: { projectId, role } });
-            const timeline = await prisma.timeline.findFirstOrThrow({
-              where: { projectId, status: TimelineStatus.READY },
-              orderBy: { version: "desc" },
+            const slot = await prisma.shotFulfillment.findFirstOrThrow({
+              where: { projectId, role, status: "FALLBACK" },
+              orderBy: { timelineVersion: "desc" },
             });
-            const document = structuredClone(timeline.payload) as TimelineDocument;
-            document.clips.push({
-              id: "clip-pr10-kb",
-              trackKey: "video.primary",
-              order: document.clips.length,
-              sourceKind: "GENERATED_ASSET",
-              generatedAssetId: slot.generatedAssetId!,
-              storySceneId: "scene-arrive",
-              mediaRole: role,
-              timelineStartMs: document.totalDurationMs,
-              timelineEndMs: document.totalDurationMs + 2000,
-            });
-            await prisma.timeline.update({
-              where: { id: timeline.id },
-              data: { payload: document as Prisma.InputJsonValue },
-            });
+            await dropRoleClips(role);
+            const rebuilt = await rebuildCut();
+            expect(
+              rebuilt.document.clips.some((clip) => clip.generatedAssetId === slot.generatedAssetId),
+            ).toBe(true);
             const after = await messagesFor(assets, role);
             expect(after.map((row) => row.message)).toEqual([SG_COPY.SG_FALLBACK_KEN_BURNS]);
             expect(after.every((row) => row.rebuildHint === null)).toBe(true);
@@ -6059,8 +6352,8 @@ describe("AssetService M3", () => {
               SG_COPY.SG_NO_QUALIFIED_LANE,
               SG_COPY.SG_FALLBACK_KEN_BURNS,
             ]);
-            expect(shown[0]?.rebuildHint).toBe(SG_COPY.SG_REBUILD_HINT);
-            expect(shown[1]?.rebuildHint).toBeNull();
+            expect(shown[0]?.rebuildHint).toBeNull();
+            expect(shown.at(-1)?.rebuildHint).toBe(SG_COPY.SG_REBUILD_HINT);
             expect(shown.map((row) => row.message).filter((line) => line === SG_COPY.SG_FALLBACK_KEN_BURNS)).toHaveLength(1);
           });
         },

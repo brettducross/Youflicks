@@ -197,7 +197,7 @@ export function presentSlotMessages(slot: AppliedSlotState): SlotMessageView[] {
     storySceneId: slot.storySceneId,
     messageKey: item.key,
     message: item.text,
-    rebuildHint: index === 0 ? hint : null,
+    rebuildHint: index === lines.length - 1 ? hint : null,
   }));
 }
 

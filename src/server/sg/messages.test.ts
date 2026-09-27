@@ -1,6 +1,7 @@
 import { readFileSync, readdirSync, statSync } from "node:fs";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
+import { AppError } from "@/lib/errors";
 import { SG_MESSAGE_KEYS, type SgMessageKey } from "@/server/sg/constants";
 import { SG_COPY } from "@/server/sg/messages";
 import { decide, planRoute, type BudgetSnapshot, type RegistryLaneSnapshot, type RegistrySnapshot, type ShotCues } from "@/server/sg/policy";
@@ -161,6 +162,24 @@ describe("SG.6 copy map", () => {
   const registry = JSON.parse(
     readFileSync(path.join(process.cwd(), "config/sg-lane-registry.json"), "utf8"),
   ) as RegistryNameSource;
+
+  it("uses the cap sentence as the default spend-cap error", () => {
+    const error = AppError.spendCapReached();
+    expect(error.message).toBe(SG_COPY.SG_CAP_REACHED);
+    expect(error.message).not.toMatch(/\d/);
+    expect(error.message).not.toContain("$");
+    expect(error.message).not.toMatch(/AI-video/);
+    expect(error.message).not.toMatch(/\bclip\b/i);
+    expect(copyLintViolations({ jobError: error.message }, registry)).toEqual([]);
+  });
+
+  it("does not pass internal budget text through spendCapReached", () => {
+    const asset = readFileSync(path.join(process.cwd(), "src/server/services/asset.ts"), "utf8");
+    const errors = readFileSync(path.join(process.cwd(), "src/lib/errors.ts"), "utf8");
+    expect(asset).not.toContain("spendCapReached(error.message)");
+    expect(asset).not.toContain("Clip generation is paused");
+    expect(errors).not.toContain("Clip generation is paused");
+  });
 
   it("equals the nine P-8 final strings", () => {
     expect(SG_COPY).toEqual(FINAL_COPY);

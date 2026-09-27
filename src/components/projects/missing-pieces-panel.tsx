@@ -97,6 +97,34 @@ function kindLabel(kind: string) {
   }
 }
 
+function groupSlotMessages(items: SlotMessageView[]) {
+  const groups: Array<{
+    key: string;
+    role: string;
+    lines: Array<{ key: string; message: string }>;
+    rebuildHint: string | null;
+  }> = [];
+  for (const item of items) {
+    const key = `${item.storySceneId ?? "scene"}:${item.role}`;
+    const line = { key: `${item.messageKey}-${item.message}`, message: item.message };
+    const current = groups[groups.length - 1];
+    if (current && current.key === key) {
+      current.lines.push(line);
+      if (item.rebuildHint) {
+        current.rebuildHint = item.rebuildHint;
+      }
+      continue;
+    }
+    groups.push({
+      key,
+      role: item.role,
+      lines: [line],
+      rebuildHint: item.rebuildHint,
+    });
+  }
+  return groups;
+}
+
 export function MissingPiecesPanel({
   projectId,
   initialAssets,
@@ -337,12 +365,16 @@ export function MissingPiecesPanel({
 
         {slotMessages.length > 0 ? (
           <ul className="space-y-2">
-            {slotMessages.map((item, index) => (
-              <li key={`${item.storySceneId ?? "scene"}-${item.role}-${item.messageKey}-${index}`}>
-                <p className="text-sm">{item.role.replaceAll("_", " ")}</p>
-                <p className="text-sm text-muted-foreground">{item.message}</p>
-                {item.rebuildHint ? (
-                  <p className="text-sm text-muted-foreground">{item.rebuildHint}</p>
+            {groupSlotMessages(slotMessages).map((group) => (
+              <li key={group.key}>
+                <p className="text-sm">{group.role.replaceAll("_", " ")}</p>
+                {group.lines.map((line, index) => (
+                  <p key={`${group.key}-${index}`} className="text-sm text-muted-foreground">
+                    {line.message}
+                  </p>
+                ))}
+                {group.rebuildHint ? (
+                  <p className="text-sm text-muted-foreground">{group.rebuildHint}</p>
                 ) : null}
               </li>
             ))}

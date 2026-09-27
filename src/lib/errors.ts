@@ -1,3 +1,5 @@
+import { SG_COPY } from "@/server/sg/messages";
+
 export const ErrorCodes = {
   UNAUTHORIZED: "UNAUTHORIZED",
   VALIDATION: "VALIDATION",
@@ -386,7 +388,7 @@ export class AppError extends Error {
    * and a cap hit never starts another lane.
    */
   static spendCapReached(
-    message = "Clip generation is paused because a usage limit was reached. We did not retry automatically.",
+    message = SG_COPY.SG_CAP_REACHED,
     details?: Record<string, unknown>,
   ) {
     return new AppError(ErrorCodes.SPEND_CAP_REACHED, message, 429, details);

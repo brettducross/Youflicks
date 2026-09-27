@@ -114,6 +114,7 @@ import {
   type SlotCoverage,
 } from "@/server/sg/slot-coverage";
 import { attemptOutcomeSchema, laneClassSchema, SG_MESSAGE_KEYS, type RoutingMode } from "@/server/sg/constants";
+import { SG_COPY } from "@/server/sg/messages";
 import {
   presentSlotMessages,
   type AppliedSlotState,
@@ -323,8 +324,9 @@ export class AssetService {
   }
 
   /**
-   * Applied SG.6 copy for the latest READY timeline. Owner-only.
-   * Never returns decision reasons, shadow decisions, lane ids, or cost fields.
+   * Applied SG.6 copy for roles still in the latest READY timeline. Owner-only.
+   * Slots stay on the timeline version they were generated against, so a Rebuild
+   * must not hide them. Never returns decision reasons, shadow decisions, lane ids, or cost fields.
    */
   async listSlotMessages(userId: string, projectId: string): Promise<SlotMessageView[]> {
     await this.projects.getForUser(userId, projectId);
@@ -336,25 +338,32 @@ export class AssetService {
     if (!timeline) {
       return [];
     }
-    const slots = await prisma.shotFulfillment.findMany({
-      where: {
-        projectId,
-        timelineId: timeline.id,
-        timelineVersion: timeline.version,
-        status: { not: "SUPERSEDED" },
-      },
-      orderBy: [{ role: "asc" }, { storySceneId: "asc" }],
-      select: {
-        id: true,
-        role: true,
-        storySceneId: true,
-        treatment: true,
-        status: true,
-        userMessageKey: true,
-        generatedAssetId: true,
-        sourceMediaAssetId: true,
-      },
-    });
+    const slots = (
+      await prisma.shotFulfillment.findMany({
+        where: {
+          projectId,
+          status: { not: "SUPERSEDED" },
+        },
+        orderBy: [{ role: "asc" }, { storySceneId: "asc" }],
+        select: {
+          id: true,
+          role: true,
+          storySceneId: true,
+          routingMode: true,
+          treatment: true,
+          status: true,
+          userMessageKey: true,
+          generatedAssetId: true,
+          sourceMediaAssetId: true,
+        },
+      })
+    ).filter((slot) =>
+      timelineReferencesRole(
+        timeline.payload,
+        slot.role,
+        slot.storySceneId && slot.storySceneId.length > 0 ? slot.storySceneId : null,
+      ),
+    );
     if (slots.length === 0) {
       return [];
     }
@@ -388,7 +397,7 @@ export class AssetService {
         role: slot.role,
         storySceneId: slot.storySceneId && slot.storySceneId.length > 0 ? slot.storySceneId : null,
         roleKind: presenterRoleKind(slot.role, asset?.kind ?? null),
-        routingMode: readSgRoutingMode(),
+        routingMode: slot.routingMode === "ENFORCED" ? "ENFORCED" : "LEGACY",
         treatment: slot.treatment,
         status: slot.status,
         userMessageKey: slot.userMessageKey,
@@ -1026,9 +1035,7 @@ export class AssetService {
         jobId: input.job.id,
         detail: "budget cap set without YF_GATEWAY_LANE_ID",
       });
-      throw AppError.spendCapReached(
-        "Clip generation is paused because a usage limit was reached. We did not retry automatically.",
-      );
+      throw AppError.spendCapReached(SG_COPY.SG_CAP_REACHED);
     }
     let lane;
     try {
@@ -1062,7 +1069,7 @@ export class AssetService {
           laneId: lane.laneId,
           message: error.message,
         });
-        throw AppError.spendCapReached(error.message);
+        throw AppError.spendCapReached(SG_COPY.SG_CAP_REACHED);
       }
       throw error;
     }
@@ -1655,7 +1662,7 @@ export class AssetService {
           laneId: input.quote.laneId,
           message: error.message,
         });
-        throw AppError.spendCapReached(error.message);
+        throw AppError.spendCapReached(SG_COPY.SG_CAP_REACHED);
       }
       throw error;
     }
@@ -2367,6 +2374,33 @@ function presenterRoleKind(role: string, assetKind: string | null): PresenterRol
     return assetKind;
   }
   return inferKindFromRole(role);
+}
+
+function sceneKey(value: unknown): string {
+  return typeof value === "string" && value.length > 0 ? value : "";
+}
+
+/** A role still belongs on the cut when the latest timeline lists it as unmet or as a clip. */
+function timelineReferencesRole(payload: unknown, role: string, storySceneId: string | null): boolean {
+  if (!payload || typeof payload !== "object" || Array.isArray(payload)) {
+    return false;
+  }
+  const document = payload as {
+    unmetMediaRoles?: Array<{ role?: unknown; storySceneId?: unknown }>;
+    clips?: Array<{ mediaRole?: unknown; storySceneId?: unknown }>;
+  };
+  const scene = sceneKey(storySceneId);
+  for (const item of document.unmetMediaRoles ?? []) {
+    if (item.role === role && sceneKey(item.storySceneId) === scene) {
+      return true;
+    }
+  }
+  for (const clip of document.clips ?? []) {
+    if (clip.mediaRole === role && sceneKey(clip.storySceneId) === scene) {
+      return true;
+    }
+  }
+  return false;
 }
 
 function generatedAssetIdsInTimeline(payload: unknown): Set<string> {

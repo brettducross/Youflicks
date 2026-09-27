@@ -95,11 +95,11 @@ describe("SG.6 presenter", () => {
     const views = presentSlotMessages(verified({ roleKind: "VIDEO_CLIP" }));
     expect(texts(verified({ roleKind: "VIDEO_CLIP" }))).toEqual([
       SG_COPY.SG_NO_QUALIFIED_LANE,
-      SG_COPY.SG_REBUILD_HINT,
       SG_COPY.SG_FALLBACK_KEN_BURNS,
+      SG_COPY.SG_REBUILD_HINT,
     ]);
-    expect(views[0]?.rebuildHint).toBe(SG_COPY.SG_REBUILD_HINT);
-    expect(views[1]?.rebuildHint).toBeNull();
+    expect(views[0]?.rebuildHint).toBeNull();
+    expect(views.at(-1)?.rebuildHint).toBe(SG_COPY.SG_REBUILD_HINT);
     expect(texts(verified({ roleKind: "VIDEO_CLIP", clipInTimeline: true }))).toEqual([
       SG_COPY.SG_NO_QUALIFIED_LANE,
       SG_COPY.SG_FALLBACK_KEN_BURNS,
@@ -192,6 +192,16 @@ describe("SG.6 presenter", () => {
         }),
       ),
     ).toEqual([SG_COPY.SG_FAILED_HONEST]);
+    expect(
+      texts(
+        slot({
+          status: "FAILED",
+          treatment: "DEFER",
+          userMessageKey: SG_MESSAGE_KEYS.CAP_REACHED,
+          latestAttemptOutcome: "FAILED",
+        }),
+      ),
+    ).toEqual([SG_COPY.SG_CAP_REACHED]);
   });
 
   it("reads the applied key, not a shadow decision", () => {
