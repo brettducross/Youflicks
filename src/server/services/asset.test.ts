@@ -22,6 +22,7 @@ import {
   StoryStructureStatus,
   TimelineStatus,
 } from "@/server/domain/status";
+import { MediaStatus } from "@/server/media/constants";
 import type { AssetExecutionAttribution } from "@/server/adapters/assets/attribution";
 import { AssetCapability, type AssetCapabilityValue } from "@/server/ports/capabilities";
 import type { AssetGeneratorPort } from "@/server/ports/asset-generator";
@@ -2954,7 +2955,9 @@ describe("AssetService M3", () => {
           roles: [{ role, storySceneId: "scene-arrive", kind: "VIDEO_CLIP" }],
         });
         try {
-          await expect(first.assets.processJob((await jobs.get(queued.jobId))!)).rejects.toThrow(/cap/i);
+          await expect(first.assets.processJob((await jobs.get(queued.jobId))!)).rejects.toThrow(
+            SG_COPY.SG_CAP_REACHED,
+          );
           await jobs.fail(queued.jobId, { error: "cap", retry: false });
           expect(events).toEqual(["reserve"]);
           const attempt = await prisma.shotFulfillmentAttempt.findFirstOrThrow({
@@ -5050,7 +5053,45 @@ describe("AssetService M3", () => {
     assets: { listSlotMessages: AssetService["listSlotMessages"] },
     role: string,
   ) {
-    const rows = await assets.listSlotMessages(ownerId, projectId);
+    const timeline = await prisma.timeline.findFirst({
+      where: { projectId, status: TimelineStatus.READY },
+      orderBy: { version: "desc" },
+    });
+    let restorePayload: Prisma.JsonValue | null = null;
+    if (timeline?.payload && typeof timeline.payload === "object" && !Array.isArray(timeline.payload)) {
+      const document = structuredClone(timeline.payload) as TimelineDocument;
+      const listed =
+        (document.unmetMediaRoles ?? []).some(
+          (item) => item.role === role && item.storySceneId === "scene-arrive",
+        ) ||
+        document.clips.some((clip) => clip.mediaRole === role && clip.storySceneId === "scene-arrive");
+      if (!listed) {
+        restorePayload = timeline.payload;
+        document.unmetMediaRoles = [
+          ...(document.unmetMediaRoles ?? []),
+          {
+            role,
+            storySceneId: "scene-arrive",
+            reason: "Open on this cut for the slot-message assertion.",
+          },
+        ];
+        await prisma.timeline.update({
+          where: { id: timeline.id },
+          data: { payload: document as Prisma.InputJsonValue },
+        });
+      }
+    }
+    let rows: Awaited<ReturnType<AssetService["listSlotMessages"]>>;
+    try {
+      rows = await assets.listSlotMessages(ownerId, projectId);
+    } finally {
+      if (timeline && restorePayload) {
+        await prisma.timeline.update({
+          where: { id: timeline.id },
+          data: { payload: restorePayload as Prisma.InputJsonValue },
+        });
+      }
+    }
     for (const row of rows) {
       expect(Object.keys(row).sort()).toEqual(
         ["message", "messageKey", "rebuildHint", "role", "storySceneId"].sort(),
@@ -6198,7 +6239,7 @@ describe("AssetService M3", () => {
         },
         async () => {
           const calls: string[] = [];
-          const { assets, worker } = harness({
+          const { assets } = harness({
             adapter: scriptedGenerator(async () => {
               calls.push("generate");
               throw new Error("cap must not generate");
@@ -6209,11 +6250,15 @@ describe("AssetService M3", () => {
           const queued = await assets.requestGenerate(ownerId, projectId, {
             roles: [{ role, storySceneId: "scene-arrive", kind: "IMAGE" }],
           });
-          for (let attempt = 0; attempt < 5; attempt += 1) {
-            const current = await jobs.get(queued.jobId);
-            if (current?.status !== JobStatus.PENDING) break;
-            const ran = await worker.processNext();
-            if (!ran) break;
+          const pending = await jobs.get(queued.jobId);
+          try {
+            await assets.processJob(pending!);
+            throw new Error("spend cap must fail the job");
+          } catch (error) {
+            if (!(error instanceof Error) || error.message === "spend cap must fail the job") {
+              throw error;
+            }
+            await jobs.fail(queued.jobId, { error: error.message, retry: false });
           }
           const job = await jobs.get(queued.jobId);
           expect(calls).toEqual([]);
@@ -6290,14 +6335,33 @@ describe("AssetService M3", () => {
               where: { projectId, role, status: "FALLBACK" },
               orderBy: { timelineVersion: "desc" },
             });
-            await dropRoleClips(role);
-            const rebuilt = await rebuildCut();
-            expect(
-              rebuilt.document.clips.some((clip) => clip.generatedAssetId === slot.generatedAssetId),
-            ).toBe(true);
-            const after = await messagesFor(assets, role);
-            expect(after.map((row) => row.message)).toEqual([SG_COPY.SG_FALLBACK_KEN_BURNS]);
-            expect(after.every((row) => row.rebuildHint === null)).toBe(true);
+            const spare = await prisma.mediaAsset.findMany({
+              where: { projectId, id: { not: mediaAssetId }, status: { not: MediaStatus.ARCHIVED } },
+              select: { id: true, status: true },
+            });
+            if (spare.length > 0) {
+              await prisma.mediaAsset.updateMany({
+                where: { id: { in: spare.map((row) => row.id) } },
+                data: { status: MediaStatus.ARCHIVED },
+              });
+            }
+            try {
+              await dropRoleClips(role);
+              const rebuilt = await rebuildCut();
+              expect(
+                rebuilt.document.clips.some((clip) => clip.generatedAssetId === slot.generatedAssetId),
+              ).toBe(true);
+              const after = await messagesFor(assets, role);
+              expect(after.map((row) => row.message)).toEqual([SG_COPY.SG_FALLBACK_KEN_BURNS]);
+              expect(after.every((row) => row.rebuildHint === null)).toBe(true);
+            } finally {
+              for (const row of spare) {
+                await prisma.mediaAsset.update({
+                  where: { id: row.id },
+                  data: { status: row.status },
+                });
+              }
+            }
           });
         },
       );
