@@ -89,7 +89,9 @@ export const motionNeedSchema = z.enum(MOTION_NEEDS);
 /**
  * ShotFulfillment.routingMode (D12).
  * The shipped default lives in `routing-mode.ts` (`DEFAULT_SG_ROUTING_MODE`).
- * E-R1 is still open. Do not add a second default.
+ * E-R1 decided 2026-09-26: LEGACY for now; ENFORCED before invites.
+ * See docs/wave0-wave1/PO_SG_E-R1_ROUTING_MODE_DECISION_2026-09-26.md.
+ * Do not add a second default. Switching to ENFORCED is a separate reviewed change required before invites.
  */
 export const ROUTING_MODES = ["LEGACY", "ENFORCED"] as const;
 export type RoutingMode = (typeof ROUTING_MODES)[number];
@@ -141,7 +143,7 @@ export const SG_COST_PLAN_KEYS = [
 
 export type SgCostPlanKey = (typeof SG_COST_PLAN_KEYS)[number];
 
-/** SG.6 keys recorded on a non-GENERATE decision. PR-10 owns the user-facing copy. */
+/** SG.6 keys. All except SG_REBUILD_HINT are recorded on a non-GENERATE decision; SG_REBUILD_HINT is display-only and never stored. PR-10 owns the user-facing copy. */
 export const SG_MESSAGE_KEYS = {
   FALLBACK_ORIGINAL: "SG_FALLBACK_ORIGINAL",
   FALLBACK_KEN_BURNS: "SG_FALLBACK_KEN_BURNS",
@@ -151,6 +153,7 @@ export const SG_MESSAGE_KEYS = {
   WAITING: "SG_WAITING",
   CAP_REACHED: "SG_CAP_REACHED",
   FAILED_HONEST: "SG_FAILED_HONEST",
+  REBUILD_HINT: "SG_REBUILD_HINT",
 } as const;
 
 export type SgMessageKey = (typeof SG_MESSAGE_KEYS)[keyof typeof SG_MESSAGE_KEYS];

@@ -113,7 +113,13 @@ import {
   type CoverageAsset,
   type SlotCoverage,
 } from "@/server/sg/slot-coverage";
-import { attemptOutcomeSchema, laneClassSchema, type RoutingMode } from "@/server/sg/constants";
+import { attemptOutcomeSchema, laneClassSchema, SG_MESSAGE_KEYS, type RoutingMode } from "@/server/sg/constants";
+import {
+  presentSlotMessages,
+  type AppliedSlotState,
+  type PresenterRoleKind,
+  type SlotMessageView,
+} from "@/server/sg/presenter";
 import {
   PrismaShotFulfillment,
   UNCLASSIFIED_LANE_CLASS,
@@ -314,6 +320,89 @@ export class AssetService {
       orderBy: { createdAt: "desc" },
     });
     return rows.map((row) => this.toView(row));
+  }
+
+  /**
+   * Applied SG.6 copy for the latest READY timeline. Owner-only.
+   * Never returns decision reasons, shadow decisions, lane ids, or cost fields.
+   */
+  async listSlotMessages(userId: string, projectId: string): Promise<SlotMessageView[]> {
+    await this.projects.getForUser(userId, projectId);
+    const timeline = await prisma.timeline.findFirst({
+      where: { projectId, status: TimelineStatus.READY },
+      orderBy: { version: "desc" },
+      select: { id: true, version: true, payload: true },
+    });
+    if (!timeline) {
+      return [];
+    }
+    const slots = await prisma.shotFulfillment.findMany({
+      where: {
+        projectId,
+        timelineId: timeline.id,
+        timelineVersion: timeline.version,
+        status: { not: "SUPERSEDED" },
+      },
+      orderBy: [{ role: "asc" }, { storySceneId: "asc" }],
+      select: {
+        id: true,
+        role: true,
+        storySceneId: true,
+        treatment: true,
+        status: true,
+        userMessageKey: true,
+        generatedAssetId: true,
+        sourceMediaAssetId: true,
+      },
+    });
+    if (slots.length === 0) {
+      return [];
+    }
+    const attempts = await prisma.shotFulfillmentAttempt.findMany({
+      where: { shotFulfillmentId: { in: slots.map((slot) => slot.id) } },
+      orderBy: { attemptNo: "desc" },
+      select: { shotFulfillmentId: true, attemptNo: true, outcome: true },
+    });
+    const latestOutcome = new Map<string, string>();
+    for (const attempt of attempts) {
+      if (!latestOutcome.has(attempt.shotFulfillmentId)) {
+        latestOutcome.set(attempt.shotFulfillmentId, attempt.outcome);
+      }
+    }
+    const assetIds = slots
+      .map((slot) => slot.generatedAssetId)
+      .filter((id): id is string => Boolean(id));
+    const assets =
+      assetIds.length === 0
+        ? []
+        : await prisma.generatedAsset.findMany({
+            where: { projectId, id: { in: assetIds } },
+            select: { id: true, status: true, sourceMediaAssetId: true, kind: true },
+          });
+    const assetsById = new Map(assets.map((asset) => [asset.id, asset]));
+    const placed = generatedAssetIdsInTimeline(timeline.payload);
+    const views: SlotMessageView[] = [];
+    for (const slot of slots) {
+      const asset = slot.generatedAssetId ? assetsById.get(slot.generatedAssetId) : undefined;
+      const state: AppliedSlotState = {
+        role: slot.role,
+        storySceneId: slot.storySceneId && slot.storySceneId.length > 0 ? slot.storySceneId : null,
+        roleKind: presenterRoleKind(slot.role, asset?.kind ?? null),
+        routingMode: readSgRoutingMode(),
+        treatment: slot.treatment,
+        status: slot.status,
+        userMessageKey: slot.userMessageKey,
+        generatedAssetId: slot.generatedAssetId,
+        sourceMediaAssetId: slot.sourceMediaAssetId,
+        latestAttemptOutcome: latestOutcome.get(slot.id) ?? null,
+        assetStatus: asset?.status ?? null,
+        assetSourceMediaAssetId: asset?.sourceMediaAssetId ?? null,
+        assetInProject: Boolean(asset),
+        clipInTimeline: Boolean(slot.generatedAssetId && placed.has(slot.generatedAssetId)),
+      };
+      views.push(...presentSlotMessages(state));
+    }
+    return views;
   }
 
   async getLatestFulfillments(userId: string, projectId: string): Promise<GeneratedAssetView[]> {
@@ -1177,7 +1266,7 @@ export class AssetService {
         laneId: null,
         providerKey: null,
         decisionReason: "Routing cues are outside the SG.0 contract.",
-        messageKey: "SG_FAILED_HONEST",
+        messageKey: SG_MESSAGE_KEYS.FAILED_HONEST,
       });
       return { kind: "skip", stopJob: false, requiredScopes: cues.requiredScopes };
     }
@@ -1207,7 +1296,9 @@ export class AssetService {
           rows.some((row) => row.outcome === "CAP_DENIED")
             ? "A spend cap was reached. No automatic retry."
             : "No automatic retry after an unsettled or cancelled attempt.",
-        messageKey: rows.some((row) => row.outcome === "CAP_DENIED") ? "SG_CAP_REACHED" : "SG_FAILED_HONEST",
+        messageKey: rows.some((row) => row.outcome === "CAP_DENIED")
+          ? SG_MESSAGE_KEYS.CAP_REACHED
+          : SG_MESSAGE_KEYS.FAILED_HONEST,
       };
     }
 
@@ -1237,7 +1328,7 @@ export class AssetService {
           laneId: null,
           providerKey: null,
           decisionReason: "Dialogue close-up is not generated while E12 is open.",
-          messageKey: "SG_WAITING",
+          messageKey: SG_MESSAGE_KEYS.WAITING,
         });
         return { kind: "skip", stopJob: false, requiredScopes: cues.requiredScopes };
       }
@@ -1267,7 +1358,7 @@ export class AssetService {
 
     if (applied.treatment !== "GENERATE") {
       const stopJob =
-        applied.messageKey === "SG_CAP_REACHED" &&
+        applied.messageKey === SG_MESSAGE_KEYS.CAP_REACHED &&
         (plan.stopJob || rows.some((row) => row.outcome === "CAP_DENIED"));
       await this.recordSkip(input.slotId, input.routingMode, plan.shadow, applied);
       return { kind: "skip", stopJob, requiredScopes: cues.requiredScopes };
@@ -1283,6 +1374,7 @@ export class AssetService {
         input.routingMode,
         plan.shadow,
         "LEGACY routes this role on the injected adapter.",
+        { treatment: "GENERATE", userMessageKey: null },
       );
       if (!guard.ok) {
         void reportOpsAlert({
@@ -1295,7 +1387,7 @@ export class AssetService {
           laneId: null,
           providerKey: null,
           decisionReason: guard.reason,
-          messageKey: "SG_FAILED_HONEST",
+          messageKey: SG_MESSAGE_KEYS.FAILED_HONEST,
         });
         return { kind: "skip", stopJob: false, requiredScopes: cues.requiredScopes };
       }
@@ -1507,7 +1599,13 @@ export class AssetService {
       return { kind: "skip", stopJob: false, requiredScopes: input.requiredScopes };
     }
     quote = { ...quote, modelId: attribution.modelId };
-    await this.recordShadow(input.slotId, input.routingMode, input.shadow);
+    await this.recordShadow(
+      input.slotId,
+      input.routingMode,
+      input.shadow,
+      input.applied.decisionReason,
+      { treatment: "GENERATE", userMessageKey: null },
+    );
     return {
       kind: "enforced",
       requiredScopes: input.requiredScopes,
@@ -1575,12 +1673,16 @@ export class AssetService {
     routingMode: RoutingMode,
     shadow: RouteDecision,
     decisionReason?: string,
+    display?: { treatment: "GENERATE"; userMessageKey: null },
   ) {
     await this.fulfillments.recordRouteDecision({
       shotFulfillmentId: slotId,
       routingMode,
       shadowDecision: shadow as Prisma.InputJsonValue,
       ...(decisionReason !== undefined ? { decisionReason } : {}),
+      ...(display
+        ? { treatment: display.treatment, userMessageKey: display.userMessageKey }
+        : {}),
     });
   }
 
@@ -2191,7 +2293,8 @@ function enhancementProcessorDecision(
     laneId: null,
     providerKey: null,
     decisionReason: "ENHANCEMENT uses the Ken Burns processor, not a generative lane.",
-    messageKey: treatment === "STATIC" ? "SG_FALLBACK_STATIC" : "SG_FALLBACK_KEN_BURNS",
+    messageKey:
+      treatment === "STATIC" ? SG_MESSAGE_KEYS.FALLBACK_STATIC : SG_MESSAGE_KEYS.FALLBACK_KEN_BURNS,
   };
 }
 
@@ -2202,7 +2305,7 @@ function honest(decisionReason: string): RouteDecision {
     laneId: null,
     providerKey: null,
     decisionReason,
-    messageKey: "SG_FAILED_HONEST",
+    messageKey: SG_MESSAGE_KEYS.FAILED_HONEST,
   };
 }
 
@@ -2257,6 +2360,34 @@ function snapshotFromLanes(
 function registryPathFromEnv(): string | undefined {
   const path = process.env.SG_LANE_REGISTRY_PATH?.trim();
   return path ? path : undefined;
+}
+
+function presenterRoleKind(role: string, assetKind: string | null): PresenterRoleKind {
+  if (assetKind && isGeneratedAssetKind(assetKind)) {
+    return assetKind;
+  }
+  return inferKindFromRole(role);
+}
+
+function generatedAssetIdsInTimeline(payload: unknown): Set<string> {
+  const ids = new Set<string>();
+  if (!payload || typeof payload !== "object" || Array.isArray(payload)) {
+    return ids;
+  }
+  const clips = (payload as { clips?: unknown }).clips;
+  if (!Array.isArray(clips)) {
+    return ids;
+  }
+  for (const clip of clips) {
+    if (!clip || typeof clip !== "object") {
+      continue;
+    }
+    const row = clip as { sourceKind?: unknown; generatedAssetId?: unknown };
+    if (row.sourceKind === "GENERATED_ASSET" && typeof row.generatedAssetId === "string" && row.generatedAssetId.length > 0) {
+      ids.add(row.generatedAssetId);
+    }
+  }
+  return ids;
 }
 
 function extensionFromMime(mimeType: string) {

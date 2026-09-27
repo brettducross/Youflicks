@@ -6,7 +6,7 @@ PR-8 decides a treatment. It does not call a paid provider by itself. PR-9 rende
 
 `SG_ROUTING_MODE` is optional. When it is unset, the only default is `DEFAULT_SG_ROUTING_MODE` in `src/server/sg/routing-mode.ts`, which is `LEGACY`.
 
-The default routing mode and any hosted flip await PO decision E-R1 (pending). That constant is a working default only. Flip the constant, or set `SG_ROUTING_MODE`, without restructuring callers.
+E-R1 decided 2026-09-26: LEGACY for now; ENFORCED before invites. See `docs/wave0-wave1/PO_SG_E-R1_ROUTING_MODE_DECISION_2026-09-26.md`. That constant is the only default. Do not add a second default. Switching to ENFORCED is a separate reviewed change required before invites. Flip the constant, or set `SG_ROUTING_MODE`, without restructuring callers.
 
 Dialogue close-ups are not generated in either mode. Until E12 is decided they are ORIGINAL when original media covers the slot, otherwise DEFER. A generated dialogue or talking-face treatment remains a possible later E12 decision and would need a further lock amendment.
 
@@ -31,6 +31,10 @@ The lane resolver is cached on the service container for the life of the process
 ## Host allowlist
 
 `assertHttpBaseUrl` allows `http` and `https` and refuses userinfo. It does not yet block loopback, link-local, or metadata hosts, because local tests and the current operator-set gateway URL use `127.0.0.1`. If `baseUrl` is ever taken from somewhere other than operator env, refuse link-local, metadata, and loopback addresses, and require `https` for a hosted gateway. That allowlist is not enforced in this PR.
+
+## Messages
+
+Users see the applied key's copy per role in the Missing pieces panel. Shadow decisions are never shown. Ken Burns/static clips appear after a Rebuild cut.
 
 ## Budget
 

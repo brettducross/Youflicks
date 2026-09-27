@@ -43,6 +43,14 @@ type GeneratedAssetView = {
   createdAt: string;
 };
 
+type SlotMessageView = {
+  role: string;
+  storySceneId: string | null;
+  messageKey: string;
+  message: string;
+  rebuildHint: string | null;
+};
+
 type JobStatusView = {
   jobId: string;
   status: string;
@@ -94,17 +102,20 @@ export function MissingPiecesPanel({
   initialAssets,
   initialAvailability,
   initialUnmetRoles,
+  initialSlotMessages,
   timelineReady,
 }: {
   projectId: string;
   initialAssets: GeneratedAssetView[];
   initialAvailability: AssetAvailability;
   initialUnmetRoles: UnmetRoleView[];
+  initialSlotMessages: SlotMessageView[];
   timelineReady: boolean;
 }) {
   const [availability, setAvailability] = useState(initialAvailability);
   const [assets, setAssets] = useState<GeneratedAssetView[]>(initialAssets);
   const [unmet, setUnmet] = useState<UnmetRoleView[]>(initialUnmetRoles);
+  const [slotMessages, setSlotMessages] = useState<SlotMessageView[]>(initialSlotMessages);
   const [cutReady, setCutReady] = useState(timelineReady);
   const [job, setJob] = useState<JobStatusView | null>(null);
   const [busy, setBusy] = useState(false);
@@ -117,6 +128,7 @@ export function MissingPiecesPanel({
     ]);
     const assetsPayload = (await assetsResponse.json()) as {
       assets?: GeneratedAssetView[];
+      slotMessages?: SlotMessageView[];
       error?: { message?: string };
     };
     const timelinePayload = (await timelineResponse.json()) as {
@@ -126,6 +138,7 @@ export function MissingPiecesPanel({
       throw new Error(assetsPayload.error?.message || "Could not load missing pieces.");
     }
     setAssets(assetsPayload.assets ?? []);
+    setSlotMessages(assetsPayload.slotMessages ?? []);
     if (timelineResponse.ok) {
       setCutReady(Boolean(timelinePayload.timeline));
       setUnmet(timelinePayload.timeline?.document?.unmetMediaRoles ?? []);
@@ -320,6 +333,20 @@ export function MissingPiecesPanel({
               ))}
             </ul>
           </div>
+        ) : null}
+
+        {slotMessages.length > 0 ? (
+          <ul className="space-y-2">
+            {slotMessages.map((item, index) => (
+              <li key={`${item.storySceneId ?? "scene"}-${item.role}-${item.messageKey}-${index}`}>
+                <p className="text-sm">{item.role.replaceAll("_", " ")}</p>
+                <p className="text-sm text-muted-foreground">{item.message}</p>
+                {item.rebuildHint ? (
+                  <p className="text-sm text-muted-foreground">{item.rebuildHint}</p>
+                ) : null}
+              </li>
+            ))}
+          </ul>
         ) : null}
 
         <div className="flex flex-wrap gap-2">

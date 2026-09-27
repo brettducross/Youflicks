@@ -48,6 +48,7 @@ export default async function ProjectDetailPage({
   const timelines = await services.timelineService.listTimelines(user.id, id);
   const timelineAvailability = services.timelineService.getAvailability();
   const generatedAssets = await services.assetService.listAssets(user.id, id);
+  const slotMessages = await services.assetService.listSlotMessages(user.id, id);
   const assetAvailability = services.assetService.getAvailability();
   const unmetRoles = timeline?.document.unmetMediaRoles ?? [];
   const latestRender = await services.renderService.getLatestSuccessful(user.id, id);
@@ -121,6 +122,7 @@ export default async function ProjectDetailPage({
         initialAssets={generatedAssets}
         initialAvailability={assetAvailability}
         initialUnmetRoles={unmetRoles}
+        initialSlotMessages={slotMessages}
         timelineReady={Boolean(timeline)}
       />
 
