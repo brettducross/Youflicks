@@ -222,11 +222,18 @@ export class PrismaShotFulfillment {
     userMessageKey?: string | null;
     treatment?: string;
     status?: string;
+    /** Ken Burns params. Written only with a successful processor clip. */
+    treatmentParams?: Prisma.InputJsonValue;
+    generatedAssetId?: string | null;
+    sourceMediaAssetId?: string | null;
   }) {
     const slot = await this.db.shotFulfillment.findUniqueOrThrow({
       where: { id: input.shotFulfillmentId },
     });
     const locked = slot.status === "SUPERSEDED" || slot.status === "FULFILLED";
+    if (input.generatedAssetId && !locked) {
+      await assertSameProjectAsset(this.db, slot.projectId, input.generatedAssetId);
+    }
     return this.db.shotFulfillment.update({
       where: { id: slot.id },
       data: {
@@ -236,6 +243,15 @@ export class PrismaShotFulfillment {
         ...(input.userMessageKey !== undefined && !locked ? { userMessageKey: input.userMessageKey } : {}),
         ...(input.treatment !== undefined && !locked ? { treatment: input.treatment } : {}),
         ...(input.status !== undefined && !locked ? { status: input.status } : {}),
+        ...(input.treatmentParams !== undefined && !locked
+          ? { treatmentParams: input.treatmentParams }
+          : {}),
+        ...(input.generatedAssetId !== undefined && !locked
+          ? { generatedAssetId: input.generatedAssetId }
+          : {}),
+        ...(input.sourceMediaAssetId !== undefined && !locked
+          ? { sourceMediaAssetId: input.sourceMediaAssetId }
+          : {}),
       },
     });
   }

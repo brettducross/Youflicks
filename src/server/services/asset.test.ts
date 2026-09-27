@@ -1,3 +1,4 @@
+import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
@@ -36,7 +37,7 @@ import {
   type TimelineDocument,
 } from "@/server/timeline/schema";
 import { PrismaAiVideoBudget, type AiVideoBudgetPort } from "@/server/sg/ai-video-budget";
-import { resetLaneRegistryAlertDebounce } from "@/server/sg/lane-registry";
+import { loadSgLaneRegistry, resetLaneRegistryAlertDebounce } from "@/server/sg/lane-registry";
 import { PrismaShotFulfillment } from "@/server/sg/shot-fulfillment";
 import { AttributionService } from "@/server/services/attribution";
 import { ConsentService } from "@/server/services/consent";
@@ -53,6 +54,8 @@ import { TimelineService } from "@/server/services/timeline";
 import { TimelineWorker } from "@/server/services/timeline-worker";
 import { TasteService } from "@/server/services/taste";
 import { CREATIVE_PLAN_SCHEMA_VERSION } from "@/server/director/schema";
+import { KenBurnsProcessor, type KenBurnsRenderSpec } from "@/server/assets/kenburns";
+import { resolveAssetGeneratorLanes } from "@/server/assets/lane-resolver";
 import { emptyAssetAvailability, describeAssetAvailability } from "@/server/assets/provider-config";
 import type { VideoBackend } from "@/server/gateways/yf-asset/backends/types";
 import { parseYfAssetGatewayConfig } from "@/server/gateways/yf-asset/config";
@@ -2301,7 +2304,7 @@ describe("AssetService M3", () => {
     };
   }
 
-  async function writeLaneRegistry(lanes: object[]) {
+  async function writeLaneRegistry(lanes: object[], processors: object[] = []) {
     const dir = await mkdtemp(path.join(tmpdir(), "youflicks-pr8-r2-"));
     const file = path.join(dir, "lanes.json");
     await writeFile(
@@ -2312,11 +2315,27 @@ describe("AssetService M3", () => {
         regenCeilings: { "draft-cost": 3, "draft-quality": 2, standard: 2, premium: 2 },
         classOrder: ["draft-cost", "draft-quality", "standard", "premium"],
         lanes,
-        processors: [],
+        processors,
       }),
       "utf8",
     );
     return { dir, file };
+  }
+
+  function kenBurnsProcessorRow(enabled: boolean) {
+    return {
+      laneId: "yf.kenburns.v1",
+      laneClass: "processor",
+      providerKey: "yf.kenburns.v1",
+      modelId: "yf.kenburns.v1",
+      resolutionTier: "output-profile",
+      usdPerSecond: 0,
+      rateRef: "ESTIMATE compute only; fixture",
+      duration: "slot-derived",
+      audioMode: "OFF",
+      enabled,
+      generative: false,
+    };
   }
 
   async function clearBudgetLedgers() {
@@ -3513,8 +3532,14 @@ describe("AssetService M3", () => {
           expect(events).toEqual([]);
           await expectNoPaidAttempt(again.jobId);
           const slot = await prisma.shotFulfillment.findFirstOrThrow({ where: { projectId, role } });
-          expect(slot.treatment).toBe("DEFER");
-          expect(slot.userMessageKey).toBe("SG_NO_QUALIFIED_LANE");
+          expect(slot.identityState).toBe("UNKNOWN");
+          expect(slot.treatment).toBe("FAIL_HONEST");
+          expect(slot.userMessageKey).toBe("SG_FAILED_HONEST");
+          expect(slot.shadowDecision).toMatchObject({
+            treatment: "KEN_BURNS",
+            laneId: null,
+            messageKey: "SG_NO_QUALIFIED_LANE",
+          });
           expect(slot.requiredScopes).toContain("IDENTITY");
         } finally {
           await finishQuietly(queued.jobId);
@@ -4091,6 +4116,930 @@ describe("AssetService M3", () => {
       },
     );
     await rm(registry.dir, { recursive: true, force: true });
+  });
+
+  async function withRoleClip(
+    role: string,
+    assetId: string,
+    spanMs: number,
+    run: () => Promise<void>,
+  ) {
+    const row = await prisma.timeline.findFirstOrThrow({
+      where: { projectId, status: TimelineStatus.READY },
+      orderBy: { version: "desc" },
+    });
+    const original = row.payload;
+    const document = structuredClone(original) as TimelineDocument;
+    const start = document.clips.reduce((max, item) => Math.max(max, item.timelineEndMs), 0);
+    document.clips.push({
+      id: `clip-${role}`.slice(0, 64),
+      trackKey: "video.primary",
+      order: document.clips.length,
+      sourceKind: "MEDIA_ASSET",
+      assetId,
+      storySceneId: "scene-arrive",
+      mediaRole: role,
+      timelineStartMs: start,
+      timelineEndMs: start + spanMs,
+    });
+    document.totalDurationMs = Math.max(document.totalDurationMs, start + spanMs);
+    await prisma.timeline.update({
+      where: { id: row.id },
+      data: { payload: document as Prisma.InputJsonValue },
+    });
+    try {
+      await run();
+    } finally {
+      await prisma.timeline.update({
+        where: { id: row.id },
+        data: { payload: original as Prisma.InputJsonValue },
+      });
+    }
+  }
+
+  async function seedClassFailures(input: {
+    role: string;
+    cues: {
+      scope: string;
+      requiredScopes: string[];
+      identityState: string;
+      shotRole: string;
+      motionNeed: string | null;
+      slotDurationMs: number | null;
+      identityEvidence: object;
+    };
+    count: number;
+    laneId: string;
+    laneClass: string;
+    providerKey: string;
+    modelId: string;
+  }) {
+    const timeline = await prisma.timeline.findFirstOrThrow({
+      where: { projectId, status: TimelineStatus.READY },
+      orderBy: { version: "desc" },
+    });
+    const fulfillments = new PrismaShotFulfillment(prisma);
+    const slot = await fulfillments.ensureSlot({
+      projectId,
+      timelineId: timeline.id,
+      timelineVersion: timeline.version,
+      role: input.role,
+      storySceneId: "scene-arrive",
+      cues: input.cues,
+    });
+    for (let index = 0; index < input.count; index += 1) {
+      const attempt = await fulfillments.beginAttempt({
+        shotFulfillmentId: slot.id,
+        laneClass: input.laneClass,
+        laneId: input.laneId,
+        providerKey: input.providerKey,
+        modelId: input.modelId,
+        requiredScopes: input.cues.requiredScopes,
+        estimatedBilledSeconds: 5,
+        usdPerSecond: 0.01,
+        estimatedUsd: 0.05,
+      });
+      await fulfillments.finishAttempt({ attemptId: attempt.id, outcome: "FAILED" });
+    }
+    return slot;
+  }
+
+  it("persists a Ken Burns enhancement without a timeline write, hold, or paid attempt", async () => {
+    const registry = await writeLaneRegistry(
+      [
+        fixtureLane({
+          laneId: "qualified-lane",
+          laneClass: "draft-quality",
+          providerKey: "open:qualified",
+          modelId: "open-qualified",
+          usdPerSecond: 0.05,
+          gateway: { baseUrlEnv: "SG_LANE_KB_BASE_URL", apiKeyEnv: "SG_LANE_KB_API_KEY" },
+          gates: { HERO: QUALIFIED_GATE, IDENTITY: QUALIFIED_GATE, NON_IDENTITY: QUALIFIED_GATE },
+        }),
+      ],
+      [kenBurnsProcessorRow(true)],
+    );
+    const role = "kb_motion";
+    const analysis = await prisma.mediaAnalysis.create({
+      data: {
+        assetId: mediaAssetId,
+        providerKey: "test.analysis",
+        schemaVersion: "1.0",
+        status: "COMPLETED",
+        payload: {
+          analysisSchemaVersion: "1.0",
+          people: {
+            count: 1,
+            people: [{ anonymousPersonId: "person-left", faceDetected: true, positionHint: "left" }],
+          },
+        } as Prisma.InputJsonValue,
+      },
+    });
+    try {
+      await withEnv(
+        {
+          SG_ROUTING_MODE: "ENFORCED",
+          SG_LANE_REGISTRY_PATH: registry.file,
+          SG_LANE_KB_BASE_URL: "http://127.0.0.1:9",
+          SG_LANE_KB_API_KEY: "test-key",
+          YF_GATEWAY_LANE_ID: undefined,
+        },
+        async () => {
+          await withRoleClip(role, mediaAssetId, 2000, async () => {
+            const timeline = await prisma.timeline.findFirstOrThrow({
+              where: { projectId, status: TimelineStatus.READY },
+              orderBy: { version: "desc" },
+            });
+            const payloadBefore = JSON.stringify(timeline.payload);
+            const versionBefore = timeline.version;
+            const clipCountBefore = await prisma.timelineClip.count({ where: { timeline: { projectId } } });
+            const loaded = loadSgLaneRegistry(registry.file);
+            const events: string[] = [];
+            const { assets } = harness({
+              adapter: scriptedGenerator(async () => {
+                events.push("generate");
+                throw new Error("Ken Burns must not call the generative adapter");
+              }),
+              productionAvailable: true,
+              probeHealth: async () => true,
+              resolveLanes: () => {
+                const inner = resolveAssetGeneratorLanes(storage, loaded);
+                return {
+                  forLane(laneId: string) {
+                    events.push("forLane");
+                    return inner.forLane(laneId);
+                  },
+                  processors: (capability: AssetCapabilityValue) => inner.processors(capability),
+                };
+              },
+            });
+            const queued = await assets.requestGenerate(ownerId, projectId, {
+              roles: [
+                {
+                  role,
+                  storySceneId: "scene-arrive",
+                  kind: "ENHANCEMENT",
+                  sourceMediaAssetId: mediaAssetId,
+                },
+              ],
+            });
+            await assets.processJob((await jobs.get(queued.jobId))!);
+            await jobs.complete(queued.jobId, {});
+            expect(events).toEqual([]);
+            await expectNoPaidAttempt(queued.jobId);
+            expect(await prisma.usageEvent.count({ where: { jobId: queued.jobId } })).toBe(0);
+            const after = await prisma.timeline.findFirstOrThrow({ where: { id: timeline.id } });
+            expect(after.version).toBe(versionBefore);
+            expect(JSON.stringify(after.payload)).toBe(payloadBefore);
+            expect(await prisma.timelineClip.count({ where: { timeline: { projectId } } })).toBe(clipCountBefore);
+            const slot = await prisma.shotFulfillment.findFirstOrThrow({ where: { projectId, role } });
+            expect(slot.treatment).toBe("KEN_BURNS");
+            expect(slot.userMessageKey).toBe("SG_FALLBACK_KEN_BURNS");
+            expect(slot.treatmentParams).toMatchObject({
+              processor: "yf.kenburns.v1",
+              treatment: "KEN_BURNS",
+              sourceMediaAssetId: mediaAssetId,
+              durationMs: 2000,
+              scaleFrom: 1,
+              scaleTo: 1.08,
+              panAnchor: "face",
+              panX: 0.25,
+              panY: 0.5,
+              width: 1920,
+              height: 1080,
+              outputProfile: "WEB_1080",
+            });
+            const stored = await prisma.generatedAsset.findFirstOrThrow({
+              where: { id: slot.generatedAssetId ?? "", projectId },
+            });
+            expect(stored).toMatchObject({
+              kind: "ENHANCEMENT",
+              origin: "PROCESSED",
+              mimeType: "video/mp4",
+              providerKey: "yf.kenburns.v1",
+              capability: "MEDIA_ENHANCEMENT",
+              modelId: "yf.kenburns.v1",
+              sourceMediaAssetId: mediaAssetId,
+              width: 1920,
+              height: 1080,
+              durationMs: 2000,
+              status: "READY",
+            });
+            const bytes = await storage.get(stored.storageKey);
+            expect(createHash("sha256").update(bytes!.body).digest("hex")).toBe(stored.checksum);
+            const probePath = path.join(dir, `${role}.mp4`);
+            await writeFile(probePath, bytes!.body);
+            const probe = JSON.parse(
+              execFileSync("ffprobe", ["-v", "error", "-show_streams", "-of", "json", probePath], {
+                encoding: "utf8",
+              }),
+            ) as { streams: Array<{ codec_type: string; codec_name: string; width?: number; height?: number }> };
+            expect(probe.streams.map((stream) => stream.codec_type)).toEqual(["video"]);
+            expect(probe.streams[0]).toMatchObject({ codec_name: "h264", width: 1920, height: 1080 });
+          });
+        },
+      );
+    } finally {
+      await prisma.mediaAnalysis.delete({ where: { id: analysis.id } });
+      await rm(registry.dir, { recursive: true, force: true });
+    }
+  }, 180_000);
+
+  it("persists a STATIC enhancement when camera movement is static", async () => {
+    const registry = await writeLaneRegistry(
+      [
+        fixtureLane({
+          laneId: "qualified-static",
+          laneClass: "draft-quality",
+          providerKey: "open:qualified-static",
+          modelId: "open-qualified-static",
+          usdPerSecond: 0.05,
+          gateway: { baseUrlEnv: "SG_LANE_STATIC_BASE_URL", apiKeyEnv: "SG_LANE_STATIC_API_KEY" },
+          gates: { HERO: QUALIFIED_GATE, IDENTITY: QUALIFIED_GATE, NON_IDENTITY: QUALIFIED_GATE },
+        }),
+      ],
+      [kenBurnsProcessorRow(true)],
+    );
+    const role = "kb_static";
+    try {
+      await withEnv(
+        {
+          SG_ROUTING_MODE: "ENFORCED",
+          SG_LANE_REGISTRY_PATH: registry.file,
+          SG_LANE_STATIC_BASE_URL: "http://127.0.0.1:9",
+          SG_LANE_STATIC_API_KEY: "test-key",
+          YF_GATEWAY_LANE_ID: undefined,
+        },
+        async () => {
+          await withRoleClip(role, mediaAssetId, 2000, async () => {
+            const loaded = loadSgLaneRegistry(registry.file);
+            const events: string[] = [];
+            const { assets } = harness({
+              adapter: scriptedGenerator(async () => {
+                events.push("generate");
+                throw new Error("STATIC must not call the generative adapter");
+              }),
+              productionAvailable: true,
+              probeHealth: async () => true,
+              resolveLanes: () => {
+                const inner = resolveAssetGeneratorLanes(storage, loaded);
+                return {
+                  forLane(laneId: string) {
+                    events.push("forLane");
+                    return inner.forLane(laneId);
+                  },
+                  processors: (capability: AssetCapabilityValue) => inner.processors(capability),
+                };
+              },
+              collectCues: async (db, args) => {
+                const input = await collectShotCueInput(db, args);
+                return {
+                  ...input,
+                  analysis: input.analysis
+                    ? { ...input.analysis, cameraMovement: "static" }
+                    : {
+                        status: "COMPLETED",
+                        assetStatus: "COMPLETED",
+                        faceDetected: false,
+                        faceCount: 0,
+                        peopleCount: 0,
+                        recurringPersonCount: 0,
+                        cameraMovement: "static",
+                        locations: [],
+                        peopleParsed: true,
+                        personListed: false,
+                      },
+                };
+              },
+            });
+            const queued = await assets.requestGenerate(ownerId, projectId, {
+              roles: [
+                {
+                  role,
+                  storySceneId: "scene-arrive",
+                  kind: "ENHANCEMENT",
+                  sourceMediaAssetId: mediaAssetId,
+                },
+              ],
+            });
+            await assets.processJob((await jobs.get(queued.jobId))!);
+            await jobs.complete(queued.jobId, {});
+            expect(events).toEqual([]);
+            await expectNoPaidAttempt(queued.jobId);
+            const slot = await prisma.shotFulfillment.findFirstOrThrow({ where: { projectId, role } });
+            expect(slot.treatment).toBe("STATIC");
+            expect(slot.userMessageKey).toBe("SG_FALLBACK_STATIC");
+            expect(slot.treatmentParams).toMatchObject({ scaleFrom: 1, scaleTo: 1, treatment: "STATIC" });
+          });
+        },
+      );
+    } finally {
+      await rm(registry.dir, { recursive: true, force: true });
+    }
+  }, 180_000);
+
+  it("does not run the Ken Burns processor for a dialogue close-up in LEGACY or ENFORCED", async () => {
+    const registry = await writeLaneRegistry(
+      [
+        fixtureLane({
+          laneId: "dialogue-lane",
+          laneClass: "draft-quality",
+          providerKey: "open:dialogue",
+          modelId: "open-dialogue",
+          usdPerSecond: 0.05,
+          gateway: { baseUrlEnv: "SG_LANE_DIALOGUE_BASE_URL", apiKeyEnv: "SG_LANE_DIALOGUE_API_KEY" },
+          gates: { HERO: QUALIFIED_GATE, IDENTITY: QUALIFIED_GATE, NON_IDENTITY: QUALIFIED_GATE },
+        }),
+      ],
+      [kenBurnsProcessorRow(true)],
+    );
+    try {
+      await withDialogueOutline(async () => {
+        await withEnv(
+          {
+            SG_LANE_REGISTRY_PATH: registry.file,
+            SG_LANE_DIALOGUE_BASE_URL: "http://127.0.0.1:9",
+            SG_LANE_DIALOGUE_API_KEY: "test-key",
+            YF_GATEWAY_LANE_ID: undefined,
+          },
+          async () => {
+            const loaded = loadSgLaneRegistry(registry.file);
+            for (const mode of ["LEGACY", "ENFORCED"] as const) {
+              const role = `kb_dialogue_${mode.toLowerCase()}`;
+              await withRoleClip(role, mediaAssetId, 2000, async () => {
+                await withEnv({ SG_ROUTING_MODE: mode === "LEGACY" ? undefined : "ENFORCED" }, async () => {
+                  const events: string[] = [];
+                  const { assets } = harness({
+                    adapter: scriptedGenerator(async () => {
+                      events.push("generate");
+                      throw new Error("dialogue must not generate");
+                    }),
+                    productionAvailable: true,
+                    probeHealth: async () => true,
+                    resolveLanes: () => ({
+                      forLane() {
+                        events.push("forLane");
+                        throw new Error("dialogue must not resolve a lane");
+                      },
+                      processors: () => resolveAssetGeneratorLanes(storage, loaded).processors("MEDIA_ENHANCEMENT"),
+                    }),
+                  });
+                  const queued = await assets.requestGenerate(ownerId, projectId, {
+                    roles: [
+                      {
+                        role,
+                        storySceneId: "scene-arrive",
+                        kind: "ENHANCEMENT",
+                        sourceMediaAssetId: mediaAssetId,
+                      },
+                    ],
+                  });
+                  await assets.processJob((await jobs.get(queued.jobId))!);
+                  await jobs.complete(queued.jobId, {});
+                  expect(events, mode).toEqual([]);
+                  await expectNoPaidAttempt(queued.jobId);
+                  const slot = await prisma.shotFulfillment.findFirstOrThrow({ where: { projectId, role } });
+                  expect(slot.treatment, mode).toBe("DEFER");
+                  expect(slot.userMessageKey, mode).toBe("SG_WAITING");
+                  expect(
+                    await prisma.generatedAsset.count({
+                      where: { projectId, role, providerKey: "yf.kenburns.v1" },
+                    }),
+                  ).toBe(0);
+                });
+              });
+            }
+          },
+        );
+      });
+    } finally {
+      await rm(registry.dir, { recursive: true, force: true });
+    }
+  });
+
+  it("keeps ORIGINAL when a READY video covers the slot", async () => {
+    const registry = await writeQualifiedRegistry();
+    const role = "covered_motion";
+    const video = await prisma.mediaAsset.create({
+      data: {
+        projectId,
+        kind: "VIDEO",
+        filename: "covered.mp4",
+        mimeType: "video/mp4",
+        byteSize: 8,
+        storageKey: `pr9/${projectId}/covered`,
+        status: "READY",
+        durationMs: 4000,
+      },
+    });
+    try {
+      await withEnv(
+        {
+          SG_ROUTING_MODE: "ENFORCED",
+          SG_LANE_REGISTRY_PATH: registry.file,
+          SG_LANE_VEO_LITE_BASE_URL: "http://127.0.0.1:9",
+          SG_LANE_VEO_LITE_API_KEY: "test-key",
+          YF_GATEWAY_LANE_ID: undefined,
+        },
+        async () => {
+          await withRoleClip(role, video.id, 2000, async () => {
+            const events: string[] = [];
+            const { assets } = harness({
+              adapter: scriptedGenerator(async () => {
+                events.push("generate");
+                throw new Error("covered slot must not generate");
+              }),
+              productionAvailable: true,
+              probeHealth: async () => true,
+              resolveLanes: routedLane({
+                events,
+                adapter: scriptedGenerator(async () => {
+                  events.push("generate");
+                  throw new Error("covered slot must not generate");
+                }),
+              }),
+            });
+            const queued = await assets.requestGenerate(ownerId, projectId, {
+              roles: [{ role, storySceneId: "scene-arrive", kind: "VIDEO_CLIP" }],
+            });
+            await assets.processJob((await jobs.get(queued.jobId))!);
+            await jobs.complete(queued.jobId, {});
+            expect(events).toEqual([]);
+            await expectNoPaidAttempt(queued.jobId);
+            const slot = await prisma.shotFulfillment.findFirstOrThrow({ where: { projectId, role } });
+            expect(slot.treatment).toBe("ORIGINAL");
+            expect(slot.userMessageKey).toBe("SG_FALLBACK_ORIGINAL");
+          });
+        },
+      );
+    } finally {
+      await rm(registry.dir, { recursive: true, force: true });
+    }
+  });
+
+  it("routes a covered non-dialogue slot to the LEGACY adapter, not ORIGINAL", async () => {
+    const registry = await writeQualifiedRegistry();
+    const role = "covered_legacy";
+    const video = await prisma.mediaAsset.create({
+      data: {
+        projectId,
+        kind: "VIDEO",
+        filename: "covered-legacy.mp4",
+        mimeType: "video/mp4",
+        byteSize: 8,
+        storageKey: `pr9/${projectId}/covered-legacy`,
+        status: "READY",
+        durationMs: 4000,
+      },
+    });
+    try {
+      await withEnv(
+        {
+          SG_ROUTING_MODE: undefined,
+          SG_LANE_REGISTRY_PATH: registry.file,
+          SG_LANE_VEO_LITE_BASE_URL: "http://127.0.0.1:9",
+          SG_LANE_VEO_LITE_API_KEY: "test-key",
+          YF_GATEWAY_LANE_ID: undefined,
+          ASSET_HTTP_MODEL: undefined,
+        },
+        async () => {
+          await withRoleClip(role, video.id, 2000, async () => {
+            const events: string[] = [];
+            const local = new LocalDeterministicAssetGenerator(storage);
+            const { assets } = harness({
+              adapter: {
+                async generate(input) {
+                  events.push("generate");
+                  return local.generate(input);
+                },
+              },
+              productionAvailable: false,
+              localDevAvailable: true,
+              supportedCapabilities: [AssetCapability.VIDEO_GENERATION],
+            });
+            const queued = await assets.requestGenerate(ownerId, projectId, {
+              roles: [{ role, storySceneId: "scene-arrive", kind: "VIDEO_CLIP" }],
+            });
+            await assets.processJob((await jobs.get(queued.jobId))!);
+            await jobs.complete(queued.jobId, {});
+            expect(events).toEqual(["generate"]);
+            const slot = await prisma.shotFulfillment.findFirstOrThrow({ where: { projectId, role } });
+            expect(slot.treatment).not.toBe("ORIGINAL");
+            expect(slot.decisionReason).toBe("LEGACY routes this role on the injected adapter.");
+            expect(slot.shadowDecision).toMatchObject({
+              treatment: "ORIGINAL",
+              laneId: null,
+              messageKey: "SG_FALLBACK_ORIGINAL",
+            });
+          });
+        },
+      );
+    } finally {
+      await rm(registry.dir, { recursive: true, force: true });
+    }
+  });
+
+  it("does not treat a VIDEO_CLIP sourceMediaAssetId as a still", async () => {
+    const registry = await writeLaneRegistry(
+      [
+        fixtureLane({
+          laneId: "unqualified-clip",
+          laneClass: "draft-quality",
+          providerKey: "open:unqualified-clip",
+          modelId: "open-unqualified-clip",
+          usdPerSecond: 0.05,
+          gateway: { baseUrlEnv: "SG_LANE_CLIP_BASE_URL", apiKeyEnv: "SG_LANE_CLIP_API_KEY" },
+          gates: { HERO: UNQUALIFIED_GATE, IDENTITY: UNQUALIFIED_GATE, NON_IDENTITY: UNQUALIFIED_GATE },
+        }),
+      ],
+      [kenBurnsProcessorRow(true)],
+    );
+    const role = "unproven_clip_still";
+    try {
+      await withEnv(
+        {
+          SG_ROUTING_MODE: "ENFORCED",
+          SG_LANE_REGISTRY_PATH: registry.file,
+          SG_LANE_CLIP_BASE_URL: "http://127.0.0.1:9",
+          SG_LANE_CLIP_API_KEY: "test-key",
+          YF_GATEWAY_LANE_ID: undefined,
+        },
+        async () => {
+          const loaded = loadSgLaneRegistry(registry.file);
+          const events: string[] = [];
+          const { assets } = harness({
+            adapter: scriptedGenerator(async () => {
+              events.push("generate");
+              throw new Error("unproven still must not generate");
+            }),
+            productionAvailable: true,
+            probeHealth: async () => true,
+            resolveLanes: () => resolveAssetGeneratorLanes(storage, loaded),
+          });
+          const queued = await assets.requestGenerate(ownerId, projectId, {
+            roles: [
+              {
+                role,
+                storySceneId: "scene-arrive",
+                kind: "VIDEO_CLIP",
+                sourceMediaAssetId: mediaAssetId,
+              },
+            ],
+          });
+          await assets.processJob((await jobs.get(queued.jobId))!);
+          await jobs.complete(queued.jobId, {});
+          expect(events).toEqual([]);
+          await expectNoPaidAttempt(queued.jobId);
+          const slot = await prisma.shotFulfillment.findFirstOrThrow({ where: { projectId, role } });
+          expect(slot.treatment).toBe("DEFER");
+          expect(slot.userMessageKey).toBe("SG_NO_QUALIFIED_LANE");
+          expect(
+            await prisma.generatedAsset.count({ where: { projectId, providerKey: "yf.kenburns.v1", role } }),
+          ).toBe(0);
+        },
+      );
+    } finally {
+      await rm(registry.dir, { recursive: true, force: true });
+    }
+  });
+
+  it("returns FAIL_HONEST for an ENFORCED IMAGE role when a still exists and no lane is eligible", async () => {
+    const registry = await writeLaneRegistry(
+      [
+        fixtureLane({
+          laneId: "unqualified-image",
+          laneClass: "draft-quality",
+          providerKey: "open:unqualified-image",
+          modelId: "open-unqualified-image",
+          usdPerSecond: 0.05,
+          gateway: { baseUrlEnv: "SG_LANE_IMAGE_BASE_URL", apiKeyEnv: "SG_LANE_IMAGE_API_KEY" },
+          gates: { HERO: UNQUALIFIED_GATE, IDENTITY: UNQUALIFIED_GATE, NON_IDENTITY: UNQUALIFIED_GATE },
+        }),
+      ],
+      [kenBurnsProcessorRow(true)],
+    );
+    const role = "image_still_honest";
+    try {
+      await withEnv(
+        {
+          SG_ROUTING_MODE: "ENFORCED",
+          SG_LANE_REGISTRY_PATH: registry.file,
+          SG_LANE_IMAGE_BASE_URL: "http://127.0.0.1:9",
+          SG_LANE_IMAGE_API_KEY: "test-key",
+          YF_GATEWAY_LANE_ID: undefined,
+        },
+        async () => {
+          await withRoleClip(role, mediaAssetId, 2000, async () => {
+            const calls: string[] = [];
+            const loaded = loadSgLaneRegistry(registry.file);
+            const { assets } = harness({
+              adapter: scriptedGenerator(async () => {
+                calls.push("generate");
+                throw new Error("IMAGE must not generate");
+              }),
+              productionAvailable: true,
+              probeHealth: async () => true,
+              resolveLanes: () => {
+                const inner = resolveAssetGeneratorLanes(storage, loaded);
+                return {
+                  forLane(laneId: string) {
+                    calls.push("forLane");
+                    return inner.forLane(laneId);
+                  },
+                  processors(capability: AssetCapabilityValue) {
+                    return inner.processors(capability).map((hook) => {
+                      if (!hook.adapter) {
+                        return hook;
+                      }
+                      const processor = new (class extends KenBurnsProcessor {
+                        async process(spec: KenBurnsRenderSpec) {
+                          calls.push("process");
+                          return super.process(spec);
+                        }
+                      })(storage);
+                      return { ...hook, adapter: processor };
+                    });
+                  },
+                };
+              },
+            });
+            const queued = await assets.requestGenerate(ownerId, projectId, {
+              roles: [{ role, storySceneId: "scene-arrive", kind: "IMAGE" }],
+            });
+            await assets.processJob((await jobs.get(queued.jobId))!);
+            await jobs.complete(queued.jobId, {});
+            expect(calls).toEqual([]);
+            const slot = await prisma.shotFulfillment.findFirstOrThrow({ where: { projectId, role } });
+            expect(slot.treatment).toBe("FAIL_HONEST");
+            expect(slot.userMessageKey).toBe("SG_FAILED_HONEST");
+            expect(
+              await prisma.generatedAsset.count({
+                where: { projectId, role, providerKey: "yf.kenburns.v1" },
+              }),
+            ).toBe(0);
+          });
+        },
+      );
+    } finally {
+      await rm(registry.dir, { recursive: true, force: true });
+    }
+  }, 180_000);
+
+  it("Y3 generates on draft-quality when a NON_IDENTITY-only draft-cost lane is suspended", async () => {
+    const registry = await writeLaneRegistry([
+      fixtureLane({
+        laneId: "zdc",
+        laneClass: "draft-cost",
+        providerKey: "open:zdc",
+        modelId: "open-zdc",
+        usdPerSecond: 0.01,
+        gateway: { baseUrlEnv: "SG_LANE_ZDC_BASE_URL", apiKeyEnv: "SG_LANE_ZDC_API_KEY" },
+        gates: { HERO: UNQUALIFIED_GATE, IDENTITY: UNQUALIFIED_GATE, NON_IDENTITY: QUALIFIED_GATE },
+      }),
+      fixtureLane({
+        laneId: "zdq",
+        laneClass: "draft-quality",
+        providerKey: "open:zdq",
+        modelId: "open-zdq",
+        usdPerSecond: 0.05,
+        gateway: { baseUrlEnv: "SG_LANE_ZDQ_BASE_URL", apiKeyEnv: "SG_LANE_ZDQ_API_KEY" },
+        gates: { HERO: UNQUALIFIED_GATE, IDENTITY: QUALIFIED_GATE, NON_IDENTITY: QUALIFIED_GATE },
+      }),
+    ]);
+    const role = "y3_identity";
+    const evidence = {
+      faceCount: 0,
+      faceDetected: false,
+      recurringPersonCount: 0,
+      analysisCompleted: false,
+    };
+    await seedClassFailures({
+      role,
+      count: 1,
+      laneId: "zdc",
+      laneClass: "draft-cost",
+      providerKey: "open:zdc",
+      modelId: "open-zdc",
+      cues: {
+        scope: "IDENTITY",
+        requiredScopes: ["IDENTITY"],
+        identityState: "UNKNOWN",
+        shotRole: "other",
+        motionNeed: null,
+        slotDurationMs: null,
+        identityEvidence: evidence,
+      },
+    });
+    try {
+      await withEnv(
+        {
+          SG_ROUTING_MODE: "ENFORCED",
+          SG_LANES_SUSPENDED: "zdc",
+          SG_LANE_REGISTRY_PATH: registry.file,
+          SG_LANE_ZDC_BASE_URL: "http://127.0.0.1:9",
+          SG_LANE_ZDC_API_KEY: "test-key",
+          SG_LANE_ZDQ_BASE_URL: "http://127.0.0.1:9",
+          SG_LANE_ZDQ_API_KEY: "test-key",
+          YF_GATEWAY_LANE_ID: undefined,
+        },
+        async () => {
+          const events: string[] = [];
+          const lanes: string[] = [];
+          const local = new LocalDeterministicAssetGenerator(storage);
+          const { assets } = harness({
+            adapter: scriptedGenerator(async () => {
+              throw new Error("Y3 must use the routed lane");
+            }),
+            productionAvailable: true,
+            probeHealth: async () => true,
+            budgets: spendSpy(events),
+            resolveLanes: () => ({
+              forLane(laneId: string) {
+                events.push("forLane");
+                lanes.push(laneId);
+                const modelId = laneId === "zdc" ? "open-zdc" : "open-zdq";
+                const providerKey = laneId === "zdc" ? "open:zdc" : "open:zdq";
+                return {
+                  adapter: {
+                    async generate(input: AssetGeneratorInput) {
+                      events.push("generate");
+                      return local.generate(input);
+                    },
+                  },
+                  attribution(capability: AssetCapabilityValue): AssetExecutionAttribution {
+                    return { providerKey, capability, modelId, modelVersion: "1" };
+                  },
+                  supportedCapabilities: [AssetCapability.VIDEO_GENERATION],
+                };
+              },
+              processors() {
+                return [];
+              },
+            }),
+          });
+          const queued = await assets.requestGenerate(ownerId, projectId, {
+            roles: [{ role, storySceneId: "scene-arrive", kind: "VIDEO_CLIP" }],
+          });
+          await assets.processJob((await jobs.get(queued.jobId))!);
+          await jobs.complete(queued.jobId, {});
+          expect(lanes).toEqual(["zdq"]);
+          expect(events).toEqual(["reserve", "forLane", "generate"]);
+          const slot = await prisma.shotFulfillment.findFirstOrThrow({ where: { projectId, role } });
+          expect(slot.treatment).not.toBe("DEFER");
+          const attempts = await prisma.shotFulfillmentAttempt.findMany({
+            where: { shotFulfillmentId: slot.id },
+            orderBy: { attemptNo: "asc" },
+          });
+          expect(attempts.map((row) => `${row.laneId}:${row.outcome}`)).toEqual(["zdc:FAILED", "zdq:SUCCEEDED"]);
+        },
+      );
+    } finally {
+      await clearBudgetLedgers();
+      await rm(registry.dir, { recursive: true, force: true });
+    }
+  });
+
+  it("escalates NON_IDENTITY one class from draft-cost to draft-quality", async () => {
+    const registry = await writeLaneRegistry([
+      fixtureLane({
+        laneId: "zdc",
+        laneClass: "draft-cost",
+        providerKey: "open:zdc",
+        modelId: "open-zdc",
+        usdPerSecond: 0.01,
+        gateway: { baseUrlEnv: "SG_LANE_NI_DC_BASE_URL", apiKeyEnv: "SG_LANE_NI_DC_API_KEY" },
+        gates: { HERO: UNQUALIFIED_GATE, IDENTITY: UNQUALIFIED_GATE, NON_IDENTITY: QUALIFIED_GATE },
+      }),
+      fixtureLane({
+        laneId: "zdq",
+        laneClass: "draft-quality",
+        providerKey: "open:zdq",
+        modelId: "open-zdq",
+        usdPerSecond: 0.05,
+        gateway: { baseUrlEnv: "SG_LANE_NI_DQ_BASE_URL", apiKeyEnv: "SG_LANE_NI_DQ_API_KEY" },
+        gates: { HERO: UNQUALIFIED_GATE, IDENTITY: UNQUALIFIED_GATE, NON_IDENTITY: QUALIFIED_GATE },
+      }),
+      fixtureLane({
+        laneId: "zstd",
+        laneClass: "standard",
+        providerKey: "open:zstd",
+        modelId: "open-zstd",
+        usdPerSecond: 0.08,
+        gateway: { baseUrlEnv: "SG_LANE_NI_STD_BASE_URL", apiKeyEnv: "SG_LANE_NI_STD_API_KEY" },
+        gates: { HERO: QUALIFIED_GATE, IDENTITY: QUALIFIED_GATE, NON_IDENTITY: QUALIFIED_GATE },
+      }),
+    ]);
+    const role = "ni_one_step";
+    await seedClassFailures({
+      role,
+      count: 3,
+      laneId: "zdc",
+      laneClass: "draft-cost",
+      providerKey: "open:zdc",
+      modelId: "open-zdc",
+      cues: {
+        scope: "NON_IDENTITY",
+        requiredScopes: ["NON_IDENTITY"],
+        identityState: "ABSENT",
+        shotRole: "other",
+        motionNeed: null,
+        slotDurationMs: null,
+        identityEvidence: {
+          faceCount: 0,
+          faceDetected: false,
+          recurringPersonCount: 0,
+          analysisCompleted: true,
+        },
+      },
+    });
+    try {
+      await withEnv(
+        {
+          SG_ROUTING_MODE: "ENFORCED",
+          SG_LANE_REGISTRY_PATH: registry.file,
+          SG_LANE_NI_DC_BASE_URL: "http://127.0.0.1:9",
+          SG_LANE_NI_DC_API_KEY: "test-key",
+          SG_LANE_NI_DQ_BASE_URL: "http://127.0.0.1:9",
+          SG_LANE_NI_DQ_API_KEY: "test-key",
+          SG_LANE_NI_STD_BASE_URL: "http://127.0.0.1:9",
+          SG_LANE_NI_STD_API_KEY: "test-key",
+          YF_GATEWAY_LANE_ID: undefined,
+        },
+        async () => {
+          const events: string[] = [];
+          const lanes: string[] = [];
+          const local = new LocalDeterministicAssetGenerator(storage);
+          const { assets } = harness({
+            adapter: scriptedGenerator(async () => {
+              throw new Error("NON_IDENTITY escalation must use the routed lane");
+            }),
+            productionAvailable: true,
+            probeHealth: async () => true,
+            budgets: spendSpy(events),
+            collectCues: async (db, args) => {
+              const input = await collectShotCueInput(db, args);
+              return {
+                ...input,
+                analyzedAssetId: null,
+                analysisRootKeys: ["analysisSchemaVersion", "people"],
+                analysis: {
+                  status: "COMPLETED",
+                  assetStatus: "COMPLETED",
+                  faceDetected: false,
+                  faceCount: 0,
+                  peopleCount: 0,
+                  recurringPersonCount: 0,
+                  cameraMovement: null,
+                  locations: [],
+                  peopleParsed: true,
+                  personListed: false,
+                },
+              };
+            },
+            resolveLanes: () => ({
+              forLane(laneId: string) {
+                events.push("forLane");
+                lanes.push(laneId);
+                const modelId = laneId === "zdc" ? "open-zdc" : laneId === "zdq" ? "open-zdq" : "open-zstd";
+                const providerKey = laneId === "zdc" ? "open:zdc" : laneId === "zdq" ? "open:zdq" : "open:zstd";
+                return {
+                  adapter: {
+                    async generate(input: AssetGeneratorInput) {
+                      events.push("generate");
+                      return local.generate(input);
+                    },
+                  },
+                  attribution(capability: AssetCapabilityValue): AssetExecutionAttribution {
+                    return { providerKey, capability, modelId, modelVersion: "1" };
+                  },
+                  supportedCapabilities: [AssetCapability.VIDEO_GENERATION],
+                };
+              },
+              processors() {
+                return [];
+              },
+            }),
+          });
+          const queued = await assets.requestGenerate(ownerId, projectId, {
+            roles: [{ role, storySceneId: "scene-arrive", kind: "VIDEO_CLIP" }],
+          });
+          await assets.processJob((await jobs.get(queued.jobId))!);
+          await jobs.complete(queued.jobId, {});
+          expect(lanes).toEqual(["zdq"]);
+          expect(events).toEqual(["reserve", "forLane", "generate"]);
+          const slot = await prisma.shotFulfillment.findFirstOrThrow({ where: { projectId, role } });
+          const attempts = await prisma.shotFulfillmentAttempt.findMany({
+            where: { shotFulfillmentId: slot.id },
+            orderBy: { attemptNo: "asc" },
+          });
+          expect(attempts.filter((row) => row.laneClass === "draft-cost" && row.outcome === "FAILED")).toHaveLength(3);
+          expect(attempts.at(-1)).toMatchObject({ laneId: "zdq", laneClass: "draft-quality", outcome: "SUCCEEDED" });
+        },
+      );
+    } finally {
+      await clearBudgetLedgers();
+      await rm(registry.dir, { recursive: true, force: true });
+    }
   });
 
   async function seedReadyStory(document: StoryDocument) {

@@ -14,6 +14,12 @@ import {
   type GeneratedAssetKind,
 } from "@/server/assets/kinds";
 import type { GeneratedAssetDocument } from "@/server/assets/schema";
+import {
+  buildKenBurnsParams,
+  isKenBurnsProcessor,
+  KEN_BURNS_PROVIDER_KEY,
+  type KenBurnsTreatmentParams,
+} from "@/server/assets/kenburns";
 import type { AssetLaneResolver } from "@/server/assets/lane-resolver";
 import type { AssetAvailability } from "@/server/assets/provider-config";
 import { prisma } from "@/server/db";
@@ -23,7 +29,7 @@ import {
   JobType,
   TimelineStatus,
 } from "@/server/domain/status";
-import type { AssetCapabilityValue } from "@/server/ports/capabilities";
+import { AssetCapability, type AssetCapabilityValue } from "@/server/ports/capabilities";
 import type { AssetGeneratorPort } from "@/server/ports/asset-generator";
 import type { JobQueuePort, JobRecord } from "@/server/ports/jobs";
 import type { StoragePort, StorageReadRange } from "@/server/ports/storage";
@@ -95,7 +101,18 @@ import {
   type RouteDecision,
   type ShotCues,
 } from "@/server/sg/policy";
+import {
+  DEFAULT_RENDER_OUTPUT_PROFILE,
+  RENDER_OUTPUT_PROFILES,
+  type RenderOutputProfile,
+} from "@/server/render/schema";
 import { readSgRoutingMode } from "@/server/sg/routing-mode";
+import {
+  deriveSlotCoverage,
+  panAnchorFromAnalysis,
+  type CoverageAsset,
+  type SlotCoverage,
+} from "@/server/sg/slot-coverage";
 import { attemptOutcomeSchema, laneClassSchema, type RoutingMode } from "@/server/sg/constants";
 import {
   PrismaShotFulfillment,
@@ -410,6 +427,8 @@ export class AssetService {
         routingMode,
         registryLoad,
         sentAssetId: kind === "ENHANCEMENT" ? (role.sourceMediaAssetId ?? null) : null,
+        namedStillId: kind === "ENHANCEMENT" ? (role.sourceMediaAssetId ?? null) : null,
+        clips: timeline.document.clips,
         jobId: job.id,
         userId,
         projectId,
@@ -425,6 +444,22 @@ export class AssetService {
       if (route.kind === "skip") {
         if (route.stopJob) {
           break;
+        }
+        continue;
+      }
+      if (route.kind === "processor") {
+        const processedId = await this.runKenBurns({
+          route,
+          slotId: slot.id,
+          userId,
+          projectId,
+          job,
+          role,
+          timeline,
+          story,
+        });
+        if (processedId) {
+          assetIds.push(processedId);
         }
         continue;
       }
@@ -1057,6 +1092,17 @@ export class AssetService {
     routingMode: RoutingMode;
     registryLoad: RoutingRegistryLoad;
     sentAssetId: string | null;
+    /** ENHANCEMENT source id only. Other kinds pass null so a still stays unproven. */
+    namedStillId: string | null;
+    clips: ReadonlyArray<{
+      trackKey: string;
+      sourceKind?: "MEDIA_ASSET" | "GENERATED_ASSET";
+      assetId?: string;
+      mediaRole?: string;
+      storySceneId?: string;
+      timelineStartMs: number;
+      timelineEndMs: number;
+    }>;
     jobId: string;
     userId: string;
     projectId: string;
@@ -1084,12 +1130,19 @@ export class AssetService {
     const dialogueCloseup =
       input.storedShotRole === "dialogue-closeup" ||
       (dialogueOutline.length > 0 && routeIdentity !== "ABSENT");
+    const coverage = await this.loadSlotCoverage({
+      projectId: input.projectId,
+      role: input.role,
+      storySceneId: input.storySceneId,
+      namedStillId: input.namedStillId,
+      clips: input.clips,
+    });
     const cues: ShotCues = {
       requiredScopes: requiredScopesFor(routeIdentity, hero),
       shotRole: dialogueCloseup ? "dialogue-closeup" : input.extracted.shotRole,
       identityState: routeIdentity,
-      originalCoversSlot: false,
-      sourceStillExists: false,
+      originalCoversSlot: coverage.originalCoversSlot,
+      sourceStillExists: coverage.sourceStillExists,
       motionNeed: input.extracted.motionNeed,
       routingMode: input.routingMode,
     };
@@ -1132,7 +1185,6 @@ export class AssetService {
     const forceLegacy =
       input.routingMode === "LEGACY" &&
       cues.shotRole !== "dialogue-closeup" &&
-      !cues.originalCoversSlot &&
       !rawBlocks;
 
     let applied = plan.applied;
@@ -1156,6 +1208,60 @@ export class AssetService {
             ? "A spend cap was reached. No automatic retry."
             : "No automatic retry after an unsettled or cancelled attempt.",
         messageKey: rows.some((row) => row.outcome === "CAP_DENIED") ? "SG_CAP_REACHED" : "SG_FAILED_HONEST",
+      };
+    }
+
+    if (
+      input.routingMode === "ENFORCED" &&
+      input.kind === "ENHANCEMENT" &&
+      applied.treatment === "GENERATE" &&
+      cues.shotRole !== "dialogue-closeup"
+    ) {
+      applied = enhancementProcessorDecision(coverage, cues.motionNeed);
+    }
+
+    if (applied.treatment === "KEN_BURNS" || applied.treatment === "STATIC") {
+      if (input.kind === "IMAGE") {
+        await this.recordSkip(
+          input.slotId,
+          input.routingMode,
+          plan.shadow,
+          honest("IMAGE has no enhancement lane."),
+        );
+        return { kind: "skip", stopJob: false, requiredScopes: cues.requiredScopes };
+      }
+      if (cues.shotRole === "dialogue-closeup") {
+        await this.recordSkip(input.slotId, input.routingMode, plan.shadow, {
+          treatment: "DEFER",
+          laneClass: null,
+          laneId: null,
+          providerKey: null,
+          decisionReason: "Dialogue close-up is not generated while E12 is open.",
+          messageKey: "SG_WAITING",
+        });
+        return { kind: "skip", stopJob: false, requiredScopes: cues.requiredScopes };
+      }
+      const prepared = await this.prepareKenBurns({
+        treatment: applied.treatment,
+        coverage,
+        slotDurationMs: input.extracted.slotDurationMs,
+        projectId: input.projectId,
+      });
+      if (!prepared) {
+        await this.recordSkip(
+          input.slotId,
+          input.routingMode,
+          plan.shadow,
+          honest("The Ken Burns processor is not configured for this slot."),
+        );
+        return { kind: "skip", stopJob: false, requiredScopes: cues.requiredScopes };
+      }
+      return {
+        kind: "processor",
+        requiredScopes: cues.requiredScopes,
+        shadow: plan.shadow,
+        applied,
+        params: prepared,
       };
     }
 
@@ -1478,6 +1584,282 @@ export class AssetService {
     });
   }
 
+  /**
+   * originalCoversSlot: one READY VIDEO MediaAsset clip on video.primary for this
+   * role and scene, whose durationMs covers the clip span. Anything else is false.
+   * sourceStillExists: one READY PHOTO (image/*) that is either the ENHANCEMENT
+   * source id or the single MEDIA_ASSET clip for this role. A VIDEO_CLIP
+   * sourceMediaAssetId is ignored. Disagreeing ids stay false.
+   */
+  private async loadSlotCoverage(input: {
+    projectId: string;
+    role: string;
+    storySceneId?: string | null;
+    namedStillId: string | null;
+    clips: Parameters<AssetService["applyRoute"]>[0]["clips"];
+  }): Promise<SlotCoverage> {
+    const clipIds = input.clips
+      .filter((clip) => clip.trackKey === "video.primary" && clip.mediaRole === input.role)
+      .map((clip) => clip.assetId)
+      .filter((id): id is string => Boolean(id));
+    const ids = [...new Set([...(input.namedStillId ? [input.namedStillId] : []), ...clipIds])];
+    let assets: CoverageAsset[] = [];
+    if (ids.length > 0) {
+      const rows = await prisma.mediaAsset.findMany({
+        where: { projectId: input.projectId, id: { in: ids } },
+        select: { id: true, kind: true, mimeType: true, status: true, durationMs: true },
+      });
+      assets = rows;
+    }
+    const coverage = deriveSlotCoverage({
+      role: input.role,
+      storySceneId: input.storySceneId,
+      namedStillId: input.namedStillId,
+      clips: input.clips,
+      assets,
+    });
+    if (!coverage.sourceStillId) {
+      return coverage;
+    }
+    const pan = await this.panForStill(coverage.sourceStillId);
+    return { ...coverage, ...pan };
+  }
+
+  private async panForStill(assetId: string): Promise<Pick<SlotCoverage, "panX" | "panY" | "panAnchor">> {
+    const center = { panX: 0.5, panY: 0.5, panAnchor: "center" as const };
+    const rows = await prisma.mediaAnalysis.findMany({
+      where: { assetId },
+      orderBy: [{ createdAt: "desc" }, { id: "desc" }],
+      take: 2,
+      select: { payload: true, createdAt: true, status: true },
+    });
+    const latest = rows[0];
+    if (!latest || latest.status !== "COMPLETED") {
+      return center;
+    }
+    const previous = rows[1];
+    if (previous && latest.createdAt.getTime() === previous.createdAt.getTime()) {
+      return center;
+    }
+    return panAnchorFromAnalysis(latest.payload);
+  }
+
+  private async projectOutputProfile(projectId: string): Promise<RenderOutputProfile> {
+    const row = await prisma.renderJob.findFirst({
+      where: { projectId },
+      orderBy: { createdAt: "desc" },
+      select: { payload: true },
+    });
+    const payload = row?.payload;
+    if (!payload || typeof payload !== "object" || Array.isArray(payload)) {
+      return DEFAULT_RENDER_OUTPUT_PROFILE;
+    }
+    const manifest = (payload as { manifest?: { outputProfile?: unknown } }).manifest;
+    const value = manifest?.outputProfile;
+    if (typeof value === "string" && (RENDER_OUTPUT_PROFILES as readonly string[]).includes(value)) {
+      return value as RenderOutputProfile;
+    }
+    return DEFAULT_RENDER_OUTPUT_PROFILE;
+  }
+
+  private async prepareKenBurns(input: {
+    treatment: "KEN_BURNS" | "STATIC";
+    coverage: SlotCoverage;
+    slotDurationMs: number | null;
+    projectId: string;
+  }): Promise<KenBurnsTreatmentParams | null> {
+    if (!input.coverage.sourceStillExists || !input.coverage.sourceStillId) {
+      return null;
+    }
+    const resolver = this.resolveLanes();
+    const hook = resolver
+      ?.processors(AssetCapability.MEDIA_ENHANCEMENT)
+      .find(
+        (processor) =>
+          processor.laneId === KEN_BURNS_PROVIDER_KEY &&
+          processor.providerKey === KEN_BURNS_PROVIDER_KEY &&
+          processor.adapter &&
+          isKenBurnsProcessor(processor.adapter),
+      );
+    if (!hook) {
+      return null;
+    }
+    const outputProfile = await this.projectOutputProfile(input.projectId);
+    return buildKenBurnsParams({
+      treatment: input.treatment,
+      sourceMediaAssetId: input.coverage.sourceStillId,
+      slotDurationMs: input.slotDurationMs,
+      panX: input.coverage.panX,
+      panY: input.coverage.panY,
+      panAnchor: input.coverage.panAnchor,
+      outputProfile,
+    });
+  }
+
+  /**
+   * Processor path. No forLane, no hold, no paid attempt, no Timeline write.
+   * The clip is a GeneratedAsset the user includes with an explicit Rebuild cut.
+   */
+  private async runKenBurns(input: {
+    route: Extract<RoleRoute, { kind: "processor" }>;
+    slotId: string;
+    userId: string;
+    projectId: string;
+    job: JobRecord;
+    role: AssetRoleRequest;
+    timeline: ReadyTimelineSource;
+    story: Awaited<ReturnType<AssetService["loadStory"]>>;
+  }): Promise<string | null> {
+    const resolver = this.resolveLanes();
+    const hook = resolver
+      ?.processors(AssetCapability.MEDIA_ENHANCEMENT)
+      .find((processor) => processor.adapter && isKenBurnsProcessor(processor.adapter));
+    const processor = hook?.adapter && isKenBurnsProcessor(hook.adapter) ? hook.adapter : null;
+    if (!processor) {
+      await this.recordSkip(
+        input.slotId,
+        readSgRoutingMode(),
+        input.route.shadow,
+        honest("The Ken Burns processor is not configured for this slot."),
+      );
+      return null;
+    }
+    const still = await prisma.mediaAsset.findFirst({
+      where: { id: input.route.params.sourceMediaAssetId, projectId: input.projectId, status: "READY" },
+      select: { storageKey: true },
+    });
+    const storedStill = still ? await this.storage.get(still.storageKey) : null;
+    if (!storedStill || storedStill.body.byteLength === 0) {
+      await this.recordSkip(
+        input.slotId,
+        readSgRoutingMode(),
+        input.route.shadow,
+        honest("The source still is not in storage."),
+      );
+      return null;
+    }
+    let document: GeneratedAssetDocument;
+    let inputFingerprint: string;
+    try {
+      const assembled = await this.contract.assembleInput(
+        input.userId,
+        input.projectId,
+        input.timeline,
+        {
+          role: input.role.role,
+          storySceneId: input.role.storySceneId,
+          kind: "ENHANCEMENT",
+          sourceMediaAssetId: input.route.params.sourceMediaAssetId,
+          reason: input.role.reason,
+        },
+        input.story,
+      );
+      const raw = await processor.process({
+        ...input.route.params,
+        projectId: input.projectId,
+        role: input.role.role,
+        storySceneId: input.role.storySceneId,
+        timelineId: input.timeline.id,
+        timelineVersion: input.timeline.version,
+        storyStructureId: input.timeline.storyStructureId,
+        storyStructureVersion: input.timeline.storyStructureVersion,
+        stillBytes: storedStill.body,
+      });
+      document = this.contract.validateDocument(assembled, raw);
+      await this.assertStoredBytes(document);
+      inputFingerprint = fingerprintAssetGeneratorInput(assembled);
+    } catch (error) {
+      logger.warn("asset.kenburns_failed", {
+        projectId: input.projectId,
+        jobId: input.job.id,
+        role: input.role.role,
+        error: error instanceof Error ? error.message : "unknown",
+      });
+      await this.recordSkip(
+        input.slotId,
+        readSgRoutingMode(),
+        input.route.shadow,
+        honest("The Ken Burns processor could not write a clip."),
+      );
+      return null;
+    }
+    const priorReady = await prisma.generatedAsset.findFirst({
+      where: {
+        projectId: input.projectId,
+        timelineId: input.timeline.id,
+        role: input.role.role,
+        status: GeneratedAssetStatus.READY,
+        ...(input.role.storySceneId ? { storySceneId: input.role.storySceneId } : {}),
+      },
+      orderBy: { createdAt: "desc" },
+    });
+    const stored = await prisma.$transaction(async (tx) => {
+      if (priorReady) {
+        await tx.generatedAsset.update({
+          where: { id: priorReady.id },
+          data: { status: GeneratedAssetStatus.SUPERSEDED },
+        });
+      }
+      const body = await this.storage.get(document.storageKey);
+      return tx.generatedAsset.create({
+        data: {
+          projectId: input.projectId,
+          status: GeneratedAssetStatus.READY,
+          kind: document.kind,
+          origin: document.origin,
+          role: document.role,
+          mimeType: document.mimeType,
+          byteSize: BigInt(body?.body.byteLength ?? 0),
+          storageKey: document.storageKey,
+          durationMs: document.durationMs ?? null,
+          width: document.width ?? null,
+          height: document.height ?? null,
+          checksum: document.checksum ?? null,
+          payload: document as Prisma.InputJsonValue,
+          jobId: input.job.id,
+          inputFingerprint,
+          providerKey: KEN_BURNS_PROVIDER_KEY,
+          capability: AssetCapability.MEDIA_ENHANCEMENT,
+          modelId: KEN_BURNS_PROVIDER_KEY,
+          timelineId: input.timeline.id,
+          timelineVersion: input.timeline.version,
+          storySceneId: document.fulfillment.storySceneId ?? input.role.storySceneId ?? null,
+          storyStructureId: input.timeline.storyStructureId,
+          storyStructureVersion: input.timeline.storyStructureVersion,
+          sourceMediaAssetId: document.sourceMediaAssetId ?? null,
+          replacesAssetId: priorReady?.id ?? null,
+        },
+      });
+    });
+    await this.attribution.record({
+      projectId: input.projectId,
+      generatedAssetId: stored.id,
+      jobId: input.job.id,
+      providerKey: KEN_BURNS_PROVIDER_KEY,
+      capability: AssetCapability.MEDIA_ENHANCEMENT,
+      modelId: KEN_BURNS_PROVIDER_KEY,
+    });
+    await this.fulfillments.recordRouteDecision({
+      shotFulfillmentId: input.slotId,
+      routingMode: readSgRoutingMode(),
+      shadowDecision: input.route.shadow as Prisma.InputJsonValue,
+      decisionReason: input.route.applied.decisionReason,
+      userMessageKey: input.route.applied.messageKey,
+      treatment: input.route.applied.treatment,
+      status: fulfillmentStatusForTreatment(input.route.applied.treatment) ?? "FALLBACK",
+      treatmentParams: input.route.params as Prisma.InputJsonValue,
+      generatedAssetId: stored.id,
+      sourceMediaAssetId: input.route.params.sourceMediaAssetId,
+    });
+    logger.info("asset.kenburns_completed", {
+      projectId: input.projectId,
+      jobId: input.job.id,
+      generatedAssetId: stored.id,
+      role: input.role.role,
+    });
+    return stored.id;
+  }
+
   private async recordSkip(
     slotId: string,
     routingMode: RoutingMode,
@@ -1762,6 +2144,13 @@ type RoleRoute =
   | { kind: "skip"; stopJob: boolean; requiredScopes: string[] }
   | { kind: "legacy"; requiredScopes: string[] }
   | {
+      kind: "processor";
+      requiredScopes: string[];
+      shadow: RouteDecision;
+      applied: RouteDecision;
+      params: KenBurnsTreatmentParams;
+    }
+  | {
       kind: "enforced";
       requiredScopes: string[];
       quote: AttemptQuote;
@@ -1786,6 +2175,24 @@ function ledgerCapBlocked(
     return true;
   }
   return false;
+}
+
+function enhancementProcessorDecision(
+  coverage: SlotCoverage,
+  motionNeed: ShotCues["motionNeed"],
+): RouteDecision {
+  if (!coverage.sourceStillExists) {
+    return honest("No source still for MEDIA_ENHANCEMENT.");
+  }
+  const treatment = motionNeed === "none" ? "STATIC" : "KEN_BURNS";
+  return {
+    treatment,
+    laneClass: null,
+    laneId: null,
+    providerKey: null,
+    decisionReason: "ENHANCEMENT uses the Ken Burns processor, not a generative lane.",
+    messageKey: treatment === "STATIC" ? "SG_FALLBACK_STATIC" : "SG_FALLBACK_KEN_BURNS",
+  };
 }
 
 function honest(decisionReason: string): RouteDecision {

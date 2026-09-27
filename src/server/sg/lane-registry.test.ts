@@ -568,9 +568,11 @@ describe("lane registry validators", () => {
     });
     const parsed = parseLaneRegistry(document([heroLane, plain]));
     const downgraded = applyLaneSuspension(parsed.lanes, ["hero-lane", "plain-lane"]);
+    expect(downgraded[0]?.gates.HERO.status).toBe("SUSPENDED");
+    expect(downgraded[0]?.gates.IDENTITY.status).toBe("SUSPENDED");
+    expect(downgraded[0]?.gates.NON_IDENTITY.status).toBe("NOT_QUALIFIED");
     for (const scope of ROUTING_SCOPES) {
-      expect(downgraded[0]?.gates[scope].status).toBe("SUSPENDED");
-      expect(downgraded[1]?.gates[scope].status).toBe("SUSPENDED");
+      expect(downgraded[1]?.gates[scope].status).toBe("NOT_QUALIFIED");
     }
     expect(parsed.lanes[0]?.gates.HERO.status).toBe("QUALIFIED");
     const untouched = applyLaneSuspension(parsed.lanes, ["not-a-lane"]);

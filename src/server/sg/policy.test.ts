@@ -767,6 +767,107 @@ describe("SG.0 policy contract", () => {
     );
   });
 
+  it("NI1 defers NON_IDENTITY at the ceiling when draft-cost and draft-quality are exhausted", () => {
+    const decision = decide(
+      cues({ requiredScopes: ["NON_IDENTITY"], routingMode: "ENFORCED" }),
+      {
+        lanes: [
+          lane({ laneId: "lane-dc", laneClass: "draft-cost" }),
+          lane({ laneId: "lane-dq", laneClass: "draft-quality", providerKey: "open:dq" }),
+          lane({ laneId: "lane-std", laneClass: "standard", providerKey: "open:std" }),
+          lane({ laneId: "lane-prem", laneClass: "premium", providerKey: "open:prem" }),
+        ],
+      },
+      budget,
+      [
+        { laneClass: "draft-cost", outcome: "FAILED", classAttemptNo: 3 },
+        { laneClass: "draft-quality", outcome: "FAILED", classAttemptNo: 2 },
+      ],
+    );
+    expect(decision.treatment).toBe("DEFER");
+    expect(decision.laneId).toBeNull();
+    expect(decision.messageKey).toBe(SG_MESSAGE_KEYS.CEILING_REACHED);
+  });
+
+  it("NQ3 does not pin an IDENTITY start from a suspended NON_IDENTITY-only draft-cost lane", () => {
+    const decision = decide(
+      cues({ requiredScopes: ["IDENTITY"], routingMode: "ENFORCED" }),
+      {
+        lanes: [
+          lane({
+            laneId: "zdc",
+            laneClass: "draft-cost",
+            gates: { HERO: "NOT_QUALIFIED", IDENTITY: "NOT_QUALIFIED", NON_IDENTITY: "SUSPENDED" },
+          }),
+          lane({ laneId: "zdq", laneClass: "draft-quality", providerKey: "open:dq" }),
+        ],
+      },
+      budget,
+      [{ laneClass: "draft-cost", outcome: "FAILED", classAttemptNo: 1 }],
+    );
+    expect(decision).toMatchObject({
+      treatment: "GENERATE",
+      laneId: "zdq",
+      laneClass: "draft-quality",
+    });
+  });
+
+  it("CP4 uses every required scope when a class pins history", () => {
+    const decision = decide(
+      cues({ requiredScopes: ["HERO", "IDENTITY"], routingMode: "ENFORCED" }),
+      {
+        lanes: [
+          lane({
+            laneId: "lane-dc",
+            laneClass: "draft-cost",
+            gates: { HERO: "QUALIFIED", IDENTITY: "NOT_QUALIFIED", NON_IDENTITY: "QUALIFIED" },
+          }),
+          lane({
+            laneId: "lane-std",
+            laneClass: "standard",
+            providerKey: "open:std",
+            gates: { HERO: "QUALIFIED", IDENTITY: "QUALIFIED", NON_IDENTITY: "NOT_QUALIFIED" },
+          }),
+        ],
+      },
+      budget,
+      [{ laneClass: "draft-cost", outcome: "FAILED", classAttemptNo: 1 }],
+    );
+    expect(decision).toMatchObject({
+      treatment: "GENERATE",
+      laneId: "lane-std",
+      laneClass: "standard",
+    });
+  });
+
+  it("returns KEN_BURNS or STATIC when no lane is eligible and a still exists", () => {
+    const none = decide(
+      cues({ requiredScopes: ["IDENTITY"], sourceStillExists: false, routingMode: "ENFORCED" }),
+      { lanes: [lane({ gates: { HERO: "NOT_QUALIFIED", IDENTITY: "NOT_QUALIFIED", NON_IDENTITY: "NOT_QUALIFIED" } })] },
+      budget,
+      [],
+    );
+    expect(none).toMatchObject({ treatment: "DEFER", laneId: null, messageKey: SG_MESSAGE_KEYS.NO_QUALIFIED_LANE });
+    const motion = decide(
+      cues({ requiredScopes: ["IDENTITY"], sourceStillExists: true, motionNeed: "low", routingMode: "ENFORCED" }),
+      { lanes: [lane({ gates: { HERO: "NOT_QUALIFIED", IDENTITY: "NOT_QUALIFIED", NON_IDENTITY: "NOT_QUALIFIED" } })] },
+      budget,
+      [],
+    );
+    expect(motion.treatment).toBe("KEN_BURNS");
+    expect(motion.laneId).toBeNull();
+    expect(motion.messageKey).toBe(SG_MESSAGE_KEYS.NO_QUALIFIED_LANE);
+    const held = decide(
+      cues({ requiredScopes: ["IDENTITY"], sourceStillExists: true, motionNeed: "none", routingMode: "ENFORCED" }),
+      { lanes: [lane({ gates: { HERO: "NOT_QUALIFIED", IDENTITY: "NOT_QUALIFIED", NON_IDENTITY: "NOT_QUALIFIED" } })] },
+      budget,
+      [],
+    );
+    expect(held.treatment).toBe("STATIC");
+    expect(held.laneId).toBeNull();
+    expect(held.messageKey).toBe(SG_MESSAGE_KEYS.NO_QUALIFIED_LANE);
+  });
+
   it("does not let creative modules import the policy", () => {
     const roots = ["src/server/director", "src/server/story", "src/server/timeline", "src/server/ports"];
     for (const root of roots) {
