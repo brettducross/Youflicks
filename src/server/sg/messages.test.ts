@@ -1,8 +1,15 @@
 import { readFileSync, readdirSync, statSync } from "node:fs";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
+import { SG_CAP_REACHED_SENTENCE } from "@/lib/sg-cap-sentence";
 import { AppError } from "@/lib/errors";
 import { SG_MESSAGE_KEYS, type SgMessageKey } from "@/server/sg/constants";
+import {
+  copyLintViolations,
+  EXCLUDED_GENERIC_TOKENS,
+  registryTokens,
+  type RegistryNameSource,
+} from "@/server/sg/copy-lint";
 import { SG_COPY } from "@/server/sg/messages";
 import { decide, planRoute, type BudgetSnapshot, type RegistryLaneSnapshot, type RegistrySnapshot, type ShotCues } from "@/server/sg/policy";
 
@@ -21,100 +28,6 @@ const FINAL_COPY: Record<SgMessageKey, string> = {
   SG_FAILED_HONEST: "We couldn't make this piece for this moment. Nothing in your story was changed.",
   SG_REBUILD_HINT: "Rebuild your cut to include the updated moments.",
 };
-
-/**
- * Generic English tokens that the identifier split actually produces from
- * config/sg-lane-registry.json. They are not vendor or model names.
- * `lite` is absent on purpose: veo31lite keeps the leading letters `veo`
- * and the whole token `veo31lite`, so `lite` is never a token.
- */
-const EXCLUDED_GENERIC_TOKENS = ["video", "quality", "cost", "fast", "pro", "audio", "off", "tbd"] as const;
-
-const KEN_BURNS_PHRASES = ["ken burns", "kenburns"];
-
-type RegistryNameSource = {
-  lanes?: Array<{ providerKey?: string; modelId?: string; laneId?: string }>;
-  processors?: Array<{ providerKey?: string; modelId?: string; laneId?: string }>;
-};
-
-function identifierTokens(value: string): string[] {
-  const parts = value.split(/[:/.\-_]+/).filter((part) => part.length > 0);
-  const tokens: string[] = [];
-  for (const part of parts) {
-    if (part.length >= 3) {
-      tokens.push(part.toLowerCase());
-    }
-    const leading = /^[A-Za-z]+/.exec(part)?.[0] ?? "";
-    if (leading.length >= 3 && leading.length < part.length) {
-      tokens.push(leading.toLowerCase());
-    }
-  }
-  return tokens;
-}
-
-function registryTokens(registry: RegistryNameSource): Set<string> {
-  const tokens = new Set<string>();
-  for (const row of [...(registry.lanes ?? []), ...(registry.processors ?? [])]) {
-    for (const value of [row.providerKey, row.modelId, row.laneId]) {
-      if (!value) continue;
-      for (const token of identifierTokens(value)) {
-        tokens.add(token);
-      }
-    }
-  }
-  return tokens;
-}
-
-function fullRegistryNames(registry: RegistryNameSource): string[] {
-  const names: string[] = [];
-  for (const row of [...(registry.lanes ?? []), ...(registry.processors ?? [])]) {
-    for (const value of [row.providerKey, row.modelId, row.laneId]) {
-      if (value) names.push(value);
-    }
-  }
-  return names;
-}
-
-function escapeRegExp(value: string): string {
-  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-}
-
-export function copyLintViolations(
-  copy: Record<string, string>,
-  registry: RegistryNameSource,
-): string[] {
-  const violations: string[] = [];
-  const tokens = registryTokens(registry);
-  const names = fullRegistryNames(registry);
-  for (const [key, text] of Object.entries(copy)) {
-    const lower = text.toLowerCase();
-    for (const phrase of KEN_BURNS_PHRASES) {
-      if (lower.includes(phrase)) {
-        violations.push(`${key} contains ${phrase}`);
-      }
-    }
-    for (const name of names) {
-      if (name.length > 0 && lower.includes(name.toLowerCase())) {
-        violations.push(`${key} contains registry name ${name}`);
-      }
-    }
-    for (const token of tokens) {
-      if ((EXCLUDED_GENERIC_TOKENS as readonly string[]).includes(token)) {
-        continue;
-      }
-      if (new RegExp(`\\b${escapeRegExp(token)}\\b`, "i").test(text)) {
-        violations.push(`${key} contains registry token ${token}`);
-      }
-    }
-    if (/[$€£¥]/.test(text) || /\bUSD\b/i.test(text) || /\d/.test(text)) {
-      violations.push(`${key} contains currency or an amount`);
-    }
-    if (/\bupgrade\b/i.test(text) || /\bbuy\b/i.test(text)) {
-      violations.push(`${key} contains upgrade or buy`);
-    }
-  }
-  return violations;
-}
 
 function walk(dir: string, files: string[]) {
   for (const entry of readdirSync(dir)) {
@@ -171,6 +84,11 @@ describe("SG.6 copy map", () => {
     expect(error.message).not.toMatch(/AI-video/);
     expect(error.message).not.toMatch(/\bclip\b/i);
     expect(copyLintViolations({ jobError: error.message }, registry)).toEqual([]);
+  });
+
+  it("shares one cap sentence between the copy map and the spend-cap error", () => {
+    expect(SG_COPY.SG_CAP_REACHED).toBe(SG_CAP_REACHED_SENTENCE);
+    expect(AppError.spendCapReached().message).toBe(SG_CAP_REACHED_SENTENCE);
   });
 
   it("does not pass internal budget text through spendCapReached", () => {

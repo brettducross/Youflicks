@@ -357,13 +357,7 @@ export class AssetService {
           sourceMediaAssetId: true,
         },
       })
-    ).filter((slot) =>
-      timelineReferencesRole(
-        timeline.payload,
-        slot.role,
-        slot.storySceneId && slot.storySceneId.length > 0 ? slot.storySceneId : null,
-      ),
-    );
+    ).filter((slot) => slotVisibleOnCut(timeline.payload, slot));
     if (slots.length === 0) {
       return [];
     }
@@ -2380,27 +2374,43 @@ function sceneKey(value: unknown): string {
   return typeof value === "string" && value.length > 0 ? value : "";
 }
 
-/** A role still belongs on the cut when the latest timeline lists it as unmet or as a clip. */
-function timelineReferencesRole(payload: unknown, role: string, storySceneId: string | null): boolean {
+/**
+ * DEFERRED and FAILED slots stay visible only while that role and scene are
+ * still unmet. A clip counts only when it is this slot's own generated asset
+ * (including a verified fallback asset), never merely the same role and scene.
+ */
+function slotVisibleOnCut(
+  payload: unknown,
+  slot: {
+    role: string;
+    storySceneId: string | null;
+    status: string;
+    generatedAssetId: string | null;
+  },
+): boolean {
   if (!payload || typeof payload !== "object" || Array.isArray(payload)) {
     return false;
   }
   const document = payload as {
     unmetMediaRoles?: Array<{ role?: unknown; storySceneId?: unknown }>;
-    clips?: Array<{ mediaRole?: unknown; storySceneId?: unknown }>;
+    clips?: Array<{ sourceKind?: unknown; generatedAssetId?: unknown }>;
   };
-  const scene = sceneKey(storySceneId);
-  for (const item of document.unmetMediaRoles ?? []) {
-    if (item.role === role && sceneKey(item.storySceneId) === scene) {
-      return true;
-    }
+  const scene = sceneKey(slot.storySceneId);
+  const unmet = (document.unmetMediaRoles ?? []).some(
+    (item) => item.role === slot.role && sceneKey(item.storySceneId) === scene,
+  );
+  if (slot.status === "DEFERRED" || slot.status === "FAILED") {
+    return unmet;
   }
-  for (const clip of document.clips ?? []) {
-    if (clip.mediaRole === role && sceneKey(clip.storySceneId) === scene) {
-      return true;
-    }
+  if (unmet) {
+    return true;
   }
-  return false;
+  if (!slot.generatedAssetId) {
+    return false;
+  }
+  return (document.clips ?? []).some(
+    (clip) => clip.sourceKind === "GENERATED_ASSET" && clip.generatedAssetId === slot.generatedAssetId,
+  );
 }
 
 function generatedAssetIdsInTimeline(payload: unknown): Set<string> {

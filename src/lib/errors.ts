@@ -1,4 +1,4 @@
-import { SG_COPY } from "@/server/sg/messages";
+import { SG_CAP_REACHED_SENTENCE } from "@/lib/sg-cap-sentence";
 
 export const ErrorCodes = {
   UNAUTHORIZED: "UNAUTHORIZED",
@@ -388,7 +388,7 @@ export class AppError extends Error {
    * and a cap hit never starts another lane.
    */
   static spendCapReached(
-    message = SG_COPY.SG_CAP_REACHED,
+    message = SG_CAP_REACHED_SENTENCE,
     details?: Record<string, unknown>,
   ) {
     return new AppError(ErrorCodes.SPEND_CAP_REACHED, message, 429, details);

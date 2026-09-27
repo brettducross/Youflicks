@@ -1,3 +1,4 @@
+import { SG_CAP_REACHED_SENTENCE } from "@/lib/sg-cap-sentence";
 import { SG_MESSAGE_KEYS, type SgMessageKey } from "@/server/sg/constants";
 
 /**
@@ -16,8 +17,7 @@ export const SG_COPY: Record<SgMessageKey, string> = {
     "We tried a few versions of this moment and none met our quality bar, so we used your photo instead.",
   [SG_MESSAGE_KEYS.WAITING]:
     "This moment is waiting for this piece. Your movie can still be built without it.",
-  [SG_MESSAGE_KEYS.CAP_REACHED]:
-    "Generation of this piece is paused because a usage limit was reached. We did not retry automatically.",
+  [SG_MESSAGE_KEYS.CAP_REACHED]: SG_CAP_REACHED_SENTENCE,
   [SG_MESSAGE_KEYS.FAILED_HONEST]:
     "We couldn't make this piece for this moment. Nothing in your story was changed.",
   [SG_MESSAGE_KEYS.REBUILD_HINT]: "Rebuild your cut to include the updated moments.",
