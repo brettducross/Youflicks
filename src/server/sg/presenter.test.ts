@@ -197,9 +197,10 @@ describe("SG.6 presenter", () => {
   it("reads the applied key, not a shadow decision", () => {
     const state = {
       ...slot({ userMessageKey: SG_MESSAGE_KEYS.WAITING, status: "DEFERRED", treatment: "DEFER" }),
-      shadowDecision: { messageKey: SG_MESSAGE_KEYS.NO_QUALIFIED_LANE, treatment: "KEN_BURNS" },
+      shadowDecision: { messageKey: SG_MESSAGE_KEYS.FAILED_HONEST, treatment: "FAIL_HONEST" },
     };
     expect(texts(state)).toEqual([SG_COPY.SG_WAITING]);
+    expect(texts(state).join(" ")).not.toContain(SG_COPY.SG_FAILED_HONEST);
     expect(texts(state).join(" ")).not.toMatch(/your photo/i);
   });
 
