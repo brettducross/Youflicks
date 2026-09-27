@@ -1,5 +1,11 @@
 import type { AssetExecutionAttribution } from "@/server/adapters/assets/attribution";
 import { HttpAssetGeneratorAdapter } from "@/server/adapters/assets/http-asset";
+import {
+  ffmpegAvailable,
+  isKenBurnsProcessor,
+  KenBurnsProcessor,
+  KEN_BURNS_PROVIDER_KEY,
+} from "@/server/assets/kenburns";
 import type {
   AssetAvailability,
   AssetCapabilityAvailability,
@@ -38,8 +44,9 @@ import {
  * and ASSET_HTTP_API_KEY, so the legacy config maps to that lane. Any other
  * lane must name SG_LANE_* env vars. A resolved baseUrl must be http or https.
  *
- * processors() is the MEDIA_ENHANCEMENT hook only. The Ken Burns processor
- * is PR-9 and is not implemented here.
+ * processors() is the MEDIA_ENHANCEMENT hook only. yf.kenburns.v1 is installed
+ * when that processor row is enabled and ffmpeg is on PATH. It is never the
+ * local deterministic placeholder. forLane stays video-generation only.
  * forLane does not apply eligibility, health, ceilings, or budget. AssetService
  * calls it only after those checks, and only for an ENFORCED GENERATE lane.
  * Suspension does not block resolution.
@@ -73,8 +80,8 @@ export type ResolvedLaneGenerator = {
 };
 
 /**
- * PR-9 installs the processor adapter. Until then `adapter` stays null so
- * availability cannot claim MEDIA_ENHANCEMENT is ready.
+ * adapter is the Ken Burns processor only when that row is configured.
+ * A null adapter means MEDIA_ENHANCEMENT is not available.
  */
 export type EnhancementProcessorHook = {
   laneId: string;
@@ -130,7 +137,9 @@ export function resolveAssetGeneratorLanes(
       if (capability !== AssetCapability.MEDIA_ENHANCEMENT) {
         return [];
       }
-      return registry.processors.filter(processorIsListed).map(toProcessorHook);
+      return registry.processors
+        .filter(processorIsListed)
+        .map((processor) => toProcessorHook(storage, processor));
     },
   };
 }
@@ -243,13 +252,50 @@ function processorIsListed(processor: RegistryProcessor): boolean {
   return processor.enabled && !isTbdProviderKey(processor.providerKey);
 }
 
-function toProcessorHook(processor: RegistryProcessor): EnhancementProcessorHook {
+function toProcessorHook(
+  storage: StoragePort,
+  processor: RegistryProcessor,
+): EnhancementProcessorHook {
+  const configured =
+    processor.laneId === KEN_BURNS_PROVIDER_KEY &&
+    processor.providerKey === KEN_BURNS_PROVIDER_KEY &&
+    processor.modelId === KEN_BURNS_PROVIDER_KEY &&
+    ffmpegAvailable();
   return {
     laneId: processor.laneId,
     providerKey: processor.providerKey,
     modelId: processor.modelId,
     capability: AssetCapability.MEDIA_ENHANCEMENT,
-    adapter: null,
+    adapter: configured ? new KenBurnsProcessor(storage) : null,
+  };
+}
+
+/**
+ * MEDIA_ENHANCEMENT follows the processor hook. The local deterministic
+ * generator is never that capability, even when it lists it.
+ */
+export function applyProcessorAvailability(
+  base: AssetAvailability,
+  processors: readonly EnhancementProcessorHook[],
+): AssetAvailability {
+  const fromProcessor = resolvedAssetGeneratorForLanes([], processors).capabilities[
+    AssetCapability.MEDIA_ENHANCEMENT
+  ];
+  const honest =
+    fromProcessor.canGenerate &&
+    processors.some((processor) => processor.adapter && isKenBurnsProcessor(processor.adapter));
+  return {
+    ...base,
+    capabilities: {
+      ...base.capabilities,
+      [AssetCapability.MEDIA_ENHANCEMENT]: honest
+        ? fromProcessor
+        : {
+            productionAvailable: false,
+            localDevAvailable: false,
+            canGenerate: false,
+          },
+    },
   };
 }
 

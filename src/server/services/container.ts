@@ -31,10 +31,13 @@ import type { StoryComposerPort } from "@/server/ports/story-composer";
 import type { TimelineComposerPort } from "@/server/ports/timeline-composer";
 import type { AssetGeneratorPort } from "@/server/ports/asset-generator";
 import {
+  applyProcessorAvailability,
   resolveAssetGeneratorLanes,
   type AssetLaneResolver,
+  type EnhancementProcessorHook,
 } from "@/server/assets/lane-resolver";
 import { resolveAssetGeneratorAdapter, describeAssetAvailability } from "@/server/assets/provider-config";
+import { AssetCapability } from "@/server/ports/capabilities";
 import { loadSgLaneRegistry } from "@/server/sg/lane-registry";
 import { resolveRendererAdapter, describeRenderAvailability } from "@/server/render/provider-config";
 import { resolveStoryComposerAdapter } from "@/server/story/provider-config";
@@ -343,7 +346,16 @@ function createServices(): ServiceContainer {
         supportedCapabilities: resolved.supportedCapabilities,
       };
     },
-    () => describeAssetAvailability(resolveAssetGeneratorAdapter(storage)),
+    () => {
+      const base = describeAssetAvailability(resolveAssetGeneratorAdapter(storage));
+      let processors: EnhancementProcessorHook[] = [];
+      try {
+        processors = assetLanesCached().processors(AssetCapability.MEDIA_ENHANCEMENT);
+      } catch {
+        processors = [];
+      }
+      return applyProcessorAvailability(base, processors);
+    },
     usageMeter,
     entitlements,
     undefined,

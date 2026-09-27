@@ -488,8 +488,10 @@ export function suspendedLaneIdsFromEnv(raw: string | undefined): string[] {
 }
 
 /**
- * Runtime override SG_LANES_SUSPENDED. The only status this writes is SUSPENDED.
- * Lanes not listed are unchanged, including a QUALIFIED gate.
+ * Runtime override SG_LANES_SUSPENDED. The only status this writes is SUSPENDED,
+ * and only onto a gate that is already QUALIFIED. NOT_QUALIFIED stays
+ * NOT_QUALIFIED so a suspended non-identity lane cannot pin an identity start.
+ * Lanes not listed are unchanged.
  */
 export function applyLaneSuspension(
   lanes: readonly RegistryLane[],
@@ -503,12 +505,19 @@ export function applyLaneSuspension(
     return {
       ...lane,
       gates: {
-        HERO: { ...lane.gates.HERO, status: "SUSPENDED" },
-        IDENTITY: { ...lane.gates.IDENTITY, status: "SUSPENDED" },
-        NON_IDENTITY: { ...lane.gates.NON_IDENTITY, status: "SUSPENDED" },
+        HERO: suspendQualifiedGate(lane.gates.HERO),
+        IDENTITY: suspendQualifiedGate(lane.gates.IDENTITY),
+        NON_IDENTITY: suspendQualifiedGate(lane.gates.NON_IDENTITY),
       },
     };
   });
+}
+
+function suspendQualifiedGate<T extends { status: string }>(gate: T): T {
+  if (gate.status !== "QUALIFIED") {
+    return gate;
+  }
+  return { ...gate, status: "SUSPENDED" };
 }
 
 function laneIsEligible(lane: RegistryLane, requiredScopes: readonly RoutingScope[]): boolean {

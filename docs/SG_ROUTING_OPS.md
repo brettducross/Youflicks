@@ -1,6 +1,6 @@
 # SG routing operations
 
-PR-8 decides a treatment. It does not call a paid provider by itself, and it does not render Ken Burns (that processor is PR-9).
+PR-8 decides a treatment. It does not call a paid provider by itself. PR-9 renders Ken Burns or a static hold when `yf.kenburns.v1` is configured. The shipped registry leaves that processor disabled.
 
 ## Mode
 
@@ -15,6 +15,8 @@ Dialogue close-ups are not generated in either mode. Until E12 is decided they a
 Escalation moves at most one class above the start class. The start class is the lower of the lock start and the lowest historical non-cap class that is QUALIFIED or SUSPENDED for the current scopes. The lock start is draft-cost for NON_IDENTITY, and the lowest class that holds a lane QUALIFIED for every required scope for HERO or IDENTITY. Health does not move that start. An unhealthy start-class lane is not selected and does not jump to a pricier class. Suspension does move the start, because a suspended gate is not QUALIFIED. History is used alone only when no class is qualified, and it can pin the start lower, never higher. Picking a lane inside the start class, and escalating one class, still require a QUALIFIED, healthy lane. An empty class is never skipped: the next class is only the immediate neighbor, even when that neighbor has no qualified healthy lane. That is stricter than a reading that jumps to the next class that currently has a lane.
 
 ## Suspension
+
+To take a lane out temporarily, suspend it (`SG_LANES_SUSPENDED`) rather than de-qualify it. Suspension overlays SUSPENDED only onto gates that are already QUALIFIED. A NOT_QUALIFIED gate stays NOT_QUALIFIED, so a suspended non-identity lane does not pin an identity start. De-qualification changes the lock start and is not a temporary hold.
 
 `SG_LANES_SUSPENDED` ids are case-sensitive. `Hero-Lane` does not match `hero-lane`. An id that does not match a lane or processor exactly is unknown and raises `SG_LANES_SUSPENDED_UNKNOWN`. That alert is debounced for 60 seconds per unknown-id set.
 

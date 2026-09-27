@@ -3,6 +3,8 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterAll, describe, expect, it, vi } from "vitest";
 import { HttpAssetGeneratorAdapter } from "@/server/adapters/assets/http-asset";
+import { LocalDeterministicAssetGenerator } from "@/server/adapters/assets/local-deterministic";
+import { KenBurnsProcessor } from "@/server/assets/kenburns";
 import { LocalStorageAdapter } from "@/server/adapters/storage/local";
 import type { AssetGeneratorInput } from "@/server/assets/input";
 import {
@@ -718,31 +720,40 @@ describe("resolveAssetGeneratorLanes", () => {
       },
     });
     const hooks = resolver.processors(AssetCapability.MEDIA_ENHANCEMENT);
-    expect(hooks).toEqual([
-      {
-        laneId: "yf.kenburns.v1",
-        providerKey: "yf.kenburns.v1",
-        modelId: "yf.kenburns.v1",
-        capability: AssetCapability.MEDIA_ENHANCEMENT,
-        adapter: null,
-      },
-    ]);
+    expect(hooks).toHaveLength(1);
+    expect(hooks[0]).toMatchObject({
+      laneId: "yf.kenburns.v1",
+      providerKey: "yf.kenburns.v1",
+      modelId: "yf.kenburns.v1",
+      capability: AssetCapability.MEDIA_ENHANCEMENT,
+    });
+    expect(hooks[0]?.adapter).toBeInstanceOf(KenBurnsProcessor);
+    expect(hooks[0]?.adapter).not.toBeInstanceOf(LocalDeterministicAssetGenerator);
     expect(resolver.processors(AssetCapability.VIDEO_GENERATION)).toEqual([]);
     expect(() => resolver.forLane("yf.kenburns.v1")).toThrow(/not a generative registry lane/);
+    await expect(hooks[0]!.adapter!.generate(baseInput())).rejects.toThrow(/generative AssetGeneratorInput/);
 
     const lanes = [resolver.forLane("lane-a"), resolver.forLane("lane-b")];
     const availability = resolvedAssetGeneratorForLanes(lanes, hooks);
     expect(availability).not.toHaveProperty("adapter");
     expect(availability.capabilities.VIDEO_GENERATION.canGenerate).toBe(true);
-    expect(availability.capabilities.MEDIA_ENHANCEMENT.canGenerate).toBe(false);
+    expect(availability.capabilities.MEDIA_ENHANCEMENT).toEqual({
+      productionAvailable: true,
+      localDevAvailable: false,
+      canGenerate: true,
+    });
     expect(availability.localDevAvailable).toBe(false);
-    expect(resolvedAssetGeneratorForLanes([], hooks).canGenerate).toBe(false);
+    const unconfigured = hooks.map((hook) => ({ ...hook, adapter: null }));
+    expect(resolvedAssetGeneratorForLanes([], unconfigured).capabilities.MEDIA_ENHANCEMENT.canGenerate).toBe(
+      false,
+    );
+    expect(resolvedAssetGeneratorForLanes([], unconfigured).canGenerate).toBe(false);
 
     const installed: EnhancementProcessorHook = {
       ...hooks[0]!,
       adapter: {
         async generate(): Promise<GeneratedAssetDocument> {
-          throw new Error("PR-9 owns the processor.");
+          throw new Error("stand-in adapter");
         },
       },
     };
