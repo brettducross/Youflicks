@@ -2376,8 +2376,10 @@ function sceneKey(value: unknown): string {
 
 /**
  * DEFERRED and FAILED slots stay visible only while that role and scene are
- * still unmet. A clip counts only when it is this slot's own generated asset
- * (including a verified fallback asset), never merely the same role and scene.
+ * still unmet. An ORIGINAL fallback stays visible while it is unmet, or while
+ * the cut has a MEDIA_ASSET clip for that role and scene. When the slot names
+ * a source media id, that clip's asset must be the same id. Any other clip
+ * counts only when it is this slot's own generated asset.
  */
 function slotVisibleOnCut(
   payload: unknown,
@@ -2385,7 +2387,9 @@ function slotVisibleOnCut(
     role: string;
     storySceneId: string | null;
     status: string;
+    treatment: string;
     generatedAssetId: string | null;
+    sourceMediaAssetId: string | null;
   },
 ): boolean {
   if (!payload || typeof payload !== "object" || Array.isArray(payload)) {
@@ -2393,7 +2397,13 @@ function slotVisibleOnCut(
   }
   const document = payload as {
     unmetMediaRoles?: Array<{ role?: unknown; storySceneId?: unknown }>;
-    clips?: Array<{ sourceKind?: unknown; generatedAssetId?: unknown }>;
+    clips?: Array<{
+      sourceKind?: unknown;
+      generatedAssetId?: unknown;
+      mediaRole?: unknown;
+      storySceneId?: unknown;
+      assetId?: unknown;
+    }>;
   };
   const scene = sceneKey(slot.storySceneId);
   const unmet = (document.unmetMediaRoles ?? []).some(
@@ -2401,6 +2411,20 @@ function slotVisibleOnCut(
   );
   if (slot.status === "DEFERRED" || slot.status === "FAILED") {
     return unmet;
+  }
+  if (slot.status === "FALLBACK" && slot.treatment === "ORIGINAL") {
+    if (unmet) {
+      return true;
+    }
+    return (document.clips ?? []).some((clip) => {
+      if (clip.sourceKind !== "MEDIA_ASSET" || clip.mediaRole !== slot.role || sceneKey(clip.storySceneId) !== scene) {
+        return false;
+      }
+      if (slot.sourceMediaAssetId && clip.assetId !== slot.sourceMediaAssetId) {
+        return false;
+      }
+      return true;
+    });
   }
   if (unmet) {
     return true;
