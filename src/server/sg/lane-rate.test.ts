@@ -6,6 +6,7 @@ import { afterAll, describe, expect, it } from "vitest";
 import {
   actualBilledSecondsFromDurationMs,
   estimateLaneCharge,
+  expectedLaneCharge,
   LaneDurationError,
   loadLaneRegistry,
   requireLaneRate,
@@ -131,6 +132,40 @@ describe("lane-priced estimate fixtures", () => {
     expect(estimateLaneCharge(veo).reservedUsd).toBeCloseTo(0.3, 5);
     expect(lanes.every((item) => /ESTIMATE/i.test(item.rateRef))).toBe(true);
     expect(lanes.every((item) => /not a price/i.test(item.rateRef))).toBe(true);
+  });
+
+  it("expectedLaneCharge matches estimateLaneCharge for the clip and an explicit duration", async () => {
+    const dir = await mkdtemp(path.join(tmpdir(), "youflicks-expected-charge-"));
+    try {
+      const doc = rateProbeRegistry("duration-lane", 0.05);
+      const row = doc.lanes[0] as {
+        providerKey: string;
+        modelId: string;
+        enabled: boolean;
+        clipDurationS: number;
+        supportedDurationsS: number[];
+      };
+      row.providerKey = "open:duration-lane";
+      row.modelId = "duration-model";
+      row.enabled = true;
+      row.clipDurationS = 6;
+      row.supportedDurationsS = [4, 6, 8];
+      const file = path.join(dir, "registry.json");
+      await writeFile(file, JSON.stringify(doc), "utf8");
+      const lane = requireLiveLane("duration-lane", file);
+      const clip = expectedLaneCharge("duration-lane", undefined, file);
+      const explicit = expectedLaneCharge("duration-lane", 8, file);
+      expect(clip.estimatedBilledSeconds).toBe(estimateLaneCharge(lane).estimatedBilledSeconds);
+      expect(clip.reservedUsd).toBe(estimateLaneCharge(lane).reservedUsd);
+      expect(clip.estimatedBilledSeconds).toBe(6);
+      expect(explicit.estimatedBilledSeconds).toBe(estimateLaneCharge(lane, 8).estimatedBilledSeconds);
+      expect(explicit.reservedUsd).toBe(estimateLaneCharge(lane, 8).reservedUsd);
+      expect(explicit.estimatedBilledSeconds).toBe(8);
+      expect(explicit.modelId).toBe("duration-model");
+      expect(explicit.usdPerSecond).toBe(lane.usdPerSecond);
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
   });
 });
 

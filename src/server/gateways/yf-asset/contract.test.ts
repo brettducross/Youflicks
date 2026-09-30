@@ -49,4 +49,25 @@ describe("YouFlicks /v1/generate contract", () => {
     });
     expect(parsed.success).toBe(false);
   });
+
+  it("accepts the live reservation echo and still rejects vendor fields", () => {
+    const parsed = yfGenerateSuccessSchema.safeParse({
+      mimeType: "video/mp4",
+      bytesBase64: "Zg==",
+      gatewayReservationId: "gw_1",
+      laneId: "r1-wan27-replicate",
+      modelId: "wan-video/wan-2.7-i2v",
+      usdPerSecond: 0.1,
+      estimatedBilledSeconds: 5,
+      reservedUsd: 0.5,
+    });
+    expect(parsed.success).toBe(true);
+    const vendor = yfGenerateSuccessSchema.safeParse({
+      mimeType: "video/mp4",
+      bytesBase64: "Zg==",
+      laneId: "r1-wan27-replicate",
+      replicate: { id: "nope" },
+    });
+    expect(vendor.success).toBe(false);
+  });
 });

@@ -220,6 +220,12 @@ describe("YfAssetGenerateService replicate transport", () => {
     expect(stored?.capability).toBe(AssetCapability.VIDEO_GENERATION);
     expect(stored?.modelId).toBe("wan-video/wan-2.7-i2v");
     expect(JSON.stringify(stored)).not.toContain("catbox");
+    expect(result.body.laneId).toBe("r1-wan27-replicate");
+    expect(result.body.modelId).toBe("wan-video/wan-2.7-i2v");
+    expect(result.body.usdPerSecond).toBeCloseTo(0.1, 5);
+    expect(result.body.estimatedBilledSeconds).toBe(5);
+    expect(result.body.reservedUsd).toBeCloseTo(0.5, 5);
+    expect(result.body.gatewayReservationId).toBeTruthy();
   });
 
   it("refuses a request model that does not match the lane before reserve", async () => {

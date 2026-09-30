@@ -29,6 +29,7 @@ import type { AssetGeneratorPort } from "@/server/ports/asset-generator";
 import type { AiDirectorPort } from "@/server/ports/ai-director";
 import type { StoryComposerPort } from "@/server/ports/story-composer";
 import type { TimelineComposerPort } from "@/server/ports/timeline-composer";
+import { rememberGatewayTrace } from "@/server/assets/gateway-trace";
 import type { AssetGeneratorInput } from "@/server/assets/input";
 import { GENERATED_ASSET_DOCUMENT_SCHEMA_VERSION } from "@/server/assets/schema";
 import type { GeneratedAssetDocument } from "@/server/assets/schema";
@@ -1329,6 +1330,319 @@ describe("AssetService M3", () => {
     expect(gatewayRow).toBeUndefined();
     expect(reservation?.status).toBe("RELEASED");
     expect(reservation?.settleReason).toBe("GATEWAY_NONE");
+  });
+
+  it("stamps the priced LEGACY attempt with the registry lane modelId", async () => {
+    const previousLane = process.env.YF_GATEWAY_LANE_ID;
+    clearBudgetCaps();
+    process.env.YF_GATEWAY_LANE_ID = "r1-wan27-replicate";
+    try {
+      const jobId = await runPricedJob(
+        "scene-priced-model",
+        scriptedGenerator(async () => {
+          throw AppError.assetProviderUnavailable("stop after the quote");
+        }),
+      );
+      const attempt = await prisma.shotFulfillmentAttempt.findFirst({ where: { jobId } });
+      expect(attempt?.modelId).toBe("wan-video/wan-2.7-i2v");
+      expect(attempt?.laneId).toBe("r1-wan27-replicate");
+      expect(attempt?.usdPerSecond).toBeCloseTo(0.1, 5);
+    } finally {
+      if (previousLane === undefined) delete process.env.YF_GATEWAY_LANE_ID;
+      else process.env.YF_GATEWAY_LANE_ID = previousLane;
+      await prisma.aiVideoBudgetLedger.deleteMany({
+        where: { OR: [{ projectId }, { userId: ownerId }] },
+      });
+    }
+  });
+
+  it("keeps the caller modelId when the LEGACY quote is unpriced", async () => {
+    const previousLane = process.env.YF_GATEWAY_LANE_ID;
+    clearBudgetCaps();
+    delete process.env.YF_GATEWAY_LANE_ID;
+    try {
+      const jobId = await runPricedJob(
+        "scene-unpriced-model",
+        scriptedGenerator(async () => {
+          throw AppError.assetProviderUnavailable("stop");
+        }),
+      );
+      const attempt = await prisma.shotFulfillmentAttempt.findFirst({ where: { jobId } });
+      expect(attempt?.modelId).toBe("script-1");
+      expect(attempt?.estimatedUsd).toBe(0);
+    } finally {
+      if (previousLane === undefined) delete process.env.YF_GATEWAY_LANE_ID;
+      else process.env.YF_GATEWAY_LANE_ID = previousLane;
+    }
+  });
+
+  it("releases a tampered hold before generate", async () => {
+    const previousLane = process.env.YF_GATEWAY_LANE_ID;
+    clearBudgetCaps();
+    process.env.YF_GATEWAY_LANE_ID = "r1-wan27-replicate";
+    const calls: string[] = [];
+    const budgets = new Proxy(new PrismaAiVideoBudget(prisma), {
+      get(target, prop, receiver) {
+        if (prop === "reserve") {
+          return async (input: Parameters<AiVideoBudgetPort["reserve"]>[0]) => {
+            const row = await target.reserve(input);
+            return { ...row, usdPerSecond: row.usdPerSecond + 1 };
+          };
+        }
+        const value = Reflect.get(target, prop, receiver);
+        return typeof value === "function" ? value.bind(target) : value;
+      },
+    });
+    try {
+      const { assets, worker } = harness({
+        adapter: scriptedGenerator(async () => {
+          calls.push("generate");
+          throw new Error("must not generate");
+        }),
+        productionAvailable: true,
+        supportedCapabilities: [AssetCapability.IMAGE_GENERATION],
+        budgets,
+      });
+      const queued = await assets.requestGenerate(ownerId, projectId, {
+        roles: [{ role: "intimate_portrait", storySceneId: "scene-pre-generate", kind: "IMAGE" }],
+      });
+      for (let attempt = 0; attempt < 5; attempt += 1) {
+        const current = await jobs.get(queued.jobId);
+        if (current?.status !== JobStatus.PENDING) break;
+        const ran = await worker.processNext();
+        if (!ran) break;
+      }
+      const jobId = queued.jobId;
+      expect(calls).toEqual([]);
+      const reservation = await prisma.aiVideoBudgetReservation.findFirst({
+        where: { idempotencyKey: { startsWith: `asset:${jobId}:` } },
+      });
+      expect(reservation?.status).toBe("RELEASED");
+      expect(reservation?.settleReason).toBe("RESERVATION_MISMATCH");
+      expect(reservation?.estimatedUsd).toBeCloseTo(0.5, 5);
+      expect(reservation?.actualBilledSeconds).toBeNull();
+      expect(reservation?.actualUsd).toBeNull();
+      const attempt = await prisma.shotFulfillmentAttempt.findFirst({ where: { jobId } });
+      expect(attempt?.outcome).toBe("FAILED");
+      expect(attempt?.failureCode).toBe("RESERVATION_MISMATCH");
+    } finally {
+      if (previousLane === undefined) delete process.env.YF_GATEWAY_LANE_ID;
+      else process.env.YF_GATEWAY_LANE_ID = previousLane;
+      await prisma.aiVideoBudgetLedger.deleteMany({
+        where: { OR: [{ projectId }, { userId: ownerId }] },
+      });
+    }
+  });
+
+  async function multiDurationRegistry() {
+    const dir = await mkdtemp(path.join(tmpdir(), "youflicks-rv-duration-"));
+    const doc = JSON.parse(
+      readFileSync(path.join(process.cwd(), "config/sg-lane-registry.json"), "utf8"),
+    ) as { lanes: Array<{ laneId: string; supportedDurationsS: number[] }> };
+    const wan = doc.lanes.find((item) => item.laneId === "r1-wan27-replicate");
+    wan!.supportedDurationsS = [5, 8];
+    const file = path.join(dir, "registry.json");
+    await writeFile(file, JSON.stringify(doc), "utf8");
+    return { dir, file };
+  }
+
+  function readyClipBackend(): VideoBackend {
+    return {
+      kind: "http",
+      async submit() {
+        return { backendRequestId: "ok_duration" };
+      },
+      async status() {
+        return { status: "succeeded" };
+      },
+      async result() {
+        return {
+          url: "https://example.test/clip.png",
+          mimeType: "image/png",
+          durationMs: 5000,
+          width: 2,
+          height: 2,
+        };
+      },
+    };
+  }
+
+  it("fails receipt verify when the gateway duration differs from the app estimate", async () => {
+    const scratch = await multiDurationRegistry();
+    const previousRegistry = process.env.SG_LANE_REGISTRY_PATH;
+    const previousExtra = process.env.YF_GATEWAY_BACKEND_INPUT_JSON;
+    delete process.env.YF_GATEWAY_BACKEND_INPUT_JSON;
+    process.env.SG_LANE_REGISTRY_PATH = scratch.file;
+    try {
+      const { reservation, gatewayRow } = await settleThroughGateway(
+        readyClipBackend(),
+        async () => new Response(PNG_1X1),
+        {
+          SG_LANE_REGISTRY_PATH: scratch.file,
+          YF_GATEWAY_BACKEND_INPUT_JSON: JSON.stringify({ duration: 8 }),
+        },
+      );
+      expect(reservation?.status).toBe("UNRECONCILED");
+      expect(reservation?.settleReason).toBe("RESERVATION_MISMATCH");
+      expect(reservation?.estimatedBilledSeconds).toBe(5);
+      expect(reservation?.estimatedUsd).toBeCloseTo(0.5, 5);
+      expect(reservation?.laneId).toBe("r1-wan27-replicate");
+      expect(reservation?.actualBilledSeconds).toBeNull();
+      expect(gatewayRow?.estimatedBilledSeconds).toBe(8);
+      expect(gatewayRow?.reservedUsd).toBeCloseTo(0.8, 5);
+      expect(gatewayRow?.laneId).toBe("r1-wan27-replicate");
+      const attempt = await prisma.shotFulfillmentAttempt.findFirst({
+        where: { budgetReservationId: reservation?.id },
+      });
+      expect(attempt?.outcome).toBe("TIMEOUT_UNRECONCILED");
+      expect(attempt?.failureCode).toBe("RESERVATION_MISMATCH");
+      expect(attempt?.generatedAssetId).toBeNull();
+    } finally {
+      if (previousRegistry === undefined) delete process.env.SG_LANE_REGISTRY_PATH;
+      else process.env.SG_LANE_REGISTRY_PATH = previousRegistry;
+      if (previousExtra === undefined) delete process.env.YF_GATEWAY_BACKEND_INPUT_JSON;
+      else process.env.YF_GATEWAY_BACKEND_INPUT_JSON = previousExtra;
+      await rm(scratch.dir, { recursive: true, force: true });
+    }
+  });
+
+  it("accepts a generate whose shared duration matches the gateway reservation", async () => {
+    const scratch = await multiDurationRegistry();
+    const previousRegistry = process.env.SG_LANE_REGISTRY_PATH;
+    const previousExtra = process.env.YF_GATEWAY_BACKEND_INPUT_JSON;
+    const shared = JSON.stringify({ duration: 8 });
+    process.env.SG_LANE_REGISTRY_PATH = scratch.file;
+    process.env.YF_GATEWAY_BACKEND_INPUT_JSON = shared;
+    try {
+      const { reservation, gatewayRow } = await settleThroughGateway(
+        readyClipBackend(),
+        async () => new Response(PNG_1X1),
+        {
+          SG_LANE_REGISTRY_PATH: scratch.file,
+          YF_GATEWAY_BACKEND_INPUT_JSON: shared,
+        },
+      );
+      expect(reservation?.status).toBe("RECONCILED");
+      expect(reservation?.estimatedBilledSeconds).toBe(8);
+      expect(reservation?.estimatedUsd).toBeCloseTo(0.8, 5);
+      expect(reservation?.usdPerSecond).toBeCloseTo(0.1, 5);
+      expect(gatewayRow?.status).toBe("RECONCILED");
+      expect(gatewayRow?.estimatedBilledSeconds).toBe(8);
+      expect(gatewayRow?.reservedUsd).toBeCloseTo(0.8, 5);
+      expect(gatewayRow?.usdPerSecond).toBeCloseTo(0.1, 5);
+      const attempt = await prisma.shotFulfillmentAttempt.findFirst({
+        where: { budgetReservationId: reservation?.id },
+      });
+      expect(attempt?.outcome).toBe("SUCCEEDED");
+      expect(attempt?.modelId).toBe("wan-video/wan-2.7-i2v");
+    } finally {
+      if (previousRegistry === undefined) delete process.env.SG_LANE_REGISTRY_PATH;
+      else process.env.SG_LANE_REGISTRY_PATH = previousRegistry;
+      if (previousExtra === undefined) delete process.env.YF_GATEWAY_BACKEND_INPUT_JSON;
+      else process.env.YF_GATEWAY_BACKEND_INPUT_JSON = previousExtra;
+      await rm(scratch.dir, { recursive: true, force: true });
+    }
+  });
+
+  it("fails receipt verify when the echoed gateway laneId differs from the hold", async () => {
+    const previousLane = process.env.YF_GATEWAY_LANE_ID;
+    clearBudgetCaps();
+    process.env.YF_GATEWAY_LANE_ID = "r1-wan27-replicate";
+    const calls: string[] = [];
+    try {
+      const jobId = await runPricedJob(
+        "scene-lane-mismatch",
+        scriptedGenerator(async () => {
+          calls.push("generate");
+          const document = {} as GeneratedAssetDocument;
+          rememberGatewayTrace(document, {
+            gatewayJobId: "gw-job",
+            gatewayReservationId: "gw-lane-mismatch",
+            actualBilledSeconds: 5,
+            actualUsd: 0.5,
+            reservation: {
+              laneId: "other-lane",
+              modelId: "wan-video/wan-2.7-i2v",
+              usdPerSecond: 0.1,
+              estimatedBilledSeconds: 5,
+              reservedUsd: 0.5,
+            },
+          });
+          return document;
+        }),
+      );
+      expect(calls).toEqual(["generate"]);
+      const reservation = await prisma.aiVideoBudgetReservation.findFirst({
+        where: { idempotencyKey: { startsWith: `asset:${jobId}:` } },
+      });
+      expect(reservation?.status).toBe("UNRECONCILED");
+      expect(reservation?.settleReason).toBe("RESERVATION_MISMATCH");
+      expect(reservation?.laneId).toBe("r1-wan27-replicate");
+      expect(reservation?.estimatedUsd).toBeCloseTo(0.5, 5);
+      expect(reservation?.actualBilledSeconds).toBeNull();
+      const attempt = await prisma.shotFulfillmentAttempt.findFirst({ where: { jobId } });
+      expect(attempt?.outcome).toBe("TIMEOUT_UNRECONCILED");
+      expect(attempt?.failureCode).toBe("RESERVATION_MISMATCH");
+      expect(attempt?.generatedAssetId).toBeNull();
+    } finally {
+      if (previousLane === undefined) delete process.env.YF_GATEWAY_LANE_ID;
+      else process.env.YF_GATEWAY_LANE_ID = previousLane;
+      await prisma.aiVideoBudgetLedger.deleteMany({
+        where: { OR: [{ projectId }, { userId: ownerId }] },
+      });
+    }
+  });
+
+  it("fails receipt verify from the gateway row when the response omits the echo", async () => {
+    const previousLane = process.env.YF_GATEWAY_LANE_ID;
+    clearBudgetCaps();
+    process.env.YF_GATEWAY_LANE_ID = "r1-wan27-replicate";
+    const gateway = await prisma.gatewaySpendReservation.create({
+      data: {
+        ledgerIds: ["yf-asset", "lane:other-lane"],
+        laneId: "other-lane",
+        providerKey: "replicate:wan-video/wan-2.7-i2v",
+        capability: "IMAGE_GENERATION",
+        modelId: "wan-video/wan-2.7-i2v",
+        idempotencyKey: `rv-db-${Date.now()}-${Math.random().toString(16).slice(2)}`,
+        requestedDurationS: 5,
+        estimatedBilledSeconds: 5,
+        usdPerSecond: 0.1,
+        reservedUsd: 0.5,
+      },
+    });
+    try {
+      const jobId = await runPricedJob(
+        "scene-db-receipt",
+        scriptedGenerator(async () => {
+          const document = {} as GeneratedAssetDocument;
+          rememberGatewayTrace(document, {
+            gatewayJobId: null,
+            gatewayReservationId: gateway.id,
+            actualBilledSeconds: 5,
+            actualUsd: 0.5,
+            reservation: null,
+          });
+          return document;
+        }),
+      );
+      const reservation = await prisma.aiVideoBudgetReservation.findFirst({
+        where: { idempotencyKey: { startsWith: `asset:${jobId}:` } },
+      });
+      expect(reservation?.status).toBe("UNRECONCILED");
+      expect(reservation?.settleReason).toBe("RESERVATION_MISMATCH");
+      expect(reservation?.estimatedUsd).toBeCloseTo(0.5, 5);
+      const stored = await prisma.gatewaySpendReservation.findUnique({ where: { id: gateway.id } });
+      expect(stored?.reservedUsd).toBeCloseTo(0.5, 5);
+      expect(stored?.laneId).toBe("other-lane");
+    } finally {
+      if (previousLane === undefined) delete process.env.YF_GATEWAY_LANE_ID;
+      else process.env.YF_GATEWAY_LANE_ID = previousLane;
+      await prisma.gatewaySpendReservation.deleteMany({ where: { id: gateway.id } });
+      await prisma.aiVideoBudgetLedger.deleteMany({
+        where: { OR: [{ projectId }, { userId: ownerId }] },
+      });
+    }
   });
 
   it("marks the app budget UNRECONCILED when the gateway settlement is missing", async () => {

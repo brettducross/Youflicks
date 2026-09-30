@@ -54,13 +54,17 @@ import {
   projectBudgetLedgerId,
   userWindowBudgetLedgerId,
 } from "@/server/sg/budget-source";
-import { gatewayTraceFor } from "@/server/assets/gateway-trace";
+import { gatewayTraceFor, type GatewayFulfillmentTrace } from "@/server/assets/gateway-trace";
 import { attemptOutcomeFromSettlement } from "@/server/sg/attempt-outcome";
 import {
   actualBilledSecondsFromDurationMs,
-  estimateLaneCharge,
+  expectedLaneCharge,
+  holdExpectedChargeMismatch,
+  readReservationEcho,
+  reservationChargeMismatch,
   requireLaneRate,
-  requireLiveLane,
+  sharedGatewayRequestedDurationS,
+  type ReservationEcho,
 } from "@/server/sg/lane-rate";
 import {
   collectShotCueInput,
@@ -678,14 +682,30 @@ export class AssetService {
       let rawDocument;
       let reconciled: AiVideoBudgetReservationRecord | null = null;
       try {
+        if (budgetHold) {
+          this.assertHoldMatchesExpectedCharge(budgetHold);
+        }
         rawDocument = await runtime.adapter.generate(input);
         if (budgetHold) {
+          await this.assertReceiptOrThrow(budgetHold, quote.modelId, gatewayTraceFor(rawDocument));
           reconciled = await this.reconcileBudget(budgetHold, rawDocument.durationMs);
         }
       } catch (error) {
         const mapped = attemptOutcomeFor(error);
         if (budgetHold) {
-          await this.settleBudgetFailure(budgetHold, error);
+          const echoed = isAppError(error) ? readReservationEcho(error.details) : null;
+          const settlement = appSettlementFor(error);
+          const mismatch = echoed
+            ? this.reservationMismatchField(budgetHold, quote.modelId, echoed)
+            : null;
+          if (mismatch) {
+            this.alertReservationMismatch(budgetHold, mismatch, mapped.gatewayReservationId);
+          }
+          if (mismatch && settlement !== "RELEASED" && settlement !== "NONE") {
+            await this.budgets.markUnreconciled(budgetHold.id, "RESERVATION_MISMATCH");
+          } else {
+            await this.settleBudgetFailure(budgetHold, error);
+          }
           await this.rememberBudgetGatewayId(budgetHold, mapped.gatewayReservationId);
         }
         await this.recordAttemptFailure(attempt.id, error);
@@ -1019,8 +1039,11 @@ export class AssetService {
 
   /**
    * Books project + user-window seconds before the adapter runs.
-   * The lane's configured clip duration is the billed length. Per-shot duration
-   * is not an AssetGeneratorInput field.
+   * Billed length is `expectedLaneCharge`: lane clip duration, or
+   * `YF_GATEWAY_BACKEND_INPUT_JSON.duration` when that shared field is set.
+   * Per-shot duration is not an AssetGeneratorInput field. A gateway process
+   * that bills a different duration fails receipt verify; this method does not
+   * rewrite the hold to match.
    * Returns null when this process is not on a production generator, or when
    * no lane and no ops cap is configured (those scopes stay unenforced).
    */
@@ -1049,15 +1072,15 @@ export class AssetService {
       });
       throw AppError.spendCapReached(SG_COPY.SG_CAP_REACHED);
     }
-    let lane;
+    let charge;
     try {
-      lane = requireLiveLane(laneId, registryPathFromEnv());
+      charge = expectedLaneCharge(laneId, sharedGatewayRequestedDurationS(), registryPathFromEnv());
     } catch (error) {
       throw AppError.assetProviderUnavailable(
         error instanceof Error ? error.message : "AI video lane registry failed closed.",
       );
     }
-    const charge = estimateLaneCharge(lane);
+    const lane = charge;
     try {
       return await this.budgets.reserve({
         idempotencyKey: `asset:${input.job.id}:${input.role}:${input.storySceneId ?? "-"}:${input.job.attempts}`,
@@ -1085,6 +1108,143 @@ export class AssetService {
       }
       throw error;
     }
+  }
+
+  /**
+   * Before the provider call, the hold must still equal a fresh expectedLaneCharge
+   * for the same shared duration. A mismatch is definitive and non-billable: release.
+   */
+  private assertHoldMatchesExpectedCharge(hold: AiVideoBudgetReservationRecord): void {
+    let expected;
+    try {
+      expected = expectedLaneCharge(
+        hold.laneId,
+        sharedGatewayRequestedDurationS(),
+        registryPathFromEnv(),
+      );
+    } catch (error) {
+      if (isAppError(error)) {
+        throw error;
+      }
+      this.alertReservationMismatch(hold, "expected", null);
+      throw this.reservationMismatchError(
+        error instanceof Error ? error.message : "Expected lane charge failed closed.",
+        "NONE",
+        null,
+      );
+    }
+    const field = holdExpectedChargeMismatch(hold, expected);
+    if (field) {
+      this.alertReservationMismatch(hold, field, null);
+      throw this.reservationMismatchError(
+        "App hold does not match the expected lane charge.",
+        "NONE",
+        null,
+      );
+    }
+  }
+
+  /**
+   * After generate, echoed reserve fields (or the gateway row by id) must match the hold.
+   * No receipt id and no echo: not an HTTP reservation response (local adapters).
+   * A provider call may already have started, so a mismatch stays UNRECONCILED.
+   * This check does not write hold or gateway money fields.
+   */
+  private async assertReceiptOrThrow(
+    hold: AiVideoBudgetReservationRecord,
+    expectedModelId: string | null,
+    trace: GatewayFulfillmentTrace | null,
+  ): Promise<void> {
+    const echoed = trace?.reservation ?? null;
+    const gatewayReservationId = trace?.gatewayReservationId ?? null;
+    if (!echoed && !gatewayReservationId) {
+      return;
+    }
+    const echo = echoed ?? (gatewayReservationId ? await this.loadGatewayEcho(gatewayReservationId) : null);
+    if (!echo) {
+      this.alertReservationMismatch(hold, "receipt", gatewayReservationId);
+      throw this.reservationMismatchError(
+        "Gateway reservation receipt is missing.",
+        "UNRECONCILED",
+        gatewayReservationId,
+      );
+    }
+    const field = this.reservationMismatchField(hold, expectedModelId, echo);
+    if (!field) {
+      return;
+    }
+    this.alertReservationMismatch(hold, field, gatewayReservationId);
+    throw this.reservationMismatchError(
+      "Gateway reservation does not match the app hold.",
+      "UNRECONCILED",
+      gatewayReservationId,
+    );
+  }
+
+  private reservationMismatchField(
+    hold: AiVideoBudgetReservationRecord,
+    expectedModelId: string | null,
+    echo: ReservationEcho,
+  ) {
+    return reservationChargeMismatch(
+      {
+        laneId: hold.laneId,
+        modelId: expectedModelId,
+        usdPerSecond: hold.usdPerSecond,
+        estimatedBilledSeconds: hold.estimatedBilledSeconds,
+        usd: hold.estimatedUsd,
+      },
+      {
+        laneId: echo.laneId,
+        modelId: echo.modelId,
+        usdPerSecond: echo.usdPerSecond,
+        estimatedBilledSeconds: echo.estimatedBilledSeconds,
+        usd: echo.reservedUsd,
+      },
+    );
+  }
+
+  private async loadGatewayEcho(id: string): Promise<ReservationEcho | null> {
+    const row = await prisma.gatewaySpendReservation.findUnique({ where: { id } });
+    if (!row) {
+      return null;
+    }
+    return {
+      laneId: row.laneId,
+      modelId: row.modelId,
+      usdPerSecond: row.usdPerSecond,
+      estimatedBilledSeconds: row.estimatedBilledSeconds,
+      reservedUsd: row.reservedUsd,
+    };
+  }
+
+  private alertReservationMismatch(
+    hold: AiVideoBudgetReservationRecord,
+    field: string,
+    gatewayReservationId: string | null,
+  ) {
+    void reportOpsAlert({
+      kind: OpsAlertKind.SG_RESERVATION_MISMATCH,
+      message: "App hold and gateway reservation do not describe the same charge.",
+      context: {
+        reservationId: hold.id,
+        laneId: hold.laneId,
+        field,
+        gatewayReservationId,
+      },
+    });
+  }
+
+  private reservationMismatchError(
+    message: string,
+    settlement: "NONE" | "UNRECONCILED",
+    gatewayReservationId: string | null,
+  ) {
+    return AppError.assetProviderUnavailable(message, {
+      settlement,
+      settleReason: "RESERVATION_MISMATCH",
+      ...(gatewayReservationId ? { gatewayReservationId } : {}),
+    });
   }
 
   private async reconcileBudget(
@@ -1118,6 +1278,14 @@ export class AssetService {
         userId: hold.userId,
         laneId: hold.laneId,
       });
+      return;
+    }
+    if (isAppError(error) && error.details?.settleReason === "RESERVATION_MISMATCH") {
+      if (appSettlementFor(error) === "NONE") {
+        await this.budgets.release(hold.id, "RESERVATION_MISMATCH");
+        return;
+      }
+      await this.budgets.markUnreconciled(hold.id, "RESERVATION_MISMATCH");
       return;
     }
     const settlement = appSettlementFor(error);
@@ -1549,14 +1717,18 @@ export class AssetService {
       if (!lane) {
         throw new Error("missing lane");
       }
-      const charge = estimateLaneCharge(lane);
+      const charge = expectedLaneCharge(
+        lane.laneId,
+        sharedGatewayRequestedDurationS(),
+        input.registryLoad.path,
+      );
       quote = {
-        laneId: lane.laneId,
-        laneClass: lane.laneClass,
-        providerKey: lane.providerKey,
-        modelId: lane.modelId,
+        laneId: charge.laneId,
+        laneClass: charge.laneClass,
+        providerKey: charge.providerKey,
+        modelId: charge.modelId,
         estimatedBilledSeconds: charge.estimatedBilledSeconds,
-        usdPerSecond: lane.usdPerSecond,
+        usdPerSecond: charge.usdPerSecond,
         estimatedUsd: charge.reservedUsd,
       };
     } catch {
@@ -2013,15 +2185,14 @@ export class AssetService {
     if (!laneId) {
       return unpricedQuote("unconfigured", "unconfigured", modelId);
     }
-    const lane = requireLiveLane(laneId, registryPathFromEnv());
-    const charge = estimateLaneCharge(lane);
+    const charge = expectedLaneCharge(laneId, sharedGatewayRequestedDurationS(), registryPathFromEnv());
     return {
-      laneId: lane.laneId,
-      laneClass: lane.laneClass,
-      providerKey: lane.providerKey,
-      modelId,
+      laneId: charge.laneId,
+      laneClass: charge.laneClass,
+      providerKey: charge.providerKey,
+      modelId: charge.modelId,
       estimatedBilledSeconds: charge.estimatedBilledSeconds,
-      usdPerSecond: lane.usdPerSecond,
+      usdPerSecond: charge.usdPerSecond,
       estimatedUsd: charge.reservedUsd,
     };
   }

@@ -25,10 +25,11 @@ import { BackendSubmitError, type VideoBackend } from "@/server/gateways/yf-asse
 import { AssetCapability } from "@/server/ports/capabilities";
 import {
   actualBilledSecondsFromDurationMs,
-  estimateLaneCharge,
+  expectedLaneCharge,
   gatewayChargeLedgerIds,
   LaneDurationError,
   numericExtraDuration,
+  reservationEchoFromCharge,
   requireLiveLane,
   roundMeasure,
   type LaneRate,
@@ -177,7 +178,14 @@ export class YfAssetGenerateService {
 
     let charge;
     try {
-      charge = estimateLaneCharge(lane, numericExtraDuration(this.config.extraInput));
+      // App estimates use the same helper and YF_GATEWAY_BACKEND_INPUT_JSON.duration.
+      // extraInput on this process is that object. A different duration is not corrected;
+      // the app receipt verify fails closed.
+      charge = expectedLaneCharge(
+        lane.laneId,
+        numericExtraDuration(this.config.extraInput),
+        this.config.registryPath,
+      );
     } catch (error) {
       if (error instanceof LaneDurationError) {
         return noReservationError(400, error.code, error.message);
@@ -193,6 +201,7 @@ export class YfAssetGenerateService {
       );
     }
     const reservations = this.reservations;
+    const echo = reservationEchoFromCharge(charge);
     let reservation: GatewayReservationRecord;
     try {
       reservation = await reservations.reserve({
@@ -268,6 +277,11 @@ export class YfAssetGenerateService {
           gatewayReservationId: reservation.id,
           actualBilledSeconds: actual.seconds,
           actualUsd: roundMeasure(actual.seconds * lane.usdPerSecond),
+          laneId: echo.laneId,
+          modelId: echo.modelId ?? undefined,
+          usdPerSecond: echo.usdPerSecond,
+          estimatedBilledSeconds: echo.estimatedBilledSeconds,
+          reservedUsd: echo.reservedUsd,
         },
       };
     } catch (error) {
@@ -289,6 +303,11 @@ export class YfAssetGenerateService {
           ? { actualBilledSeconds: settled.actualBilledSeconds }
           : {}),
         ...(settled.actualUsd !== undefined ? { actualUsd: settled.actualUsd } : {}),
+        laneId: echo.laneId,
+        modelId: echo.modelId ?? undefined,
+        usdPerSecond: echo.usdPerSecond,
+        estimatedBilledSeconds: echo.estimatedBilledSeconds,
+        reservedUsd: echo.reservedUsd,
       };
       if (error instanceof LaneDurationError) {
         return gatewayError(400, error.code, message, extra);

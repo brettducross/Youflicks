@@ -7,6 +7,7 @@ export const OpsAlertKind = {
   LANE_REGISTRY_INVALID: "LANE_REGISTRY_INVALID",
   SG_LANES_SUSPENDED_UNKNOWN: "SG_LANES_SUSPENDED_UNKNOWN",
   SG_MODEL_LANE_MISMATCH: "SG_MODEL_LANE_MISMATCH",
+  SG_RESERVATION_MISMATCH: "SG_RESERVATION_MISMATCH",
 } as const;
 
 export type OpsAlertKindValue = (typeof OpsAlertKind)[keyof typeof OpsAlertKind];

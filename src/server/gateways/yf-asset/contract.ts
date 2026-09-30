@@ -29,6 +29,15 @@ export const yfGenerateSuccessSchema = z
     gatewayReservationId: z.string().min(1).max(128).optional(),
     actualBilledSeconds: z.number().nonnegative().optional(),
     actualUsd: z.number().nonnegative().optional(),
+    /**
+     * Reserve echo. The app compares these to the hold before treating the
+     * job as a money-success. Omitted on the mock flat path.
+     */
+    laneId: z.string().min(1).max(128).optional(),
+    modelId: z.string().min(1).max(256).optional(),
+    usdPerSecond: z.number().nonnegative().optional(),
+    estimatedBilledSeconds: z.number().nonnegative().optional(),
+    reservedUsd: z.number().nonnegative().optional(),
   })
   .strict();
 
@@ -69,6 +78,12 @@ export type GatewayErrorBody = {
   settleReason?: string;
   gatewayReservationId?: string;
   gatewayJobId?: string;
+  /** Present once a live reservation exists, including on error responses. */
+  laneId?: string;
+  modelId?: string;
+  usdPerSecond?: number;
+  estimatedBilledSeconds?: number;
+  reservedUsd?: number;
 };
 
 export function gatewayError(
@@ -83,6 +98,11 @@ export function gatewayError(
     settleReason?: string;
     gatewayReservationId?: string;
     gatewayJobId?: string;
+    laneId?: string;
+    modelId?: string;
+    usdPerSecond?: number;
+    estimatedBilledSeconds?: number;
+    reservedUsd?: number;
   },
 ): { ok: false; status: number; body: GatewayErrorBody } {
   return {
