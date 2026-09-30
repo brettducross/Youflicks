@@ -53,7 +53,7 @@ Default `YF_GATEWAY_LISTEN_HOST=127.0.0.1`. Keep the gateway off the public inte
 | Host env matches the table above (screenshot or secret-store names only — **no secret values**) | | | |
 | `npx tsx scripts/verify-storage-roundtrip.ts` fail-closed without creds | exit 1 | | |
 | Live storage roundtrip with r2\|s3 creds | `{ ok: true, deleted: true }` | | |
-| Restore drill signed in BETA_BACKUP_MONITORING.md (`npm run ops:verify-backup` exits 1 while Evidence `_fill_` remains; exit 0 is not host sign-off and does not clear invites) | all numbered steps | | |
+| Restore drill signed in BETA_BACKUP_MONITORING.md (`npm run ops:verify-backup` exits 1 while Evidence `_fill_` or `yes / no` templates remain; exit 0 is not host sign-off and does not clear invites) | all numbered steps | | |
 | Consent copy filled + version bumped | banner is no longer a legal placeholder | | |
 | Invites minted | **out of scope until the rows above PASS** | | |
 

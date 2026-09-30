@@ -33,6 +33,11 @@ const UNSIGNED_EVIDENCE_FIELDS = [
   "Observed RPO (age of snapshot used)",
   "Target RTO",
   "Observed RTO (restore start → step 6 PASS)",
+  "`gateway_spend_ledger` survived",
+  "`ai_processing_consent` survived",
+  "`beta_invite` survived",
+  "Project + media keys resolved",
+  "Object versioning confirmed",
   "Sign-off (Brett or delegated ops)",
 ];
 
@@ -76,19 +81,27 @@ function expectNoReadyClaim(text: string) {
 }
 
 describe("isEvidenceValueFilled", () => {
-  it("rejects _fill_, empty, and whitespace-only cells", () => {
+  it("rejects _fill_, empty, whitespace-only, and yes / no templates", () => {
     expect(isEvidenceValueFilled("_fill_")).toBe(false);
     expect(isEvidenceValueFilled("`_fill_`")).toBe(false);
     expect(isEvidenceValueFilled("  `_fill_`  ")).toBe(false);
     expect(isEvidenceValueFilled("")).toBe(false);
     expect(isEvidenceValueFilled("   ")).toBe(false);
     expect(isEvidenceValueFilled("``")).toBe(false);
+    expect(isEvidenceValueFilled("yes / no")).toBe(false);
+    expect(isEvidenceValueFilled("yes/no")).toBe(false);
+    expect(isEvidenceValueFilled("yes  /  no")).toBe(false);
+    expect(isEvidenceValueFilled("YES / NO")).toBe(false);
+    expect(isEvidenceValueFilled("  yes / no  ")).toBe(false);
+    expect(isEvidenceValueFilled("`yes / no`")).toBe(false);
   });
 
-  it("accepts a non-blank value that is not _fill_", () => {
+  it("accepts an observed yes or no and other non-template values", () => {
     expect(isEvidenceValueFilled("fixture-operator")).toBe(true);
-    expect(isEvidenceValueFilled("yes / no")).toBe(true);
     expect(isEvidenceValueFilled("yes")).toBe(true);
+    expect(isEvidenceValueFilled("no")).toBe(true);
+    expect(isEvidenceValueFilled("YES")).toBe(true);
+    expect(isEvidenceValueFilled("No")).toBe(true);
   });
 });
 
@@ -110,9 +123,24 @@ describe("parseBackupEvidence", () => {
     });
   });
 
-  it("is ready only when every Evidence value is non-blank and not _fill_", () => {
+  it("is ready only when every Evidence value is filled, including observed yes or no", () => {
     const result = parseBackupEvidence(evidenceDoc(FILLED_ROWS));
     expect(result).toEqual({ ready: true, missingFields: [] });
+  });
+
+  it("stays not ready when every _fill_ including Sign-off is filled but yes / no templates remain", () => {
+    const rows = FILLED_ROWS.replaceAll(" | yes |", " | yes / no |");
+    const result = parseBackupEvidence(evidenceDoc(rows));
+    expect(result).toEqual({
+      ready: false,
+      missingFields: [
+        "`gateway_spend_ledger` survived",
+        "`ai_processing_consent` survived",
+        "`beta_invite` survived",
+        "Project + media keys resolved",
+        "Object versioning confirmed",
+      ],
+    });
   });
 
   it("stays not ready when only the Sign-off cell is still _fill_", () => {
@@ -550,6 +578,8 @@ describe("ops:verify-backup CLI", () => {
     expect(result.stdout).toBe("");
     expect(result.stderr).toContain("NOT_READY");
     expect(result.stderr).toContain("Operator");
+    expect(result.stderr).toContain("`gateway_spend_ledger` survived");
+    expect(result.stderr).toContain("Object versioning confirmed");
     expect(result.stderr).toContain("Sign-off (Brett or delegated ops)");
     expectNoReadyClaim(result.stdout);
     expectNoReadyClaim(result.stderr);

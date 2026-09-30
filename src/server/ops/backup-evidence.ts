@@ -91,6 +91,9 @@ export type BackupVerifyExit = {
   stderr: string;
 };
 
+/** Template checklist cell, after trim. Whitespace around `/` does not make it an answer. */
+const YES_NO_TEMPLATE = /^yes\s*\/\s*no$/i;
+
 export function isEvidenceValueFilled(raw: string): boolean {
   const trimmed = raw.trim();
   if (trimmed.length === 0) return false;
@@ -98,6 +101,7 @@ export function isEvidenceValueFilled(raw: string): boolean {
   const unquoted = trimmed.replace(/^`+|`+$/g, "").trim();
   if (unquoted.length === 0) return false;
   if (unquoted.includes("_fill_")) return false;
+  if (YES_NO_TEMPLATE.test(unquoted)) return false;
   return true;
 }
 
@@ -129,8 +133,10 @@ function isHeaderRow(cells: string[]): boolean {
 }
 
 /**
- * Evidence table only (the `## Evidence` section). `_fill_`, empty, and
- * whitespace-only values are not ready. Does not write markdown.
+ * Evidence table only (the `## Evidence` section). `_fill_`, empty,
+ * whitespace-only, and `yes / no` templates are not ready. An observed
+ * `yes` or `no` (case-insensitive, exact after trim) is filled.
+ * Does not write markdown.
  */
 export function parseBackupEvidence(markdown: string): BackupEvidenceResult {
   const section = extractEvidenceSection(markdown);

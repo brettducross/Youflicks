@@ -149,7 +149,7 @@ Repeat this numbered drill after any `STORAGE_DRIVER` change, bucket migration, 
 
 `npm run ops:verify-backup` runs `scripts/verify-backup-drill.ts`.
 
-Default mode reads **this file’s Evidence table only**. It exits **1** and prints status `NOT_READY` while any Evidence value is blank or `_fill_`. It exits **0** and prints JSON `{ "ok": true, "mode": "evidence", "ready": true }` only when every Evidence value is non-blank and not `_fill_`. Exit 0 of evidence mode is **not** Brett sign-off until the Sign-off cell is filled by the host. Engineering must not claim invites are cleared.
+Default mode reads **this file’s Evidence table only**. It exits **1** and prints status `NOT_READY` while any Evidence value is blank, `_fill_`, or the template `yes / no`. It exits **0** and prints JSON `{ "ok": true, "mode": "evidence", "ready": true }` only when every Evidence value is filled. On the survival and versioning rows, a filled value is exactly `yes` or `no` (any case). Exit 0 of evidence mode is **not** Brett sign-off until the Sign-off cell is filled by the host. Engineering must not claim invites are cleared.
 
 The script never writes this file and never invents an operator, RPO, RTO, or snapshot id. `BETA_BACKUP_*` knobs are script-only. Next.js and the gateway do not require them at boot.
 
@@ -185,4 +185,4 @@ Missing or empty live knobs exit 1 with a fixed fail-closed reason and do not cl
 | Object versioning confirmed | yes / no |
 | Sign-off (Brett or delegated ops) | `_fill_` |
 
-Unfilled `_fill_` means the drill is **not** signed. Do not treat a merged PR as a completed restore. `npm run ops:verify-backup` exits 1 until those cells are filled. Exit 0 is still not Brett sign-off until the Sign-off cell is filled by the host, and it does not clear invites. Replace each `yes / no` with the observed `yes` or `no` before relying on that row; a non-blank value other than `_fill_` counts as present for the script.
+Unfilled `_fill_` means the drill is **not** signed. A cell that still says `yes / no` is not filled either; spacing around `/` does not turn that template into an answer. Replace each template with a single observed `yes` or `no`. Do not treat a merged PR as a completed restore. `npm run ops:verify-backup` exits 1 until the `_fill_` cells and the `yes / no` templates are replaced. Exit 0 is still not Brett sign-off until the Sign-off cell is filled by the host, and it does not clear invites.
