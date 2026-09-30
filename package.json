@@ -15,6 +15,7 @@
     "db:studio": "prisma studio",
     "gateway:asset": "tsx src/server/gateways/yf-asset/server.ts",
     "ops:verify-storage": "tsx scripts/verify-storage-roundtrip.ts",
+    "ops:check-launch-evidence": "tsx scripts/check-launch-evidence.ts",
     "postinstall": "prisma generate"
   },
   "dependencies": {

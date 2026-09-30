@@ -1,7 +1,8 @@
 # Closed-beta wipe runbook
 
 **SLA:** honor a deletion request within **24 hours**.  
-**Scope:** Wave 1 M8.8-lite. This is not a full `PrivacyLifecyclePort`.
+**Scope:** Wave 1 M8.8-lite. This is not a full `PrivacyLifecyclePort`.  
+**Related:** [LAUNCH_GATE_CHECKLIST.md](./LAUNCH_GATE_CHECKLIST.md) · [BETA_BACKUP_MONITORING.md](./BETA_BACKUP_MONITORING.md)
 
 ## Product path (preferred)
 
@@ -48,3 +49,18 @@ Both collect opaque StoragePort keys (media, generated assets, render outputs, l
 - [ ] Account or project is gone from Postgres, including `shot_fulfillment` and `shot_fulfillment_attempt`
 - [ ] Object-store prefixes for those projects are empty
 - [ ] Record the request time and completion time (SLA ≤ 24h)
+
+## Evidence
+
+Host-filled record for one deletion request. Engineering must not claim READY from this runbook. Unfilled `_fill_` means the wipe drill is **not** signed.
+
+| Field | Value |
+| --- | --- |
+| Request time (PT) | `_fill_` |
+| Completion time (PT) | `_fill_` |
+| Operator | `_fill_` |
+| Project or account id (non-secret) | `_fill_` |
+| Storage GC attempted / deleted (counts, or see logs) | `_fill_` |
+| Sign-off | `_fill_` |
+
+Unfilled `_fill_` means this wipe drill is **not** signed. Do not claim READY because project/account delete and StoragePort GC already exist in code. This table does not state provider-side retention. `npm run ops:check-launch-evidence` stays exit 1 while any `_fill_` marker remains. That command does not authorize invites.
