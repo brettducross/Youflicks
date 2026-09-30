@@ -13,6 +13,7 @@ import { AssetCapability, type AssetCapabilityValue } from "@/server/ports/capab
 import type { AssetGeneratorPort } from "@/server/ports/asset-generator";
 import type { StoragePort } from "@/server/ports/storage";
 import { rememberGatewayTrace } from "@/server/assets/gateway-trace";
+import { readReservationEcho } from "@/server/sg/lane-rate";
 
 export type HttpAssetGeneratorConfig = {
   providerKey: string;
@@ -132,6 +133,11 @@ export class HttpAssetGeneratorAdapter implements AssetGeneratorPort {
         gatewayReservationId?: string;
         actualBilledSeconds?: number;
         actualUsd?: number;
+        laneId?: string;
+        modelId?: string;
+        usdPerSecond?: number;
+        estimatedBilledSeconds?: number;
+        reservedUsd?: number;
       };
 
       if (typeof payload.jobId === "string" && payload.jobId.length > 0) {
@@ -248,6 +254,11 @@ type ParsedGatewayError = {
   settleReason?: string;
   gatewayReservationId?: string;
   gatewayJobId?: string;
+  laneId?: string;
+  modelId?: string | null;
+  usdPerSecond?: number;
+  estimatedBilledSeconds?: number;
+  reservedUsd?: number;
 };
 
 function parseGatewayError(text: string): ParsedGatewayError {
@@ -269,6 +280,12 @@ function parseGatewayError(text: string): ParsedGatewayError {
       gatewayReservationId:
         typeof parsed.gatewayReservationId === "string" ? parsed.gatewayReservationId : undefined,
       gatewayJobId: typeof parsed.gatewayJobId === "string" ? parsed.gatewayJobId : undefined,
+      laneId: typeof parsed.laneId === "string" ? parsed.laneId : undefined,
+      modelId:
+        typeof parsed.modelId === "string" || parsed.modelId === null ? parsed.modelId : undefined,
+      usdPerSecond: finiteNumber(parsed.usdPerSecond),
+      estimatedBilledSeconds: finiteNumber(parsed.estimatedBilledSeconds),
+      reservedUsd: finiteNumber(parsed.reservedUsd),
     };
   } catch {
     return {};
@@ -287,6 +304,13 @@ function gatewaySettlementDetails(
   if (parsed.settleReason) details.settleReason = parsed.settleReason;
   if (parsed.gatewayReservationId) details.gatewayReservationId = parsed.gatewayReservationId;
   if (parsed.gatewayJobId) details.gatewayJobId = parsed.gatewayJobId;
+  if (parsed.laneId) details.laneId = parsed.laneId;
+  if (parsed.modelId) details.modelId = parsed.modelId;
+  if (parsed.usdPerSecond !== undefined) details.usdPerSecond = parsed.usdPerSecond;
+  if (parsed.estimatedBilledSeconds !== undefined) {
+    details.estimatedBilledSeconds = parsed.estimatedBilledSeconds;
+  }
+  if (parsed.reservedUsd !== undefined) details.reservedUsd = parsed.reservedUsd;
   return details;
 }
 
@@ -295,6 +319,11 @@ function traceFromPayload(payload: {
   gatewayReservationId?: string;
   actualBilledSeconds?: number;
   actualUsd?: number;
+  laneId?: string;
+  modelId?: string;
+  usdPerSecond?: number;
+  estimatedBilledSeconds?: number;
+  reservedUsd?: number;
 }) {
   return {
     gatewayJobId: typeof payload.jobId === "string" && payload.jobId.length > 0 ? payload.jobId : null,
@@ -304,6 +333,7 @@ function traceFromPayload(payload: {
         : null,
     actualBilledSeconds: finiteNumber(payload.actualBilledSeconds) ?? null,
     actualUsd: finiteNumber(payload.actualUsd) ?? null,
+    reservation: readReservationEcho(payload),
   };
 }
 

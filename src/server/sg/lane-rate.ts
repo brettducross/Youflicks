@@ -197,3 +197,172 @@ export function requireLiveLane(laneId: string, path?: string): RegistryLane {
   }
   return lane;
 }
+
+/** D11 estimate plus the lane identity the app hold and gateway reservation must share. */
+export type ExpectedLaneCharge = LaneChargeEstimate & {
+  laneId: string;
+  laneClass: string;
+  providerKey: string;
+  modelId: string;
+  usdPerSecond: number;
+};
+
+/**
+ * Single paid estimate for app holds and the live gateway.
+ * Same lane id and duration always yield today's `estimateLaneCharge(requireLiveLane(...), duration)`.
+ * The D11 formula (`D_bill × usdPerSecond`) is unchanged.
+ */
+export function expectedLaneCharge(
+  laneId: string,
+  requestedDurationS?: number,
+  path?: string,
+): ExpectedLaneCharge {
+  const lane = requireLiveLane(laneId, path);
+  const charge = estimateLaneCharge(lane, requestedDurationS);
+  return {
+    ...charge,
+    laneId: lane.laneId,
+    laneClass: lane.laneClass,
+    providerKey: lane.providerKey,
+    modelId: lane.modelId,
+    usdPerSecond: lane.usdPerSecond,
+  };
+}
+
+export class SharedDurationError extends Error {
+  readonly code = "DURATION_INPUT_INVALID";
+
+  constructor(message: string) {
+    super(message);
+    this.name = "SharedDurationError";
+  }
+}
+
+/**
+ * Duration shared by the app estimate and the live gateway.
+ * Reads `YF_GATEWAY_BACKEND_INPUT_JSON.duration` (finite number) when `raw` is omitted.
+ * No duration field → undefined, and `estimateLaneCharge` uses `lane.clipDurationS`.
+ * Invalid JSON fails closed. A gateway that bills a different duration is not corrected here;
+ * generate-time receipt verify refuses that job.
+ */
+export function sharedGatewayRequestedDurationS(raw?: string): number | undefined {
+  const source = raw === undefined ? process.env.YF_GATEWAY_BACKEND_INPUT_JSON : raw;
+  if (!source || source.trim() === "") {
+    return undefined;
+  }
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(source);
+  } catch {
+    throw new SharedDurationError("YF_GATEWAY_BACKEND_INPUT_JSON must be a JSON object.");
+  }
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+    throw new SharedDurationError("YF_GATEWAY_BACKEND_INPUT_JSON must be a JSON object.");
+  }
+  return numericExtraDuration(parsed as Record<string, unknown>);
+}
+
+/** Fields echoed on a live generate response and stored on GatewaySpendReservation. */
+export type ReservationEcho = {
+  laneId: string;
+  modelId: string | null;
+  usdPerSecond: number;
+  estimatedBilledSeconds: number;
+  reservedUsd: number;
+};
+
+export function reservationEchoFromCharge(charge: ExpectedLaneCharge): ReservationEcho {
+  return {
+    laneId: charge.laneId,
+    modelId: charge.modelId,
+    usdPerSecond: roundMeasure(charge.usdPerSecond),
+    estimatedBilledSeconds: charge.estimatedBilledSeconds,
+    reservedUsd: charge.reservedUsd,
+  };
+}
+
+/** Complete echo, or null when any money/identity field is missing. Does not invent values. */
+export function readReservationEcho(source: object | null | undefined): ReservationEcho | null {
+  if (!source) {
+    return null;
+  }
+  const row = source as Record<string, unknown>;
+  const laneId = row.laneId;
+  const modelId = row.modelId;
+  const usdPerSecond = row.usdPerSecond;
+  const estimatedBilledSeconds = row.estimatedBilledSeconds;
+  const reservedUsd = row.reservedUsd;
+  if (typeof laneId !== "string" || laneId.length === 0) {
+    return null;
+  }
+  if (!(typeof modelId === "string" || modelId === null)) {
+    return null;
+  }
+  if (typeof usdPerSecond !== "number" || !Number.isFinite(usdPerSecond)) {
+    return null;
+  }
+  if (typeof estimatedBilledSeconds !== "number" || !Number.isFinite(estimatedBilledSeconds)) {
+    return null;
+  }
+  if (typeof reservedUsd !== "number" || !Number.isFinite(reservedUsd)) {
+    return null;
+  }
+  return { laneId, modelId, usdPerSecond, estimatedBilledSeconds, reservedUsd };
+}
+
+export type ReservationChargeSnapshot = {
+  laneId: string;
+  modelId: string | null;
+  usdPerSecond: number;
+  estimatedBilledSeconds: number;
+  usd: number;
+};
+
+export type ReservationMismatchField =
+  | "laneId"
+  | "modelId"
+  | "usdPerSecond"
+  | "estimatedBilledSeconds"
+  | "usd";
+
+/** Null when the gateway reservation and the app hold are the same economic event. */
+export function reservationChargeMismatch(
+  hold: ReservationChargeSnapshot,
+  gateway: ReservationChargeSnapshot,
+): ReservationMismatchField | null {
+  if (gateway.laneId !== hold.laneId) {
+    return "laneId";
+  }
+  if ((gateway.modelId ?? null) !== (hold.modelId ?? null)) {
+    return "modelId";
+  }
+  if (roundMeasure(gateway.usdPerSecond) !== roundMeasure(hold.usdPerSecond)) {
+    return "usdPerSecond";
+  }
+  if (roundMeasure(gateway.estimatedBilledSeconds) !== roundMeasure(hold.estimatedBilledSeconds)) {
+    return "estimatedBilledSeconds";
+  }
+  if (roundMeasure(gateway.usd) !== roundMeasure(hold.usd)) {
+    return "usd";
+  }
+  return null;
+}
+
+export type HoldExpectedMismatchField = "estimatedBilledSeconds" | "usdPerSecond" | "estimatedUsd";
+
+/** Pre-generate check. Compares the hold to a fresh expectedLaneCharge after roundMeasure. */
+export function holdExpectedChargeMismatch(
+  hold: { estimatedBilledSeconds: number; usdPerSecond: number; estimatedUsd: number },
+  expected: { estimatedBilledSeconds: number; usdPerSecond: number; reservedUsd: number },
+): HoldExpectedMismatchField | null {
+  if (roundMeasure(hold.usdPerSecond) !== roundMeasure(expected.usdPerSecond)) {
+    return "usdPerSecond";
+  }
+  if (roundMeasure(hold.estimatedBilledSeconds) !== roundMeasure(expected.estimatedBilledSeconds)) {
+    return "estimatedBilledSeconds";
+  }
+  if (roundMeasure(hold.estimatedUsd) !== roundMeasure(expected.reservedUsd)) {
+    return "estimatedUsd";
+  }
+  return null;
+}
