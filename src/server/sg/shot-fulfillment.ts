@@ -1,6 +1,7 @@
 import { readFileSync } from "node:fs";
 import type { Prisma, PrismaClient } from "@/generated/prisma/client";
 import { prisma } from "@/server/db";
+import { GeneratedAssetStatus } from "@/server/domain/status";
 import { type AttemptOutcome } from "@/server/sg/constants";
 import { DEFAULT_SG_ROUTING_MODE } from "@/server/sg/routing-mode";
 import { assertPersistableCues, type PersistableShotCues } from "@/server/sg/cues";
@@ -444,6 +445,64 @@ export class PrismaShotFulfillment {
           currentProviderKey: current.providerKey,
         },
       });
+      return updated;
+    });
+  }
+
+  /**
+   * Late settlement of a TIMEOUT_UNRECONCILED attempt. The row stays.
+   * Other outcomes are left alone (the first terminal outcome still wins
+   * everywhere else). Does not start another attempt.
+   */
+  async rewriteSettledTimeoutAttempt(input: {
+    attemptId: string;
+    outcome: "FAILED" | "SUCCEEDED";
+    failureCode: string | null;
+    actualBilledSeconds: number | null;
+    actualUsd: number | null;
+  }) {
+    return this.db.$transaction(async (tx) => {
+      const current = await tx.shotFulfillmentAttempt.findUniqueOrThrow({
+        where: { id: input.attemptId },
+      });
+      if (current.outcome !== "TIMEOUT_UNRECONCILED") {
+        return current;
+      }
+      const slot = await tx.shotFulfillment.findUniqueOrThrow({
+        where: { id: current.shotFulfillmentId },
+      });
+      if (input.outcome === "SUCCEEDED") {
+        if (!current.generatedAssetId) {
+          throw new ShotFulfillmentError("A succeeded timeout rewrite requires a generated asset.");
+        }
+        const ready = await tx.generatedAsset.findFirst({
+          where: {
+            id: current.generatedAssetId,
+            projectId: slot.projectId,
+            status: GeneratedAssetStatus.READY,
+          },
+          select: { id: true },
+        });
+        if (!ready) {
+          throw new ShotFulfillmentError("A succeeded timeout rewrite requires a READY asset.");
+        }
+      }
+      const updated = await tx.shotFulfillmentAttempt.update({
+        where: { id: current.id },
+        data: {
+          outcome: input.outcome,
+          failureCode: input.failureCode,
+          actualBilledSeconds: input.actualBilledSeconds,
+          actualUsd: input.actualUsd,
+          finishedAt: current.finishedAt ?? new Date(),
+        },
+      });
+      if (slot.status !== "SUPERSEDED") {
+        await tx.shotFulfillment.update({
+          where: { id: slot.id },
+          data: { status: input.outcome === "SUCCEEDED" ? "FULFILLED" : "FAILED" },
+        });
+      }
       return updated;
     });
   }

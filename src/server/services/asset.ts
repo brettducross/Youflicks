@@ -639,23 +639,41 @@ export class AssetService {
         throw error;
       }
 
-      await this.fulfillments.abandonPendingAttempts({
-        shotFulfillmentId: slot.id,
-        jobId: job.id,
-      });
-      const attempt = await this.fulfillments.beginAttempt({
-        shotFulfillmentId: slot.id,
-        laneClass: quote.laneClass,
-        laneId: quote.laneId,
-        providerKey: quote.providerKey,
-        modelId: quote.modelId,
-        requiredScopes: route.requiredScopes,
-        jobId: job.id,
-        budgetReservationId: budgetHold?.id ?? null,
-        estimatedBilledSeconds: quote.estimatedBilledSeconds,
-        usdPerSecond: quote.usdPerSecond,
-        estimatedUsd: quote.estimatedUsd,
-      });
+      let attempt;
+      try {
+        await this.fulfillments.abandonPendingAttempts({
+          shotFulfillmentId: slot.id,
+          jobId: job.id,
+        });
+        attempt = await this.fulfillments.beginAttempt({
+          shotFulfillmentId: slot.id,
+          laneClass: quote.laneClass,
+          laneId: quote.laneId,
+          providerKey: quote.providerKey,
+          modelId: quote.modelId,
+          requiredScopes: route.requiredScopes,
+          jobId: job.id,
+          budgetReservationId: budgetHold?.id ?? null,
+          estimatedBilledSeconds: quote.estimatedBilledSeconds,
+          usdPerSecond: quote.usdPerSecond,
+          estimatedUsd: quote.estimatedUsd,
+        });
+      } catch (error) {
+        if (budgetHold) {
+          try {
+            await this.budgets.release(budgetHold.id, "BEGIN_ATTEMPT_FAILED");
+          } catch (releaseError) {
+            logger.error("asset.begin_attempt_release_failed", {
+              reservationId: budgetHold.id,
+              projectId,
+              jobId: job.id,
+              error: releaseError instanceof Error ? releaseError.message : "unknown",
+            });
+          }
+        }
+        await this.markSlotFailure(slot.id, projectId, job.id);
+        throw error;
+      }
 
       let rawDocument;
       let reconciled: AiVideoBudgetReservationRecord | null = null;
@@ -1430,7 +1448,9 @@ export class AssetService {
         resolved.caps.userWindowMaxUsd,
       ),
       // Gateway spend ledgers yf-asset and lane:<laneId> enforce global and per-lane
-      // caps at gateway reserve. A read-side pre-check is a PR-11 carry.
+      // caps at gateway reserve. A read-side pre-check stays deferred: failing
+      // closed on a missing ledger row would deny the first job before the
+      // gateway creates that row. See the PR-11 ops notes.
       globalBlocked: false,
       laneBlocked: false,
     };

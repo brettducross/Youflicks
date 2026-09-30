@@ -6,6 +6,7 @@ import path from "node:path";
 import sharp from "sharp";
 import { afterAll, describe, expect, it } from "vitest";
 import { mimeMatchesKind } from "@/server/assets/kinds";
+import { logger } from "@/lib/logger";
 import {
   KEN_BURNS_PROVIDER_KEY,
   KEN_BURNS_SCALE_TO,
@@ -121,7 +122,17 @@ describe("Ken Burns processor", () => {
   it("writes a deterministic silent H.264 file and a different file for static or a different pan", async () => {
     const stillBytes = await patternedStill();
     const processor = new KenBurnsProcessor(storage);
-    const first = await processor.process(spec({ stillBytes, role: "det-a" }));
+    const encodes: Array<Record<string, unknown>> = [];
+    const originalInfo = logger.info;
+    logger.info = (message, context) => {
+      if (message === "asset.kenburns_encode") {
+        encodes.push({ ...(context ?? {}) });
+      }
+      originalInfo(message, context);
+    };
+    let first;
+    try {
+    first = await processor.process(spec({ stillBytes, role: "det-a" }));
     const second = await processor.process(spec({ stillBytes, role: "det-b" }));
     expect(first.checksum).toBe(second.checksum);
     expect(first.mimeType).toBe("video/mp4");
@@ -151,7 +162,49 @@ describe("Ken Burns processor", () => {
       spec({ stillBytes, panX: 0.9, panY: 0.8, panAnchor: "center", scaleTo: 1.5, role: "center" }),
     );
     expect(panned.checksum).not.toBe(centered.checksum);
+    expect(encodes.length).toBeGreaterThan(0);
+    expect(encodes[0]).toMatchObject({
+      outcome: "succeeded",
+      width: 32,
+      height: 32,
+      durationMs: 80,
+      frames: 2,
+    });
+    expect(typeof encodes[0]?.peakTempBytes).toBe("number");
+    expect(Number(encodes[0]?.peakTempBytes)).toBeGreaterThan(0);
+    expect(typeof encodes[0]?.frameLoopMs).toBe("number");
+    expect(typeof encodes[0]?.ffmpegMs).toBe("number");
+    expect(typeof encodes[0]?.totalMs).toBe("number");
+    } finally {
+      logger.info = originalInfo;
+    }
   }, 60_000);
+
+  it("logs encode metrics when the still cannot be decoded", async () => {
+    const failures: Array<Record<string, unknown>> = [];
+    const originalError = logger.error;
+    logger.error = (message, context) => {
+      if (message === "asset.kenburns_encode") {
+        failures.push({ ...(context ?? {}) });
+      }
+      originalError(message, context);
+    };
+    try {
+      const processor = new KenBurnsProcessor(storage);
+      await expect(
+        processor.process(spec({ stillBytes: new Uint8Array([1, 2, 3]), role: "bad-still" })),
+      ).rejects.toThrow();
+      expect(failures[0]).toMatchObject({
+        outcome: "failed",
+        width: 32,
+        height: 32,
+        durationMs: 80,
+      });
+      expect(typeof failures[0]?.totalMs).toBe("number");
+    } finally {
+      logger.error = originalError;
+    }
+  });
 
   it("keeps the M4 manifest schema snapshot free of a render-time motion field", () => {
     expect(Object.keys(renderManifestSchema.shape).sort()).toEqual(

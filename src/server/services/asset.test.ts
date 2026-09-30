@@ -1304,7 +1304,7 @@ describe("AssetService M3", () => {
       where: { budgetReservationId: reservation?.id },
     });
     expect(attempt?.outcome).toBe("FAILED");
-    expect(attempt?.failureCode).toBe("SUBMIT_REJECTED");
+    expect(attempt?.failureCode).toBe("SUBMIT_REJECTED:ASSET_PROVIDER_UNAVAILABLE");
     expect(reservation?.gatewayReservationId).toBe(gatewayRow?.id);
     expect(attempt?.gatewayReservationId).toBe(gatewayRow?.id);
     expect(attempt?.actualBilledSeconds).toBeNull();
@@ -5774,6 +5774,60 @@ describe("AssetService M3", () => {
         await holdUnmet(role, async () => {
           expect((await messagesFor(assets, role)).map((row) => row.message)).toEqual([SG_COPY.SG_FAILED_HONEST]);
         });
+        await finishQuietly(queued.jobId);
+      },
+    );
+  });
+
+  it("releases a LEGACY hold when beginAttempt throws before a provider call", async () => {
+    const role = "pr11_begin_attempt_fault";
+    const calls: string[] = [];
+    await withEnv(
+      {
+        SG_ROUTING_MODE: "LEGACY",
+        YF_GATEWAY_LANE_ID: "r1-wan27-replicate",
+        SG_LANE_REGISTRY_PATH: undefined,
+      },
+      async () => {
+        const real = new PrismaShotFulfillment(prisma);
+        const fulfillments = new Proxy(real, {
+          get(target, prop, receiver) {
+            if (prop === "beginAttempt") {
+              return async () => {
+                throw new Error("beginAttempt injected fault");
+              };
+            }
+            const value = Reflect.get(target, prop, receiver);
+            return typeof value === "function" ? value.bind(target) : value;
+          },
+        });
+        const { assets } = harness({
+          adapter: scriptedGenerator(async () => {
+            calls.push("generate");
+            throw new Error("must not generate");
+          }),
+          productionAvailable: true,
+          supportedCapabilities: [AssetCapability.IMAGE_GENERATION],
+          budgets: new PrismaAiVideoBudget(prisma),
+          fulfillments,
+        });
+        const queued = await assets.requestGenerate(ownerId, projectId, {
+          roles: [{ role, storySceneId: "scene-arrive", kind: "IMAGE" }],
+        });
+        await expect(assets.processJob((await jobs.get(queued.jobId))!)).rejects.toThrow(
+          /beginAttempt injected fault/,
+        );
+        expect(calls).toEqual([]);
+        const slot = await prisma.shotFulfillment.findFirstOrThrow({ where: { projectId, role } });
+        expect(slot.status).toBe("FAILED");
+        expect(await prisma.shotFulfillmentAttempt.count({ where: { shotFulfillmentId: slot.id } })).toBe(0);
+        const hold = await prisma.aiVideoBudgetReservation.findFirstOrThrow({
+          where: { projectId, idempotencyKey: { contains: role } },
+        });
+        expect(hold.status).toBe("RELEASED");
+        expect(hold.settleReason).toBe("BEGIN_ATTEMPT_FAILED");
+        expect(hold.actualBilledSeconds).toBeNull();
+        expect(hold.actualUsd).toBeNull();
         await finishQuietly(queued.jobId);
       },
     );

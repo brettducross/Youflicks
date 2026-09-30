@@ -16,6 +16,24 @@ export type AttemptOutcomeMapping = {
   failureCode: string | null;
 };
 
+/** Gateway cause tokens that may be appended to a stable failure prefix. */
+const SAFE_FAILURE_TOKEN = /^[A-Z0-9_]{1,64}$/;
+
+export function isSafeFailureToken(value: string | null | undefined): value is string {
+  return typeof value === "string" && SAFE_FAILURE_TOKEN.test(value);
+}
+
+/**
+ * Keeps the SUBMIT_REJECTED prefix so ops can group on it, and appends the
+ * gateway cause when it is a short token (PR-2 r3: no new column).
+ */
+export function submitRejectedFailureCode(gatewayCode: string | null | undefined): string {
+  if (isSafeFailureToken(gatewayCode)) {
+    return `SUBMIT_REJECTED:${gatewayCode}`;
+  }
+  return "SUBMIT_REJECTED";
+}
+
 /** Reasons that stay counted even when a 4xx status is also present. */
 const STILL_COUNTED_REASONS = new Set([
   "TIMEOUT",
@@ -55,7 +73,7 @@ export function attemptOutcomeFromSettlement(input: {
     (input.settleReason === "SUBMIT_REJECTED" ||
       (input.settleReason == null && isDefinitiveClientRejection(input.gatewayStatus)))
   ) {
-    return { outcome: "FAILED", failureCode: "SUBMIT_REJECTED" };
+    return { outcome: "FAILED", failureCode: submitRejectedFailureCode(input.gatewayCode) };
   }
   if (input.settlement === "RECONCILED") {
     return { outcome: "FAILED", failureCode: input.settleReason ?? "RECONCILED" };

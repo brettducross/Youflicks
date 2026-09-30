@@ -38,4 +38,14 @@ Users see the applied key's copy per role in the Missing pieces panel. Shadow de
 
 ## Budget
 
-Project and user cap flags passed to the policy come from the app budget ledgers. Global and per-lane caps live on the gateway spend ledgers (`yf-asset` and `lane:<laneId>`) and are enforced when the gateway reserves (429 before the backend call, lock L181 and L280). A read-side pre-check of those ledgers is a PR-11 carry. The app reservation is still the project and user price check, and an ENFORCED hold is booked from the routed lane's quote before `forLane`.
+Project and user cap flags passed to the policy come from the app budget ledgers. Global and per-lane caps live on the gateway spend ledgers (`yf-asset` and `lane:<laneId>`) and are enforced when the gateway reserves (429 before the backend call, lock L181 and L280). A read-side pre-check of those ledgers was not landed with the ops sweep: failing closed when the ledger row is missing would deny the first job before the gateway creates it. The app reservation is still the project and user price check, and an ENFORCED hold is booked from the routed lane's quote before `forLane`.
+
+## Ops hygiene
+
+`POST /api/ops/sg/hygiene` with `Authorization: Bearer $BETA_OPS_SECRET` runs three substeps and returns JSON. A missing or wrong secret is 404, the same as the other ops routes. The bearer compare is timing-safe.
+
+1. Aged `UNRECONCILED` app holds. Default age is 24h (`SG_UNRECONCILED_SWEEP_MIN_AGE_MS`), floor 1h. Release only when the linked gateway reservation is `RELEASED` (definitive non-billable, including `CAP_DENIED`). Reconcile only when that row is `RECONCILED` and `actualBilledSeconds` is finite and >= 0. Otherwise the hold stays `UNRECONCILED`, still counted, and is listed (id, age, settleReason, laneId, estimatedUsd). A `TIMEOUT_UNRECONCILED` attempt on a hold this sweep releases or reconciles is rewritten to `FAILED`, with actuals copied from the hold when the hold reconciled. `SUCCEEDED` is used only when that attempt already points at a READY asset. The sweep does not start a generate.
+2. Stale `RESERVED` holds. Default age is 2h (`SG_STALE_RESERVED_SWEEP_MIN_AGE_MS`), floor 30 minutes. A hold with no linked attempt and no PENDING or RUNNING job is released with reason `STALE_RESERVED`. No actuals are written and nothing is metered. A PENDING attempt, a running job, or any linked attempt is kept.
+3. Meter backfill inserts `sg:AI_VIDEO_SECONDS:<holdId>` for `RECONCILED` holds with `actualBilledSeconds` > 0 that are missing the usage row. A second run does not insert a duplicate.
+
+`GET /api/ops/sg/lanes` adds `openExposure` and `reconciliationFlags`. Open exposure is every `RESERVED` or `UNRECONCILED` app hold grouped by lane, at any age, including holds with no attempt. Money is the hold's estimate. Reconciliation flags compare the attempt's laneId and modelId to the gateway reservation. Both model ids null is not a mismatch. A missing gateway row is an unresolved link. The flag is not written back onto the attempt.
