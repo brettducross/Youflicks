@@ -63,4 +63,4 @@ Host-filled record for one deletion request. Engineering must not claim READY fr
 | Storage GC attempted / deleted (counts, or see logs) | `_fill_` |
 | Sign-off | `_fill_` |
 
-Unfilled `_fill_` means this wipe drill is **not** signed. Do not claim READY because project/account delete and StoragePort GC already exist in code. This table does not state provider-side retention. `npm run ops:check-launch-evidence` stays exit 1 while any `_fill_` marker remains. That command does not authorize invites.
+Unfilled `_fill_` means this wipe drill is **not** signed. Do not claim READY because project/account delete and StoragePort GC already exist in code. This table does not state provider-side retention. `npm run ops:check-launch-evidence` stays exit 1 while any placeholder cell remains. That command does not authorize invites.

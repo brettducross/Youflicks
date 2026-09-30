@@ -1,9 +1,11 @@
 /**
- * Fail closed while launch-evidence markdown still contains `_fill_`.
+ * Fail closed while launch-evidence markdown still has unfilled `_fill_`
+ * placeholder cells. Legends that only name the token do not count.
+ * RPO/RTO target cells count the same as Evidence cells.
  *
  *   npm run ops:check-launch-evidence
  *
- * Exit 1 while any marker remains (expected on an unsigned tip).
+ * Exit 1 while any placeholder cell remains (expected on an unsigned tip).
  * Exit 0 only when none remain. Exit 0 does not authorize invites.
  * This script reads docs only. It does not use Sentry, R2, or other secrets.
  */
