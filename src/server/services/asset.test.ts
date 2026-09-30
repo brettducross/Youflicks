@@ -6775,7 +6775,10 @@ describe("AssetService M3", () => {
     await runCap({ SG_BUDGET_PROJECT_MAX_USD: "0.01" }, "pr10_cap_no_lane");
   });
 
-  it("PR-10 shows the enhancement fallback once and drops the rebuild hint after the clip is placed", async () => {
+  // Placement encodes 50 frames at 1080p (~311MB raw) plus ffmpeg. Default 5s flakes on a slower host.
+  const kenBurnsPlacementTimeoutMs = 20_000;
+
+  it("PR-10 shows the enhancement fallback once and drops the rebuild hint after the clip is placed", { timeout: kenBurnsPlacementTimeoutMs }, async () => {
     const registry = await writeLaneRegistry(
       [
         fixtureLane({
@@ -6866,7 +6869,7 @@ describe("AssetService M3", () => {
     }
   });
 
-  it("PR-10 does not keep a fallback line from another clip with the same role", async () => {
+  it("PR-10 does not keep a fallback line from another clip with the same role", { timeout: kenBurnsPlacementTimeoutMs }, async () => {
     const registry = await writeLaneRegistry(
       [
         fixtureLane({
@@ -6982,7 +6985,7 @@ describe("AssetService M3", () => {
     }
   });
 
-  it("PR-10 shows the video fallback line, the treatment line, and the rebuild hint", async () => {
+  it("PR-10 shows the video fallback line, the treatment line, and the rebuild hint", { timeout: kenBurnsPlacementTimeoutMs }, async () => {
     const registry = await writeLaneRegistry(
       [
         fixtureLane({
