@@ -1,8 +1,10 @@
 import { routingModeSchema, type RoutingMode } from "@/server/sg/constants";
 
 /**
- * Working default while E-R1 is pending. This is the only mode default.
- * The default routing mode and any hosted flip await PO decision E-R1 (pending).
+ * E-R1 decided 2026-09-26: LEGACY for now; ENFORCED before invites.
+ * See docs/wave0-wave1/PO_SG_E-R1_ROUTING_MODE_DECISION_2026-09-26.md.
+ * This is the only mode default. Do not add a second default.
+ * Switching to ENFORCED is a separate reviewed change required before invites.
  * Flip this constant, or set SG_ROUTING_MODE, without restructuring callers.
  */
 export const DEFAULT_SG_ROUTING_MODE = "LEGACY" as const satisfies RoutingMode;

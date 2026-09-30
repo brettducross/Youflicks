@@ -43,6 +43,14 @@ type GeneratedAssetView = {
   createdAt: string;
 };
 
+type SlotMessageView = {
+  role: string;
+  storySceneId: string | null;
+  messageKey: string;
+  message: string;
+  rebuildHint: string | null;
+};
+
 type JobStatusView = {
   jobId: string;
   status: string;
@@ -89,22 +97,53 @@ function kindLabel(kind: string) {
   }
 }
 
+function groupSlotMessages(items: SlotMessageView[]) {
+  const groups: Array<{
+    key: string;
+    role: string;
+    lines: Array<{ key: string; message: string }>;
+    rebuildHint: string | null;
+  }> = [];
+  for (const item of items) {
+    const key = `${item.storySceneId ?? "scene"}:${item.role}`;
+    const line = { key: `${item.messageKey}-${item.message}`, message: item.message };
+    const current = groups[groups.length - 1];
+    if (current && current.key === key) {
+      current.lines.push(line);
+      if (item.rebuildHint) {
+        current.rebuildHint = item.rebuildHint;
+      }
+      continue;
+    }
+    groups.push({
+      key,
+      role: item.role,
+      lines: [line],
+      rebuildHint: item.rebuildHint,
+    });
+  }
+  return groups;
+}
+
 export function MissingPiecesPanel({
   projectId,
   initialAssets,
   initialAvailability,
   initialUnmetRoles,
+  initialSlotMessages,
   timelineReady,
 }: {
   projectId: string;
   initialAssets: GeneratedAssetView[];
   initialAvailability: AssetAvailability;
   initialUnmetRoles: UnmetRoleView[];
+  initialSlotMessages: SlotMessageView[];
   timelineReady: boolean;
 }) {
   const [availability, setAvailability] = useState(initialAvailability);
   const [assets, setAssets] = useState<GeneratedAssetView[]>(initialAssets);
   const [unmet, setUnmet] = useState<UnmetRoleView[]>(initialUnmetRoles);
+  const [slotMessages, setSlotMessages] = useState<SlotMessageView[]>(initialSlotMessages);
   const [cutReady, setCutReady] = useState(timelineReady);
   const [job, setJob] = useState<JobStatusView | null>(null);
   const [busy, setBusy] = useState(false);
@@ -117,6 +156,7 @@ export function MissingPiecesPanel({
     ]);
     const assetsPayload = (await assetsResponse.json()) as {
       assets?: GeneratedAssetView[];
+      slotMessages?: SlotMessageView[];
       error?: { message?: string };
     };
     const timelinePayload = (await timelineResponse.json()) as {
@@ -126,6 +166,7 @@ export function MissingPiecesPanel({
       throw new Error(assetsPayload.error?.message || "Could not load missing pieces.");
     }
     setAssets(assetsPayload.assets ?? []);
+    setSlotMessages(assetsPayload.slotMessages ?? []);
     if (timelineResponse.ok) {
       setCutReady(Boolean(timelinePayload.timeline));
       setUnmet(timelinePayload.timeline?.document?.unmetMediaRoles ?? []);
@@ -320,6 +361,24 @@ export function MissingPiecesPanel({
               ))}
             </ul>
           </div>
+        ) : null}
+
+        {slotMessages.length > 0 ? (
+          <ul className="space-y-2">
+            {groupSlotMessages(slotMessages).map((group) => (
+              <li key={group.key}>
+                <p className="text-sm">{group.role.replaceAll("_", " ")}</p>
+                {group.lines.map((line, index) => (
+                  <p key={`${group.key}-${index}`} className="text-sm text-muted-foreground">
+                    {line.message}
+                  </p>
+                ))}
+                {group.rebuildHint ? (
+                  <p className="text-sm text-muted-foreground">{group.rebuildHint}</p>
+                ) : null}
+              </li>
+            ))}
+          </ul>
         ) : null}
 
         <div className="flex flex-wrap gap-2">

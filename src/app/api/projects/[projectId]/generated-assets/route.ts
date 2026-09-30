@@ -19,7 +19,8 @@ export async function GET(request: Request, context: RouteContext) {
     const assets = latest
       ? await services.assetService.getLatestFulfillments(user.id, projectId)
       : await services.assetService.listAssets(user.id, projectId);
-    return NextResponse.json({ assets });
+    const slotMessages = await services.assetService.listSlotMessages(user.id, projectId);
+    return NextResponse.json({ assets, slotMessages });
   } catch (error) {
     const { status, body } = toErrorResponse(error);
     return NextResponse.json(body, { status });

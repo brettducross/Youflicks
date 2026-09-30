@@ -107,7 +107,9 @@ const envSchema = z.object({
   /**
    * SG.4 routing mode. Unset stays unset here; routing-mode.ts defaults to LEGACY.
    * Any other value fails closed at boot.
-   * The default routing mode and any hosted flip await PO decision E-R1 (pending).
+   * E-R1 decided 2026-09-26: LEGACY for now; ENFORCED before invites.
+   * See docs/wave0-wave1/PO_SG_E-R1_ROUTING_MODE_DECISION_2026-09-26.md.
+   * Switching to ENFORCED is a separate reviewed change required before invites.
    */
   SG_ROUTING_MODE: z.enum(["LEGACY", "ENFORCED"]).optional(),
   RENDER_HTTP_PROVIDER_KEY: z.string().default("http.renderer"),

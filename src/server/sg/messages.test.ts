@@ -1,0 +1,312 @@
+import { readFileSync, readdirSync, statSync } from "node:fs";
+import path from "node:path";
+import { describe, expect, it } from "vitest";
+import { SG_CAP_REACHED_SENTENCE } from "@/lib/sg-cap-sentence";
+import { AppError } from "@/lib/errors";
+import { SG_MESSAGE_KEYS, type SgMessageKey } from "@/server/sg/constants";
+import {
+  copyLintViolations,
+  EXCLUDED_GENERIC_TOKENS,
+  registryTokens,
+  type RegistryNameSource,
+} from "@/server/sg/copy-lint";
+import { SG_COPY } from "@/server/sg/messages";
+import { decide, planRoute, type BudgetSnapshot, type RegistryLaneSnapshot, type RegistrySnapshot, type ShotCues } from "@/server/sg/policy";
+
+const FINAL_COPY: Record<SgMessageKey, string> = {
+  SG_FALLBACK_ORIGINAL: "We used your original photo or video for this moment.",
+  SG_FALLBACK_KEN_BURNS:
+    "This moment uses your photo with gentle camera movement instead of a generated clip.",
+  SG_FALLBACK_STATIC: "This moment shows your photo as a still.",
+  SG_NO_QUALIFIED_LANE:
+    "We can't make a moving clip for this moment at our quality bar yet, so we used your photo instead.",
+  SG_CEILING_REACHED:
+    "We tried a few versions of this moment and none met our quality bar, so we used your photo instead.",
+  SG_WAITING: "This moment is waiting for this piece. Your movie can still be built without it.",
+  SG_CAP_REACHED:
+    "Generation of this piece is paused because a usage limit was reached. We did not retry automatically.",
+  SG_FAILED_HONEST: "We couldn't make this piece for this moment. Nothing in your story was changed.",
+  SG_REBUILD_HINT: "Rebuild your cut to include the updated moments.",
+};
+
+function walk(dir: string, files: string[]) {
+  for (const entry of readdirSync(dir)) {
+    const full = path.join(dir, entry);
+    if (statSync(full).isDirectory()) {
+      walk(full, files);
+    } else if (full.endsWith(".ts") && !full.endsWith(".test.ts")) {
+      files.push(full);
+    }
+  }
+}
+
+function cues(overrides: Partial<ShotCues> = {}): ShotCues {
+  return {
+    requiredScopes: ["NON_IDENTITY"],
+    shotRole: "other",
+    identityState: "ABSENT",
+    originalCoversSlot: false,
+    sourceStillExists: false,
+    motionNeed: "low",
+    routingMode: "ENFORCED",
+    ...overrides,
+  };
+}
+
+function lane(overrides: Partial<RegistryLaneSnapshot> = {}): RegistryLaneSnapshot {
+  return {
+    laneId: "lane-a",
+    laneClass: "draft-cost",
+    providerKey: "open:lane-a",
+    enabled: true,
+    healthy: true,
+    designation: "NONE",
+    resolutionTier: "720p",
+    modelId: "model-a",
+    gates: { HERO: "NOT_QUALIFIED", IDENTITY: "NOT_QUALIFIED", NON_IDENTITY: "NOT_QUALIFIED" },
+    ...overrides,
+  };
+}
+
+const openBudget: BudgetSnapshot = {};
+const blockedBudget: BudgetSnapshot = { projectBlocked: true };
+
+describe("SG.6 copy map", () => {
+  const registry = JSON.parse(
+    readFileSync(path.join(process.cwd(), "config/sg-lane-registry.json"), "utf8"),
+  ) as RegistryNameSource;
+
+  it("uses the cap sentence as the default spend-cap error", () => {
+    const error = AppError.spendCapReached();
+    expect(error.message).toBe(SG_COPY.SG_CAP_REACHED);
+    expect(error.message).not.toMatch(/\d/);
+    expect(error.message).not.toContain("$");
+    expect(error.message).not.toMatch(/AI-video/);
+    expect(error.message).not.toMatch(/\bclip\b/i);
+    expect(copyLintViolations({ jobError: error.message }, registry)).toEqual([]);
+  });
+
+  it("shares one cap sentence between the copy map and the spend-cap error", () => {
+    expect(SG_COPY.SG_CAP_REACHED).toBe(SG_CAP_REACHED_SENTENCE);
+    expect(AppError.spendCapReached().message).toBe(SG_CAP_REACHED_SENTENCE);
+  });
+
+  it("does not pass internal budget text through spendCapReached", () => {
+    const asset = readFileSync(path.join(process.cwd(), "src/server/services/asset.ts"), "utf8");
+    const errors = readFileSync(path.join(process.cwd(), "src/lib/errors.ts"), "utf8");
+    expect(asset).not.toContain("spendCapReached(error.message)");
+    expect(asset).not.toContain("Clip generation is paused");
+    expect(errors).not.toContain("Clip generation is paused");
+  });
+
+  it("equals the nine P-8 final strings", () => {
+    expect(SG_COPY).toEqual(FINAL_COPY);
+    expect(Object.keys(SG_COPY).sort()).toEqual(Object.values(SG_MESSAGE_KEYS).sort());
+  });
+
+  it("keeps clip wording only on the two verified-photo lines", () => {
+    const clipKeys = Object.entries(SG_COPY)
+      .filter(([, text]) => /\bclips?\b/i.test(text))
+      .map(([key]) => key)
+      .sort();
+    expect(clipKeys).toEqual(["SG_FALLBACK_KEN_BURNS", "SG_NO_QUALIFIED_LANE"]);
+  });
+
+  it("keeps your photo only on the four photo-fallback lines", () => {
+    const photoKeys = Object.entries(SG_COPY)
+      .filter(([, text]) => text.toLowerCase().includes("your photo"))
+      .map(([key]) => key)
+      .sort();
+    expect(photoKeys).toEqual([
+      "SG_CEILING_REACHED",
+      "SG_FALLBACK_KEN_BURNS",
+      "SG_FALLBACK_STATIC",
+      "SG_NO_QUALIFIED_LANE",
+    ]);
+  });
+
+  it("lints the shipped copy against the lane registry", () => {
+    const raw = registryTokens(registry);
+    for (const token of EXCLUDED_GENERIC_TOKENS) {
+      expect(raw.has(token), token).toBe(true);
+    }
+    expect(raw.has("lite")).toBe(false);
+    expect(copyLintViolations(SG_COPY, registry)).toEqual([]);
+  });
+
+  it("rejects Ken Burns phrasing", () => {
+    const tainted = {
+      ...SG_COPY,
+      [SG_MESSAGE_KEYS.FALLBACK_STATIC]: `${SG_COPY.SG_FALLBACK_STATIC} Ken Burns`,
+    };
+    expect(copyLintViolations(tainted, registry).some((item) => item.includes("ken burns"))).toBe(true);
+  });
+
+  it("rejects a currency amount, upgrade, and a registry provider token", () => {
+    expect(
+      copyLintViolations(
+        { ...SG_COPY, [SG_MESSAGE_KEYS.WAITING]: `${SG_COPY.SG_WAITING} $1` },
+        registry,
+      ).length,
+    ).toBeGreaterThan(0);
+    expect(
+      copyLintViolations(
+        { ...SG_COPY, [SG_MESSAGE_KEYS.WAITING]: `${SG_COPY.SG_WAITING} upgrade` },
+        registry,
+      ).some((item) => item.includes("upgrade")),
+    ).toBe(true);
+    const provider = registry.lanes?.find((row) => row.providerKey?.includes("replicate"))?.providerKey;
+    expect(provider).toBeTruthy();
+    expect(
+      copyLintViolations(
+        { ...SG_COPY, [SG_MESSAGE_KEYS.WAITING]: `${SG_COPY.SG_WAITING} ${provider}` },
+        registry,
+      ).some((item) => item.includes("registry")),
+    ).toBe(true);
+  });
+
+  it("covers every stored key the policy can return", () => {
+    const unqualified: RegistrySnapshot = { lanes: [lane()] };
+    const legacyMissing: RegistrySnapshot = { lanes: [lane({ designation: "NONE" })] };
+    const ceiling: RegistrySnapshot = {
+      lanes: [
+        lane({
+          gates: { HERO: "NOT_QUALIFIED", IDENTITY: "NOT_QUALIFIED", NON_IDENTITY: "QUALIFIED" },
+        }),
+      ],
+      regenCeilings: { "draft-cost": 1, "draft-quality": 2, standard: 2, premium: 2 },
+    };
+    const cases: Array<{ name: string; decision: ReturnType<typeof decide> }> = [
+      {
+        name: "ORIGINAL",
+        decision: decide(cues({ originalCoversSlot: true }), unqualified, openBudget, []),
+      },
+      {
+        name: "dialogue DEFER",
+        decision: decide(cues({ shotRole: "dialogue-closeup" }), unqualified, openBudget, []),
+      },
+      {
+        name: "cap DEFER",
+        decision: decide(cues(), unqualified, blockedBudget, []),
+      },
+      {
+        name: "retry-blocked DEFER",
+        decision: decide(
+          cues(),
+          unqualified,
+          openBudget,
+          [{ laneClass: "draft-cost", outcome: "TIMEOUT_UNRECONCILED", classAttemptNo: 1 }],
+        ),
+      },
+      {
+        name: "stillOrDefer DEFER NO_QUALIFIED_LANE",
+        decision: decide(cues({ sourceStillExists: false }), unqualified, openBudget, []),
+      },
+      {
+        name: "stillOrDefer KEN_BURNS NO_QUALIFIED_LANE",
+        decision: decide(
+          cues({ sourceStillExists: true, motionNeed: "low" }),
+          unqualified,
+          openBudget,
+          [],
+        ),
+      },
+      {
+        name: "stillOrDefer STATIC NO_QUALIFIED_LANE",
+        decision: decide(
+          cues({ sourceStillExists: true, motionNeed: "none" }),
+          unqualified,
+          openBudget,
+          [],
+        ),
+      },
+      {
+        name: "stillOrDefer DEFER CEILING_REACHED",
+        decision: decide(
+          cues({ sourceStillExists: false }),
+          ceiling,
+          openBudget,
+          [{ laneClass: "draft-cost", outcome: "FAILED", classAttemptNo: 1 }],
+        ),
+      },
+      {
+        name: "stillOrDefer KEN_BURNS CEILING_REACHED",
+        decision: decide(
+          cues({ sourceStillExists: true, motionNeed: "high" }),
+          ceiling,
+          openBudget,
+          [{ laneClass: "draft-cost", outcome: "FAILED", classAttemptNo: 1 }],
+        ),
+      },
+      {
+        name: "LEGACY without LEGACY_R1",
+        decision: decide(cues({ routingMode: "LEGACY" }), legacyMissing, openBudget, []),
+      },
+    ];
+    const seen = new Set<string>();
+    for (const item of cases) {
+      expect(item.decision.treatment, item.name).not.toBe("GENERATE");
+      expect(item.decision.messageKey, item.name).toBeTruthy();
+      expect(SG_COPY[item.decision.messageKey as SgMessageKey], item.name).toBeTruthy();
+      seen.add(item.decision.messageKey as string);
+      const plan = planRoute(
+        { ...cues(), routingMode: item.name === "LEGACY without LEGACY_R1" ? "LEGACY" : "ENFORCED" },
+        unqualified,
+        openBudget,
+        [],
+      );
+      for (const decision of [plan.applied, plan.shadow]) {
+        if (decision.messageKey) {
+          expect(SG_COPY[decision.messageKey as SgMessageKey]).toBeTruthy();
+          seen.add(decision.messageKey);
+        }
+      }
+    }
+    expect(seen.has(SG_MESSAGE_KEYS.FALLBACK_ORIGINAL)).toBe(true);
+    expect(seen.has(SG_MESSAGE_KEYS.WAITING)).toBe(true);
+    expect(seen.has(SG_MESSAGE_KEYS.CAP_REACHED)).toBe(true);
+    expect(seen.has(SG_MESSAGE_KEYS.FAILED_HONEST)).toBe(true);
+    expect(seen.has(SG_MESSAGE_KEYS.NO_QUALIFIED_LANE)).toBe(true);
+    expect(seen.has(SG_MESSAGE_KEYS.CEILING_REACHED)).toBe(true);
+    expect(seen.has(SG_MESSAGE_KEYS.FALLBACK_KEN_BURNS)).toBe(false);
+    expect(seen.has(SG_MESSAGE_KEYS.REBUILD_HINT)).toBe(false);
+  });
+
+  it("scans production messageKey writes and never stores SG_REBUILD_HINT", () => {
+    const root = path.join(process.cwd(), "src/server");
+    const files: string[] = [];
+    walk(root, files);
+    const literal = /messageKey:\s*"(SG_[A-Z0-9_]+)"/g;
+    const constant = /SG_MESSAGE_KEYS\.([A-Z0-9_]+)/g;
+    const userLiteral = /userMessageKey:\s*"(SG_[A-Z0-9_]+)"/g;
+    const found = new Set<string>();
+    for (const file of files) {
+      if (file.endsWith(`${path.sep}presenter.ts`) || file.endsWith(`${path.sep}messages.ts`)) {
+        continue;
+      }
+      const source = readFileSync(file, "utf8");
+      expect(source.includes('messageKey: "SG_REBUILD_HINT"'), file).toBe(false);
+      expect(source.includes("messageKey: SG_MESSAGE_KEYS.REBUILD_HINT"), file).toBe(false);
+      expect(source.includes('userMessageKey: "SG_REBUILD_HINT"'), file).toBe(false);
+      expect(source.includes("userMessageKey: SG_MESSAGE_KEYS.REBUILD_HINT"), file).toBe(false);
+      for (const match of source.matchAll(literal)) found.add(match[1]!);
+      for (const match of source.matchAll(userLiteral)) found.add(match[1]!);
+      for (const match of source.matchAll(constant)) {
+        const key = SG_MESSAGE_KEYS[match[1] as keyof typeof SG_MESSAGE_KEYS];
+        expect(key, `${file} ${match[1]}`).toBeTruthy();
+        expect(match[1]).not.toBe("REBUILD_HINT");
+        found.add(key);
+      }
+    }
+    for (const key of found) {
+      expect(Object.values(SG_MESSAGE_KEYS)).toContain(key);
+      expect(SG_COPY[key as SgMessageKey], key).toBeTruthy();
+      expect(key).not.toBe(SG_MESSAGE_KEYS.REBUILD_HINT);
+    }
+    expect(found.has(SG_MESSAGE_KEYS.FAILED_HONEST)).toBe(true);
+    expect(found.has(SG_MESSAGE_KEYS.WAITING)).toBe(true);
+    expect(found.has(SG_MESSAGE_KEYS.CAP_REACHED)).toBe(true);
+    expect(found.has(SG_MESSAGE_KEYS.FALLBACK_KEN_BURNS)).toBe(true);
+    expect(found.has(SG_MESSAGE_KEYS.FALLBACK_STATIC)).toBe(true);
+  });
+});
