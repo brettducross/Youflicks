@@ -1304,7 +1304,7 @@ describe("AssetService M3", () => {
       where: { budgetReservationId: reservation?.id },
     });
     expect(attempt?.outcome).toBe("FAILED");
-    expect(attempt?.failureCode).toBe("SUBMIT_REJECTED");
+    expect(attempt?.failureCode).toBe("SUBMIT_REJECTED:ASSET_PROVIDER_UNAVAILABLE");
     expect(reservation?.gatewayReservationId).toBe(gatewayRow?.id);
     expect(attempt?.gatewayReservationId).toBe(gatewayRow?.id);
     expect(attempt?.actualBilledSeconds).toBeNull();
