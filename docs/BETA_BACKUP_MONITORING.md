@@ -99,6 +99,8 @@ psql "$SCRATCH_DATABASE_URL" < "$SNAPSHOT_SQL"
 
 Clock **RTO start** when restore begins; **RTO stop** when §6 PASSes.
 
+`npm run ops:verify-backup -- --live` can apply that snapshot to `BETA_BACKUP_SCRATCH_DATABASE_URL` and check the survival tables below. It does not fill Evidence.
+
 ### 4. Confirm tables that must survive
 
 On the **scratch** database, the following must be present with counts that match the snapshot (or an explained delta):
@@ -143,6 +145,28 @@ Repeat this numbered drill after any `STORAGE_DRIVER` change, bucket migration, 
 
 ---
 
+## Verify script
+
+`npm run ops:verify-backup` runs `scripts/verify-backup-drill.ts`.
+
+Default mode reads **this file’s Evidence table only**. It exits **1** and prints status `NOT_READY` while any Evidence value is blank, `_fill_`, or the template `yes / no`. It exits **0** and prints JSON `{ "ok": true, "mode": "evidence", "ready": true }` only when every Evidence value is filled. On the survival and versioning rows, a filled value is exactly `yes` or `no` (any case). Exit 0 of evidence mode is **not** Brett sign-off until the Sign-off cell is filled by the host. Engineering must not claim invites are cleared.
+
+The script never writes this file and never invents an operator, RPO, RTO, or snapshot id. `BETA_BACKUP_*` knobs are script-only. Next.js and the gateway do not require them at boot.
+
+Optional live dry-run (host machine, not CI): set both knobs below, or pass `--live`.
+
+| Knob | Role |
+| --- | --- |
+| `BETA_BACKUP_SCRATCH_DATABASE_URL` | Disposable Postgres. Fail-closed if it string-equals `DATABASE_URL`. |
+| `BETA_BACKUP_SNAPSHOT_PATH` | Local dump applied with `pg_restore` (custom format) or `psql` (SQL). |
+| `BETA_BACKUP_EXPECTED_COUNTS_JSON` | Optional JSON file with `minCounts` and `checksums` only. No production numbers are hardcoded in source. |
+
+`minCounts` maps a table name to a non-negative integer minimum. `checksums` maps a table name to the md5 of its row text (`md5` of `string_agg` of `row::text`). Omit the file to assert that the survival tables are present. An empty object is valid. Checksums read every row on scratch; keep the scratch small.
+
+Missing or empty live knobs exit 1 with a fixed fail-closed reason and do not claim success. A successful live run prints `{ "ok": true, "mode": "live", "ready": <evidence gate> }` and still does not edit Evidence — copy results into the table by hand. Tear down the scratch database yourself (step 7). The script does not connect to `DATABASE_URL` and does not drop or promote production.
+
+---
+
 ## Evidence (sign before invites)
 
 | Field | Value |
@@ -161,4 +185,4 @@ Repeat this numbered drill after any `STORAGE_DRIVER` change, bucket migration, 
 | Object versioning confirmed | yes / no |
 | Sign-off (Brett or delegated ops) | `_fill_` |
 
-Unfilled `_fill_` means the drill is **not** signed. Do not treat a merged PR as a completed restore.
+Unfilled `_fill_` means the drill is **not** signed. A cell that still says `yes / no` is not filled either; spacing around `/` does not turn that template into an answer. Replace each template with a single observed `yes` or `no`. Do not treat a merged PR as a completed restore. `npm run ops:verify-backup` exits 1 until the `_fill_` cells and the `yes / no` templates are replaced. Exit 0 is still not Brett sign-off until the Sign-off cell is filled by the host, and it does not clear invites.
