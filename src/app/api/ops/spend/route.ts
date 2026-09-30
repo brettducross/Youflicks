@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { env } from "@/lib/env";
+import { opsBearerAuthorized } from "@/server/ops/authorize";
 import { prisma } from "@/server/db";
 import { GATEWAY_SPEND_LEDGER_ID } from "@/server/beta/defaults";
 import {
@@ -11,8 +12,7 @@ import {
 export const runtime = "nodejs";
 
 export async function GET(request: Request) {
-  const secret = env.BETA_OPS_SECRET?.trim();
-  if (!secret || request.headers.get("authorization") !== `Bearer ${secret}`) {
+  if (!opsBearerAuthorized(request.headers.get("authorization"), env.BETA_OPS_SECRET)) {
     return NextResponse.json({ error: { code: "NOT_FOUND", message: "Not found." } }, { status: 404 });
   }
   let ledgerCursor: string | null;

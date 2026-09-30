@@ -2,17 +2,13 @@ import { NextResponse } from "next/server";
 import { env } from "@/lib/env";
 import { isAppError, toErrorResponse } from "@/lib/errors";
 import { logger } from "@/lib/logger";
+import { opsBearerAuthorized } from "@/server/ops/authorize";
 import { getServices } from "@/server/services/container";
 
 export const runtime = "nodejs";
 
 function authorizeOps(request: Request) {
-  const secret = env.BETA_OPS_SECRET?.trim();
-  if (!secret) {
-    return false;
-  }
-  const header = request.headers.get("authorization") ?? "";
-  return header === `Bearer ${secret}`;
+  return opsBearerAuthorized(request.headers.get("authorization"), env.BETA_OPS_SECRET);
 }
 
 export async function POST(request: Request) {

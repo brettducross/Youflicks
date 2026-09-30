@@ -1,3 +1,4 @@
+import type { PrismaClient } from "@/generated/prisma/client";
 import { logger } from "@/lib/logger";
 import { prisma } from "@/server/db";
 import { AssetCapability } from "@/server/ports/capabilities";
@@ -53,14 +54,17 @@ export function meterableBilledSeconds(hold: MeteredBudgetHold): number | null {
  * A write failure is logged and does not fail the settle: the hold is already committed,
  * and a later settle of the same reservation retries the insert.
  */
-export async function recordSettledAiVideoSeconds(hold: MeteredBudgetHold): Promise<void> {
+export async function recordSettledAiVideoSeconds(
+  hold: MeteredBudgetHold,
+  db: Pick<PrismaClient, "usageEvent"> = prisma,
+): Promise<void> {
   const seconds = meterableBilledSeconds(hold);
   if (seconds == null) {
     return;
   }
   const recordedAt = new Date();
   try {
-    await prisma.usageEvent.create({
+    await db.usageEvent.create({
       data: {
         id: aiVideoSecondsUsageEventId(hold.id),
         userId: hold.userId,

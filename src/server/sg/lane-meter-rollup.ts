@@ -248,3 +248,70 @@ function emptyBucket(laneId: string, scope: string, day: string): Bucket {
 function utcDay(date: Date): string {
   return date.toISOString().slice(0, 10);
 }
+
+/**
+ * Open exposure from app holds, any age, including holds with no attempt.
+ * Money is the hold estimate. The days window is not applied.
+ * `@@index([status])` bounds the read; aggregation stays in SQL.
+ */
+export type OpenExposureLane = {
+  laneId: string;
+  reservedHolds: number;
+  reservedBilledSeconds: number;
+  reservedUsd: number;
+  unreconciledHolds: number;
+  unreconciledBilledSeconds: number;
+  unreconciledUsd: number;
+};
+
+type OpenExposureRaw = {
+  laneId: string;
+  status: string;
+  holds: number;
+  estimatedBilledSeconds: number;
+  estimatedUsd: number;
+};
+
+export async function readOpenExposure(db: Pick<PrismaClient, "$queryRaw">): Promise<OpenExposureLane[]> {
+  const rows = await db.$queryRaw<OpenExposureRaw[]>`
+    SELECT "laneId" AS "laneId",
+           status AS status,
+           COUNT(*)::int AS holds,
+           COALESCE(SUM("estimatedBilledSeconds"), 0) AS "estimatedBilledSeconds",
+           COALESCE(SUM("estimatedUsd"), 0) AS "estimatedUsd"
+    FROM ai_video_budget_reservation
+    WHERE status IN ('RESERVED', 'UNRECONCILED')
+    GROUP BY "laneId", status
+    ORDER BY "laneId" ASC, status ASC
+  `;
+  const byLane = new Map<string, OpenExposureLane>();
+  for (const row of rows) {
+    const lane = byLane.get(row.laneId) ?? emptyExposure(row.laneId);
+    const holds = Number(row.holds);
+    const seconds = roundMeasure(Number(row.estimatedBilledSeconds));
+    const usd = roundMeasure(Number(row.estimatedUsd));
+    if (row.status === "RESERVED") {
+      lane.reservedHolds = holds;
+      lane.reservedBilledSeconds = seconds;
+      lane.reservedUsd = usd;
+    } else if (row.status === "UNRECONCILED") {
+      lane.unreconciledHolds = holds;
+      lane.unreconciledBilledSeconds = seconds;
+      lane.unreconciledUsd = usd;
+    }
+    byLane.set(row.laneId, lane);
+  }
+  return [...byLane.values()].sort((a, b) => a.laneId.localeCompare(b.laneId));
+}
+
+function emptyExposure(laneId: string): OpenExposureLane {
+  return {
+    laneId,
+    reservedHolds: 0,
+    reservedBilledSeconds: 0,
+    reservedUsd: 0,
+    unreconciledHolds: 0,
+    unreconciledBilledSeconds: 0,
+    unreconciledUsd: 0,
+  };
+}

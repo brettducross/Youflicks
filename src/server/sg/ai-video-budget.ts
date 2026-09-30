@@ -269,7 +269,7 @@ export class MemoryAiVideoBudget implements AiVideoBudgetPort {
     actualBilledSeconds?: number,
   ): AiVideoBudgetReservationRecord {
     const row = this.must(id);
-    const transition = settleTransition(row.status, action);
+    const transition = appSettleTransition(row.status, action);
     if (transition.kind === "reject") {
       throw new Error(transition.message);
     }
@@ -349,7 +349,22 @@ function emptyBudgetLedger(id: string, input: AiVideoBudgetReserveInput): Budget
   };
 }
 
-type BudgetDb = Pick<PrismaClient, "aiVideoBudgetLedger" | "aiVideoBudgetReservation" | "$transaction">;
+/**
+ * UNRECONCILED stays counted until ops knows a definitive settlement.
+ * A later gateway RELEASED (non-billable) may release. RECONCILED may not.
+ * The shared gateway transition still refuses this; only the app hold does it.
+ */
+function appSettleTransition(current: string, action: "release" | "reconcile" | "unreconcile") {
+  if (action === "release" && current === "UNRECONCILED") {
+    return { kind: "apply" as const, status: "RELEASED" as const };
+  }
+  return settleTransition(current, action);
+}
+
+type BudgetDb = Pick<
+  PrismaClient,
+  "aiVideoBudgetLedger" | "aiVideoBudgetReservation" | "usageEvent" | "$transaction"
+>;
 
 export class PrismaAiVideoBudget implements AiVideoBudgetPort {
   constructor(private readonly db: BudgetDb) {}
@@ -466,7 +481,7 @@ export class PrismaAiVideoBudget implements AiVideoBudgetPort {
       for (const ledgerId of ledgerIds) {
         await tx.$queryRaw`SELECT id FROM ai_video_budget_ledger WHERE id = ${ledgerId} FOR UPDATE`;
       }
-      const transition = settleTransition(current.status, action);
+      const transition = appSettleTransition(current.status, action);
       if (transition.kind === "reject") {
         throw new Error(transition.message);
       }
@@ -516,7 +531,7 @@ export class PrismaAiVideoBudget implements AiVideoBudgetPort {
       });
     });
     const record = toBudgetReservation(updated);
-    await recordSettledAiVideoSeconds(record);
+    await recordSettledAiVideoSeconds(record, this.db);
     return record;
   }
 }

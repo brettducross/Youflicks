@@ -52,7 +52,7 @@ const LANE_ID_PATTERN = /^[a-z0-9][a-z0-9.-]*$/;
  * A bare "sk-" substring also matches "risk-" and "task-", which must stay legal in rateRef prose.
  */
 const SECRET_LIKE =
-  /\bsk-[A-Za-z0-9_-]{16,}|\br8_[A-Za-z0-9]{16,}|begin private|\bakia[0-9a-z]{16}\b/i;
+  /\bsk-[A-Za-z0-9_-]{16,}|\br8_[A-Za-z0-9]{16,}|-----BEGIN [A-Z ]*PRIVATE KEY-----|\bakia[0-9a-z]{16}\b/i;
 const HEX_SHA = /^[a-f0-9]{40}$|^[a-f0-9]{64}$/;
 /** Printable provider labels only. Rejects whitespace, zero-width, and other non-ASCII. */
 export const PROVIDER_KEY_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._:/@-]*$/;

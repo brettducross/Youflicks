@@ -1,9 +1,10 @@
 import { execFileSync, spawn } from "node:child_process";
 import { createHash } from "node:crypto";
-import { open, mkdtemp, readFile, rm } from "node:fs/promises";
+import { open, mkdtemp, readFile, rm, stat } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import sharp from "sharp";
+import { logger } from "@/lib/logger";
 import type { AssetGeneratorInput } from "@/server/assets/input";
 import { GENERATED_ASSET_DOCUMENT_SCHEMA_VERSION, type GeneratedAssetDocument } from "@/server/assets/schema";
 import { validateGeneratedAssetDocument } from "@/server/assets/validate";
@@ -175,20 +176,27 @@ export function isKenBurnsProcessor(value: AssetGeneratorPort): value is KenBurn
 }
 
 async function encodeKenBurns(spec: KenBurnsRenderSpec): Promise<Uint8Array> {
-  if (!ffmpegAvailable()) {
-    throw new Error(`${KEN_BURNS_PROVIDER_KEY} is not configured.`);
-  }
-  const base = await sharp(spec.stillBytes, { failOn: "none" })
-    .rotate()
-    .resize(spec.width, spec.height, { fit: "cover", position: "centre" })
-    .removeAlpha()
-    .raw()
-    .toBuffer();
+  const started = Date.now();
   const frames = Math.max(1, Math.round((spec.durationMs / 1000) * KEN_BURNS_FPS));
-  const dir = await mkdtemp(path.join(tmpdir(), "youflicks-kb-"));
-  const rawPath = path.join(dir, "frames.rgb");
-  const outPath = path.join(dir, "out.mp4");
+  let frameLoopMs = 0;
+  let ffmpegMs = 0;
+  let rawBytes = 0;
+  let outputBytes = 0;
+  let dir: string | null = null;
   try {
+    if (!ffmpegAvailable()) {
+      throw new Error(`${KEN_BURNS_PROVIDER_KEY} is not configured.`);
+    }
+    const base = await sharp(spec.stillBytes, { failOn: "none" })
+      .rotate()
+      .resize(spec.width, spec.height, { fit: "cover", position: "centre" })
+      .removeAlpha()
+      .raw()
+      .toBuffer();
+    dir = await mkdtemp(path.join(tmpdir(), "youflicks-kb-"));
+    const rawPath = path.join(dir, "frames.rgb");
+    const outPath = path.join(dir, "out.mp4");
+    const frameStarted = Date.now();
     const handle = await open(rawPath, "w");
     try {
       for (let index = 0; index < frames; index += 1) {
@@ -200,6 +208,9 @@ async function encodeKenBurns(spec: KenBurnsRenderSpec): Promise<Uint8Array> {
     } finally {
       await handle.close();
     }
+    frameLoopMs = Date.now() - frameStarted;
+    rawBytes = (await stat(rawPath)).size;
+    const ffmpegStarted = Date.now();
     await runFfmpeg([
       "-y",
       "-hide_banner",
@@ -240,13 +251,46 @@ async function encodeKenBurns(spec: KenBurnsRenderSpec): Promise<Uint8Array> {
       "+faststart",
       outPath,
     ]);
+    ffmpegMs = Date.now() - ffmpegStarted;
     const encoded = await readFile(outPath);
+    outputBytes = encoded.byteLength;
     if (encoded.byteLength === 0) {
       throw new Error(`${KEN_BURNS_PROVIDER_KEY} wrote an empty file.`);
     }
+    logger.info("asset.kenburns_encode", {
+      outcome: "succeeded",
+      peakTempBytes: rawBytes + outputBytes,
+      rawBytes,
+      outputBytes,
+      frameLoopMs,
+      ffmpegMs,
+      totalMs: Date.now() - started,
+      width: spec.width,
+      height: spec.height,
+      durationMs: spec.durationMs,
+      frames,
+    });
     return new Uint8Array(encoded);
+  } catch (error) {
+    logger.error("asset.kenburns_encode", {
+      outcome: "failed",
+      peakTempBytes: rawBytes + outputBytes,
+      rawBytes,
+      outputBytes,
+      frameLoopMs,
+      ffmpegMs,
+      totalMs: Date.now() - started,
+      width: spec.width,
+      height: spec.height,
+      durationMs: spec.durationMs,
+      frames,
+      error: error instanceof Error ? error.message : "encode failed",
+    });
+    throw error;
   } finally {
-    await rm(dir, { recursive: true, force: true });
+    if (dir) {
+      await rm(dir, { recursive: true, force: true });
+    }
   }
 }
 

@@ -422,6 +422,19 @@ describe("lane registry validators", () => {
     ).toThrow(/secret-like/);
   });
 
+  it("rejects PEM private-key headers beyond the generic begin-private substring", () => {
+    for (const header of [
+      "-----BEGIN RSA PRIVATE KEY-----",
+      "-----BEGIN EC PRIVATE KEY-----",
+      "-----BEGIN OPENSSH PRIVATE KEY-----",
+      "-----BEGIN PRIVATE KEY-----",
+    ]) {
+      expect(() => parseLaneRegistry(document([lane({ rateRef: `rotated ${header} material` })]))).toThrow(
+        /secret-like/,
+      );
+    }
+  });
+
   it("rejects designation DEFAULT", () => {
     expect(() => parseLaneRegistry(document([lane({ designation: "DEFAULT" })]))).toThrow(
       /designation DEFAULT is rejected/,

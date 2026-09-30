@@ -85,6 +85,22 @@ describe("attempt outcome mapping", () => {
         gatewayStatus: 400,
         gatewayCode: "DURATION_UNSUPPORTED",
       }),
+    ).toEqual({ outcome: "FAILED", failureCode: "SUBMIT_REJECTED:DURATION_UNSUPPORTED" });
+    expect(
+      attemptOutcomeFromSettlement({
+        spendCap: false,
+        settlement: "RELEASED",
+        settleReason: "SUBMIT_REJECTED",
+        gatewayCode: "not a token",
+      }),
+    ).toEqual({ outcome: "FAILED", failureCode: "SUBMIT_REJECTED" });
+    expect(
+      attemptOutcomeFromSettlement({
+        spendCap: false,
+        settlement: "RELEASED",
+        settleReason: "SUBMIT_REJECTED",
+        gatewayCode: "A".repeat(65),
+      }),
     ).toEqual({ outcome: "FAILED", failureCode: "SUBMIT_REJECTED" });
     expect(
       attemptOutcomeFromSettlement({
